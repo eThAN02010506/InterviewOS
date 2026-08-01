@@ -16,10 +16,18 @@ from interview_os.core.state import (
     AnswerEvaluation,
     AutopilotState,
     AutopilotStatus,
+    CandidateProfile,
+    CompanyInfo,
+    EvaluationReport,
+    FeedbackReport,
+    InterviewBlueprint,
     InterviewerProfile,
     InterviewStage,
     InterviewState,
+    InterviewStrategy,
+    JobDescription,
     MockAnswerRecord,
+    MockInterviewPlan,
     MockInterviewSession,
     MockSessionStatus,
     ResumeClaimStatus,
@@ -337,15 +345,41 @@ class InterviewService:
         """Advance every safe deterministic/agent step and pause at real-world input."""
         runtime = await self._get_runtime(session_id)
         now = datetime.now(timezone.utc)
-        runtime.state.autopilot = AutopilotState(
-            enabled=True,
-            status=AutopilotStatus.RUNNING,
-            phase="intelligence",
-            authorized_public_research=authorized_public_research,
-            started_at=now,
-            updated_at=now,
-        )
-        await self._persist(session_id, runtime.state)
+        async with self._lock_for(session_id):
+            previous_candidate = runtime.state.candidate
+            same_resume = previous_candidate.raw_resume_text.strip() == resume_text.strip()
+            runtime.state.candidate = (
+                previous_candidate.model_copy(deep=True)
+                if same_resume
+                else CandidateProfile(raw_resume_text=resume_text)
+            )
+            runtime.state.candidate.raw_resume_text = resume_text
+            runtime.state.job = JobDescription()
+            runtime.state.company = CompanyInfo(name=company_name)
+            runtime.state.interviewer = InterviewerProfile(
+                name=interviewer_name,
+                position=interviewer_position,
+                company=company_name,
+            )
+            runtime.state.strategy = InterviewStrategy()
+            runtime.state.blueprint = InterviewBlueprint()
+            runtime.state.mock_interview = MockInterviewPlan()
+            runtime.state.mock_session = MockInterviewSession()
+            runtime.state.evaluation = EvaluationReport()
+            runtime.state.feedback = FeedbackReport()
+            runtime.state.evidence.clear()
+            runtime.state.evaluated_competencies.clear()
+            runtime.state.missing_signals.clear()
+            runtime.state.current_stage = InterviewStage.NOT_STARTED
+            runtime.state.autopilot = AutopilotState(
+                enabled=True,
+                status=AutopilotStatus.RUNNING,
+                phase="intelligence",
+                authorized_public_research=authorized_public_research,
+                started_at=now,
+                updated_at=now,
+            )
+            await self._persist(session_id, runtime.state)
         self._record_debug("autopilot_started", session_id, detail=role)
         try:
             if role == "candidate":

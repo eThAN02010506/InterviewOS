@@ -39,6 +39,9 @@ class ResumeProcessor:
         text, pages = (
             self._extract_pdf(content) if suffix == ".pdf" else self._extract_docx(content)
         )
+        had_encoding_artifacts = bool(
+            re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]", text)
+        )
         text = self._normalize(text)
         if not text:
             raise ResumeProcessingError("未能从简历中提取文字；扫描版 PDF 请先进行 OCR")
@@ -53,7 +56,7 @@ class ResumeProcessor:
                 page_count=pages,
                 character_count=len(text),
             ),
-            issues=self._find_issues(text),
+            issues=self._find_issues(text, had_encoding_artifacts=had_encoding_artifacts),
             claims=self._find_claims(text),
             reviewed_at=datetime.now(timezone.utc),
         )
@@ -67,7 +70,12 @@ class ResumeProcessor:
             reader = PdfReader(BytesIO(content))
             if reader.is_encrypted and not reader.decrypt(""):
                 raise ResumeProcessingError("PDF 已加密，请上传未加密版本")
-            page_texts = [page.extract_text() or "" for page in reader.pages]
+            page_texts = []
+            for page in reader.pages:
+                try:
+                    page_texts.append(page.extract_text(extraction_mode="layout") or "")
+                except TypeError:
+                    page_texts.append(page.extract_text() or "")
             return "\n\n".join(page_texts), len(reader.pages)
         except ResumeProcessingError:
             raise
@@ -92,12 +100,24 @@ class ResumeProcessor:
 
     @staticmethod
     def _normalize(text: str) -> str:
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
         lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
         return "\n".join(line for line in lines if line).strip()
 
     @staticmethod
-    def _find_issues(text: str) -> list[ResumeValidationIssue]:
+    def _find_issues(
+        text: str, *, had_encoding_artifacts: bool = False
+    ) -> list[ResumeValidationIssue]:
         issues: list[ResumeValidationIssue] = []
+        if had_encoding_artifacts:
+            issues.append(
+                ResumeValidationIssue(
+                    code="encoding_artifacts",
+                    severity=ResumeIssueSeverity.WARNING,
+                    field="document",
+                    message="PDF 包含异常字体编码，个别公司名或符号可能需要对照原文件确认",
+                )
+            )
         if len(text) < 200:
             issues.append(
                 ResumeValidationIssue(
@@ -192,6 +212,10 @@ class ResumeProcessor:
             if not 8 <= len(statement) <= 300:
                 continue
             for category, pattern, method in patterns:
+                if category == "employment" and not re.search(
+                    r"\b(?:19|20)\d{2}\b|\d{4}[-/.]\d{1,2}", statement
+                ):
+                    continue
                 key = (category, statement)
                 if pattern.search(statement) and key not in seen:
                     claims.append(

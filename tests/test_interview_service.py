@@ -27,12 +27,12 @@ class MockLLM:
 
 
 class FakeSearchProvider(SearchProvider):
-    async def search(self, query: str, limit: int = 5):
+    async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
         return [
             SearchResult(
-                title="Public profile",
+                title="Grace — CTO at Example",
                 url="https://example.com/profile",
-                snippet="Engineering leadership and systems thinking",
+                snippet="Grace leads engineering at Example with a focus on systems thinking",
                 source="fake",
             )
         ]
@@ -63,6 +63,22 @@ class WorkflowMockLLM:
         if "interview blueprint" in lowered:
             return '{"position":"Platform Engineer","rounds":[{"name":"Technical","goal":"Depth","questions":[{"question":"Design the system","competency":"System Design","rationale":"Core requirement","strong_signals":["Trade-offs"],"follow_ups":[]}],"evaluation_criteria":["Clear reasoning"]}]}'
         raise AssertionError(f"Unexpected prompt: {prompt}")
+
+    async def embed(self, text):
+        return []
+
+
+class CandidateFailingWorkflowLLM(WorkflowMockLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "structured candidate profile" in prompt or "candidateprofile" in prompt:
+            return "not json"
+        return await super().chat(messages, **kwargs)
+
+
+class InvalidProfileLLM:
+    async def chat(self, messages, **kwargs):
+        return "not json"
 
     async def embed(self, text):
         return []
@@ -102,6 +118,19 @@ async def test_interviewer_research_sources_are_persisted(tmp_path):
     session_id, _ = await service.create_session()
     await service.analyze_interviewer(session_id, "Grace", "CTO", "Example")
     state = await service.get_state(session_id)
+    assert state.interviewer.public_expressions[0]["url"] == "https://example.com/profile"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_interviewer_sources_survive_structured_profile_failure(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'research-fallback.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, InvalidProfileLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.analyze_interviewer(session_id, "Grace", "CTO", "Example")
+    state = await service.get_state(session_id)
+    assert state.interviewer.public_research_status == "completed"
     assert state.interviewer.public_expressions[0]["url"] == "https://example.com/profile"
     await storage.close()
 
@@ -154,7 +183,9 @@ async def test_autopilot_advances_then_waits_for_real_candidate_input(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot.db'}")
     await storage.init_db()
     service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
-    session_id, _ = await service.create_session()
+    session_id, old_state = await service.create_session()
+    old_state.company.public_sources = [{"url": "https://stale.example"}]
+    old_state.strategy.summary = "stale strategy"
 
     state = await service.run_autopilot(
         session_id,
@@ -169,6 +200,7 @@ async def test_autopilot_advances_then_waits_for_real_candidate_input(tmp_path):
     assert state.autopilot.phase == "interview"
     assert "mock_plan_generation" in state.autopilot.completed_actions
     assert state.company.public_sources == []
+    assert state.strategy.summary != "stale strategy"
     assert state.mock_interview.questions
     assert state.mock_session.status.value == "active"
     await storage.close()
@@ -195,6 +227,38 @@ async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     assert state.autopilot.status.value == "completed"
     assert state.evaluation.recommendation.value == "lean_hire"
     assert state.feedback.overall
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_autopilot_reuses_candidate_cache_only_for_identical_resume(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'candidate-cache.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, CandidateFailingWorkflowLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.candidate.name = "Cached Candidate"
+    state.candidate.skills = ["Recruiting"]
+    state.candidate.raw_resume_text = "same resume"
+
+    reused = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="same resume",
+        job_description="Recruiting Manager",
+        company_name="Example",
+    )
+    assert reused.candidate.name == "Cached Candidate"
+    assert reused.candidate.skills == ["Recruiting"]
+
+    changed = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="different resume",
+        job_description="Recruiting Manager",
+        company_name="Example",
+    )
+    assert changed.candidate.raw_resume_text == "different resume"
+    assert changed.candidate.name == ""
     await storage.close()
 
 

@@ -36,7 +36,7 @@ class FeedbackAgent(Agent):
             "action_plan, interviewer_notes, and recommendation_reasoning. All fields except "
             "overall and recommendation_reasoning are lists of strings. Candidate-facing "
             "improvements must be actionable; interviewer notes must distinguish missing "
-            "signals from negative evidence."
+            "signals from negative evidence. Use Chinese for every narrative field."
         )
         try:
             state.feedback = await self.think_structured(prompt, FeedbackReport, context=context)

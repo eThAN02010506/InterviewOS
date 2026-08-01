@@ -5,6 +5,10 @@ from __future__ import annotations
 CANDIDATE_ANALYSIS_PROMPT = (
     "Analyze the following resume and generate a structured Candidate Profile.\n"
     "Resume:\n{resume_text}\n\n"
+    "Preserve names and proper nouns in their source language. Use Chinese for analytical "
+    "descriptions. Do not infer weaknesses merely from missing resume information. "
+    "Achievements must be concise verbatim excerpts from the resume, not translations or "
+    "reinterpretations.\n"
     "Output JSON with these fields:\n"
     "- name\n"
     "- education (list of dicts: institution, degree, field, year)\n"
@@ -20,6 +24,8 @@ CANDIDATE_ANALYSIS_PROMPT = (
 JOB_ANALYSIS_PROMPT = (
     "Analyze the following job description and extract structured information.\n"
     "Job Description:\n{jd_text}\n\n"
+    "Use Chinese for descriptions and competency names. If the input is only a job title, "
+    "infer a minimal conventional competency set but leave unsupported details empty.\n"
     "Output JSON with these fields:\n"
     "- title\n"
     "- department\n"
@@ -38,6 +44,7 @@ COMPANY_ANALYSIS_PROMPT = (
     "Prefer official and high-quality sources. Attribute contested or secondary-source "
     "claims explicitly, and do not present a single secondary source as settled fact. "
     "Do not invent facts; use empty fields when evidence is insufficient.\n"
+    "Use Chinese for analytical fields while preserving names and technology terms.\n"
     "Output JSON:\n"
     "- name\n"
     "- industry\n"
@@ -60,6 +67,8 @@ INTERVIEWER_ANALYSIS_PROMPT = (
     "Only attribute a source to this person when name, company, or role signals align. "
     "Describe observed communication tendencies, not psychological diagnoses. "
     "Do not invent facts; use empty fields when evidence is insufficient.\n"
+    "Use Chinese for analytical fields. If no reliable public source exists, leave inferred "
+    "career and communication fields empty rather than extrapolating from the title.\n"
     "Output JSON:\n"
     "- name\n"
     "- position\n"
@@ -79,7 +88,13 @@ STRATEGY_FUSION_PROMPT = (
     "Interviewer Profile:\n{interviewer_profile}\n\n"
     "Output JSON with: summary, key_risks, answer_framework, "
     "topics_to_emphasize, topics_to_avoid, likely_questions. "
-    "All fields except summary are lists of strings. Distinguish evidence from inference.\n"
+    "All fields except summary are lists of strings. Use Chinese. Distinguish evidence from "
+    "inference. A risk must be tied to an explicit job requirement and candidate evidence. "
+    "Do not treat education level, age, geography, gender, or missing information as a risk "
+    "unless the supplied JD explicitly makes it job-relevant and lawful. Never invent a target "
+    "market, qualification, or requirement absent from the JD. Mention awards, dates, and named "
+    "achievements only when they appear in the structured achievements list; do not infer or "
+    "rename them from the resume excerpt.\n"
 )
 
 MOCK_QUESTION_PROMPT = (
@@ -89,7 +104,8 @@ MOCK_QUESTION_PROMPT = (
     "Interviewer preference: {interviewer_preference}\n\n"
     "Output JSON with a questions list. Each question has: question, competency, "
     "rationale, strong_signals (list), follow_ups (list). Generate 5-8 questions "
-    "specific to the candidate's actual experience.\n"
+    "specific to the candidate's actual experience. Use Chinese for questions, rationale, "
+    "signals, and follow-ups while preserving proper nouns.\n"
 )
 
 ANSWER_COACH_PROMPT = (
@@ -100,7 +116,7 @@ ANSWER_COACH_PROMPT = (
     "Output JSON with numeric scores from 0.0 to 1.0 for content_score, technical_depth, "
     "structure, and impact; plus feedback, observed_signals, missing_signals as lists "
     "of strings, and improved_answer. content_score must be a number, never the answer text. "
-    "Base signals only on the submitted answer.\n"
+    "Base signals only on the submitted answer. Use Chinese for feedback and the improved answer.\n"
 )
 
 EVALUATION_PROMPT = (
@@ -110,5 +126,5 @@ EVALUATION_PROMPT = (
     "Each competency item contains competency, score, confidence, supporting_evidence "
     "and gaps. Recommendation must be one of strong_hire, hire, lean_hire, "
     "lean_no_hire, no_hire, insufficient_evidence. Do not treat missing evidence as "
-    "negative evidence, and do not invent signals.\n"
+    "negative evidence, and do not invent signals. Use Chinese for all narrative fields.\n"
 )

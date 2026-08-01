@@ -117,6 +117,7 @@ class ResumeReview(BaseModel):
 
 class JobDescription(BaseModel):
     title: str = ""
+    raw_description: str = ""
     department: str = ""
     level: str = ""
     required_skills: list[str] = Field(default_factory=list)
@@ -134,6 +135,7 @@ class CompanyInfo(BaseModel):
     preferences: list[str] = Field(default_factory=list)
     dna: str = ""
     public_sources: list[dict[str, Any]] = Field(default_factory=list)
+    public_research_status: str = "not_requested"
 
 
 class InterviewerProfile(BaseModel):
@@ -147,6 +149,7 @@ class InterviewerProfile(BaseModel):
     communication_style: str = ""
     likely_preferences: list[str] = Field(default_factory=list)
     public_expressions: list[dict[str, Any]] = Field(default_factory=list)
+    public_research_status: str = "not_requested"
 
 
 class InterviewStrategy(BaseModel):

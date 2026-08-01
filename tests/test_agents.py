@@ -3,8 +3,11 @@ import pytest
 
 from interview_os.agents.candidate_agent import CandidateAgent
 from interview_os.agents.coach_agent import CoachAgent
+from interview_os.agents.company_agent import CompanyAgent
+from interview_os.agents.interview_strategy_agent import InterviewStrategyAgent
+from interview_os.agents.mock_interview_agent import MockInterviewAgent
 from interview_os.core.message import MessageType
-from interview_os.core.state import AnswerEvaluation, InterviewState
+from interview_os.core.state import AnswerEvaluation, InterviewState, JobDescription
 from interview_os.models.structured import parse_model_output
 
 
@@ -19,6 +22,49 @@ class MockLLM:
 class InvalidLLM:
     async def chat(self, messages, **kwargs):
         return "not json"
+
+
+class WrongEntityLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"name":"InterviewOS","industry":"Software","dna":"Test",'
+            '"public_sources":[{"title":"Invented","url":null}]}'
+        )
+
+
+class EmptyPlanLLM:
+    async def chat(self, messages, **kwargs):
+        return '{"questions":[]}'
+
+
+class HallucinatedCandidateLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"name":"John Doe","weaknesses":["Public speaking"],'
+            '"achievements":["Employee of the Year 2021","Excellent Employee Award (2015)"]}'
+        )
+
+    async def embed(self, text):
+        return []
+
+
+class UnsupportedRiskLLM:
+    async def chat(self, messages, **kwargs):
+        return '{"summary":"准备策略","key_risks":["未提供团队规模"]}'
+
+    async def embed(self, text):
+        return []
+
+
+class InventedMetricsLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":"候选人有17年经验","answer_framework":'
+            '["团队从10人扩展到200人，效率提升30%","说明2015年的真实奖项"]}'
+        )
+
+    async def embed(self, text):
+        return []
 
 
 @pytest.mark.asyncio
@@ -56,3 +102,76 @@ async def test_coach_degrades_to_reviewable_low_confidence_evidence():
     assert evaluation.overall_score() == pytest.approx(0.4)
     assert "人工复核" in evaluation.feedback[0]
     assert state.evidence[0].confidence == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_candidate_agent_extracts_explicit_name_when_model_output_fails():
+    agent = CandidateAgent(llm_client=InvalidLLM())
+    state = InterviewState()
+    await agent.execute(state, "Experience Name ：JL Led recruiting across APAC")
+    assert state.candidate.name == "JL"
+
+
+@pytest.mark.asyncio
+async def test_candidate_agent_grounds_identity_weaknesses_and_achievements():
+    agent = CandidateAgent(llm_client=HallucinatedCandidateLLM())
+    state = InterviewState()
+    await agent.execute(
+        state,
+        "Name ：JL Led recruiting. Recognition Excellent Employee Award (2015)",
+    )
+    assert state.candidate.name == "JL"
+    assert state.candidate.weaknesses == []
+    assert state.candidate.achievements == ["Excellent Employee Award (2015)"]
+
+
+@pytest.mark.asyncio
+async def test_strategy_does_not_create_risks_from_job_title_only():
+    agent = InterviewStrategyAgent(llm_client=UnsupportedRiskLLM())
+    state = InterviewState(
+        job=JobDescription(
+            title="Senior Recruiting Manager",
+            raw_description="Senior Recruiting Manager",
+        )
+    )
+    await agent.execute(state)
+    assert state.strategy.key_risks == []
+
+
+@pytest.mark.asyncio
+async def test_strategy_removes_metrics_absent_from_evidence():
+    agent = InterviewStrategyAgent(llm_client=InventedMetricsLLM())
+    state = InterviewState()
+    state.candidate.raw_resume_text = "17 years experience. Excellent award in 2015."
+    await agent.execute(state)
+    assert state.strategy.summary == "候选人有17年经验"
+    assert state.strategy.answer_framework == ["说明2015年的真实奖项"]
+
+
+@pytest.mark.asyncio
+async def test_mock_agent_degrades_to_current_job_competency_questions():
+    agent = MockInterviewAgent(llm_client=InvalidLLM())
+    state = InterviewState(job=JobDescription(competencies=["招聘策略", "团队领导力"]))
+    await agent.execute(state)
+    assert [question.competency for question in state.mock_interview.questions] == [
+        "招聘策略",
+        "团队领导力",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mock_agent_degrades_when_model_returns_empty_valid_plan():
+    agent = MockInterviewAgent(llm_client=EmptyPlanLLM())
+    state = InterviewState(job=JobDescription(competencies=["招聘策略"]))
+    await agent.execute(state)
+    assert state.mock_interview.questions[0].competency == "招聘策略"
+
+
+@pytest.mark.asyncio
+async def test_company_agent_preserves_authoritative_company_name():
+    agent = CompanyAgent(llm_client=WrongEntityLLM())
+    state = InterviewState()
+    state.company.name = "芯世界"
+    await agent.execute(state)
+    assert state.company.name == "芯世界"
+    assert state.company.public_sources == []

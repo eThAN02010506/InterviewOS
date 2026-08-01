@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
 from interview_os.core.state import InterviewBlueprint, InterviewState
-from interview_os.models.structured import parse_model_output
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +35,13 @@ class InterviewDesignAgent(Agent):
             "Design an interview blueprint and output JSON with position and rounds. "
             "Each round has name, goal, evaluation_criteria (list), and 3-5 questions. "
             "Each question has question, competency, rationale, strong_signals (list), "
-            "and follow_ups (list). Map every question to a job competency."
+            "and follow_ups (list). Map every question to a job competency. Use Chinese for "
+            "round names, goals, questions, criteria, rationale, signals, and follow-ups."
         )
-        raw = await self.think(prompt, context=context)
         try:
-            state.blueprint = parse_model_output(raw, InterviewBlueprint)
+            state.blueprint = await self.think_structured(
+                prompt, InterviewBlueprint, context=context
+            )
             state.blueprint.position = state.blueprint.position or state.job.title
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse interview blueprint: %s", exc)

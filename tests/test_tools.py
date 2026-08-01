@@ -11,6 +11,8 @@ from interview_os.tools.web_search import (
     TavilySearchProvider,
     WebSearchTool,
     assess_source_quality,
+    filter_entity_results,
+    merge_search_results,
     search_provider_from_env,
 )
 
@@ -48,7 +50,7 @@ async def test_tool_registry_missing():
 
 
 class FakeSearchProvider(SearchProvider):
-    async def search(self, query: str, limit: int = 5):
+    async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
         return [
             SearchResult(
                 title="Example Engineering Blog",
@@ -107,3 +109,57 @@ def test_source_quality_marks_entity_domain_as_official():
     assert results[0].source_quality == "official"
     assert results[1].source_quality == "secondary"
     assert results[0].corroboration_count == 2
+
+
+def test_search_result_merge_preserves_order_and_deduplicates_urls():
+    merged = merge_search_results(
+        [{"url": "https://a.example/", "title": "A"}],
+        [
+            {"url": "https://a.example", "title": "duplicate"},
+            {"url": "https://b.example", "title": "B"},
+        ],
+    )
+    assert [item["title"] for item in merged] == ["A", "B"]
+
+
+def test_entity_filter_rejects_fuzzy_chinese_company_matches():
+    results = filter_entity_results(
+        [
+            {"title": "芯视界创始人鲍捷", "url": "https://wrong.example"},
+            {"title": "芯世界 CEO 鲍捷采访", "url": "https://right.example"},
+        ],
+        entity="鲍捷",
+        required_context="芯世界",
+    )
+    assert [item["url"] for item in results] == ["https://right.example"]
+
+
+def test_entity_filter_accepts_corroborated_one_character_company_alias():
+    results = filter_entity_results(
+        [
+            {
+                "title": "芯视界创始人鲍捷",
+                "url": "https://qtetech.example/profile",
+                "snippet": "鲍捷是芯视界创始人兼首席科学家",
+            }
+        ],
+        entity="芯世界",
+        corroborating_entity="鲍捷",
+    )
+    assert results[0]["identity_match"] == "corroborated_alias"
+    assert results[0]["matched_identity"] == "芯视界"
+
+
+def test_context_alias_requires_exact_person_identity():
+    results = filter_entity_results(
+        [
+            {
+                "title": "芯视界创始人鲍捷",
+                "url": "https://qtetech.example/profile",
+            }
+        ],
+        entity="鲍捷",
+        required_context="芯世界",
+        allow_context_alias=True,
+    )
+    assert results[0]["matched_identity"] == "芯视界"

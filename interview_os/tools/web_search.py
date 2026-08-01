@@ -43,9 +43,79 @@ def assess_source_quality(results: list[SearchResult], query: str) -> list[Searc
     return results
 
 
+def merge_search_results(*batches: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+    """Deduplicate ordered provider results by canonical URL."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for batch in batches:
+        for item in batch:
+            url = str(item.get("url", "")).rstrip("/")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.append(item)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def filter_entity_results(
+    results: list[dict[str, Any]],
+    *,
+    entity: str,
+    required_context: str = "",
+    corroborating_entity: str = "",
+    allow_context_alias: bool = False,
+) -> list[dict[str, Any]]:
+    """Keep exact identities plus tightly corroborated one-character Chinese aliases."""
+    normalize = lambda value: re.sub(r"[^\w\u4e00-\u9fff]", "", value.lower())
+    entity_key = normalize(entity)
+    context_key = normalize(required_context)
+    corroborator_key = normalize(corroborating_entity)
+    filtered = []
+    for item in results:
+        haystack = normalize(
+            " ".join(str(item.get(key, "")) for key in ("title", "snippet", "url"))
+        )
+        entity_exact = bool(entity_key and entity_key in haystack)
+        entity_alias = "" if entity_exact else _one_character_alias(haystack, entity_key)
+        corroborated = bool(corroborator_key and corroborator_key in haystack)
+        if entity_key and not entity_exact and not (entity_alias and corroborated):
+            continue
+        context_exact = not context_key or context_key in haystack
+        context_alias = "" if context_exact else _one_character_alias(haystack, context_key)
+        if not context_exact and not (allow_context_alias and entity_exact and context_alias):
+            continue
+        accepted = dict(item)
+        if entity_alias or context_alias:
+            accepted["identity_match"] = "corroborated_alias"
+            accepted["input_identity"] = entity if entity_alias else required_context
+            accepted["matched_identity"] = entity_alias or context_alias
+        else:
+            accepted["identity_match"] = "exact"
+        filtered.append(accepted)
+    return filtered
+
+
+def _one_character_alias(haystack: str, needle: str) -> str:
+    """Return a near Chinese name only for equal-length strings differing by one character."""
+    if not 3 <= len(needle) <= 8 or not all("\u4e00" <= char <= "\u9fff" for char in needle):
+        return ""
+    width = len(needle)
+    for start in range(len(haystack) - width + 1):
+        candidate = haystack[start : start + width]
+        if all("\u4e00" <= char <= "\u9fff" for char in candidate) and sum(
+            left != right for left, right in zip(candidate, needle, strict=True)
+        ) == 1:
+            return candidate
+    return ""
+
+
 class SearchProvider(ABC):
     @abstractmethod
-    async def search(self, query: str, limit: int = 5) -> list[SearchResult]: ...
+    async def search(
+        self, query: str, limit: int = 5, *, search_depth: str = "basic"
+    ) -> list[SearchResult]: ...
 
 
 class SearXNGProvider(SearchProvider):
@@ -53,7 +123,9 @@ class SearXNGProvider(SearchProvider):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 5, *, search_depth: str = "basic"
+    ) -> list[SearchResult]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/search",
@@ -79,7 +151,9 @@ class BraveSearchProvider(SearchProvider):
         self.api_key = api_key
         self.timeout = timeout
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 5, *, search_depth: str = "basic"
+    ) -> list[SearchResult]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 self.endpoint,
@@ -112,7 +186,9 @@ class TavilySearchProvider(SearchProvider):
         self.timeout = timeout
         self.transport = transport
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 5, *, search_depth: str = "basic"
+    ) -> list[SearchResult]:
         async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
             response = await client.post(
                 self.endpoint,
@@ -122,7 +198,7 @@ class TavilySearchProvider(SearchProvider):
                 },
                 json={
                     "query": query,
-                    "search_depth": "basic",
+                    "search_depth": search_depth,
                     "max_results": min(limit, 20),
                     "include_answer": False,
                     "include_raw_content": False,
@@ -184,7 +260,9 @@ class SearchProviderManager(SearchProvider):
             "configured": {name: bool(value) for name, value in self._credentials.items()},
         }
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 5, *, search_depth: str = "basic"
+    ) -> list[SearchResult]:
         value = self._credentials.get(self.selected, "")
         providers: dict[str, SearchProvider] = {
             "tavily": TavilySearchProvider(value),
@@ -193,7 +271,9 @@ class SearchProviderManager(SearchProvider):
         }
         if self.selected == "none":
             raise ValueError("Web search provider is disabled")
-        return assess_source_quality(await providers[self.selected].search(query, limit), query)
+        return assess_source_quality(
+            await providers[self.selected].search(query, limit, search_depth=search_depth), query
+        )
 
 
 def search_provider_from_env() -> SearchProvider | None:
@@ -224,6 +304,9 @@ class WebSearchTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         query = str(kwargs.get("query", "")).strip()
         limit = max(1, min(int(kwargs.get("num_results", 5)), 10))
+        search_depth = str(kwargs.get("search_depth", "basic"))
+        if search_depth not in {"basic", "advanced"}:
+            return ToolResult(success=False, error="Search depth must be basic or advanced")
         if not query:
             return ToolResult(success=False, error="Search query cannot be empty")
         if self.provider is None:
@@ -235,7 +318,7 @@ class WebSearchTool(Tool):
                 ),
             )
         try:
-            results = await self.provider.search(query, limit)
+            results = await self.provider.search(query, limit, search_depth=search_depth)
             return ToolResult(
                 success=True,
                 data={"query": query, "results": [item.model_dump() for item in results]},

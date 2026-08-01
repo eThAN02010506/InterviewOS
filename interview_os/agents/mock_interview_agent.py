@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
-from interview_os.core.state import InterviewState, MockInterviewPlan
+from interview_os.core.state import InterviewQuestion, InterviewState, MockInterviewPlan
 from interview_os.models.prompt_templates import MOCK_QUESTION_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -39,4 +39,18 @@ class MockInterviewAgent(Agent):
             )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse mock interview plan: %s", exc)
+        if not state.mock_interview.questions:
+            competencies = state.job.competencies or ["岗位核心能力"]
+            state.mock_interview = MockInterviewPlan(
+                questions=[
+                    InterviewQuestion(
+                        question=f"请结合一段真实经历，说明你如何运用{competency}解决问题。",
+                        competency=competency,
+                        rationale="结构化输出失败后的可审计降级问题，用于采集当前岗位所需证据。",
+                        strong_signals=["具体情境", "个人行动", "量化结果", "复盘与取舍"],
+                        follow_ups=["你个人具体负责什么？", "结果如何衡量？"],
+                    )
+                    for competency in competencies[:5]
+                ]
+            )
         return self.make_response(state.mock_interview.model_dump_json(indent=2))

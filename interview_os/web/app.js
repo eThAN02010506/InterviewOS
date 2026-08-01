@@ -23,6 +23,16 @@ function toast(message, error = false) {
 }
 
 function busy(form, active) { form.classList.toggle('loading', active); }
+function showWorkflowStarting() {
+  if (!state.session) return;
+  state.session.strategy = {summary:'', key_risks:[], answer_framework:[], topics_to_emphasize:[], topics_to_avoid:[], likely_questions:[]};
+  state.session.blueprint = {position:'', rounds:[]};
+  state.session.mock_interview = {questions:[]};
+  state.session.company.public_sources = [];
+  state.session.workflow = {status:'running', current_step:'starting', completed_steps:0, total_steps:0, error:''};
+  state.session.autopilot = {...(state.session.autopilot || {}), enabled:true, status:'running', phase:'intelligence', pause_reason:''};
+  renderState();
+}
 function tags(items = []) { return `<div class="tag-list">${items.map(v => `<span class="tag">${esc(v)}</span>`).join('')}</div>`; }
 function list(title, items = []) { return items.length ? `<div class="result-block"><h4>${esc(title)}</h4><ul>${items.map(v => `<li>${esc(v)}</li>`).join('')}</ul></div>` : ''; }
 
@@ -89,8 +99,23 @@ async function loadSessions() {
 
 async function loadSession() {
   if (!state.sessionId) { state.session = null; renderState(); return; }
-  try { const data = await api(`/api/interviews/sessions/${state.sessionId}`); state.session = data.state; localStorage.setItem('interviewos.session', state.sessionId); renderState(); }
+  try { const data = await api(`/api/interviews/sessions/${state.sessionId}`); state.session = data.state; localStorage.setItem('interviewos.session', state.sessionId); hydrateSessionForms(); renderState(); }
   catch (error) { toast(error.message, true); }
+}
+
+function hydrateSessionForms() {
+  const s = state.session; if (!s) return;
+  const values = {
+    'candidate-resume': s.candidate?.raw_resume_text,
+    'enterprise-resume': s.candidate?.raw_resume_text,
+    'candidate-jd': s.job?.title,
+    'enterprise-jd': s.job?.title,
+    'candidate-company': s.company?.name,
+    'enterprise-company': s.company?.name,
+    'interviewer-name': s.interviewer?.name,
+    'interviewer-position': s.interviewer?.position,
+  };
+  Object.entries(values).forEach(([id, value]) => { if ($(id) && value) $(id).value = value; });
 }
 
 function renderState() {
@@ -159,8 +184,14 @@ function renderStrategy() {
 
 function renderSources() {
   const s=state.session; const sources=[...(s?.company?.public_sources||[]),...(s?.interviewer?.public_expressions||[])]; const node=$('source-result');
-  if (!sources.length) { node.className='source-list empty-state'; node.textContent='尚未检索。'; return; }
-  node.className='source-list'; node.innerHTML=sources.map(x=>`<a href="${esc(safeUrl(x.url))}" target="_blank" rel="noreferrer"><strong>${esc(x.title||x.url||'公开资料')}</strong><small>${esc((x.snippet||x.text||'').slice(0,150))}</small></a>`).join('');
+  if (!sources.length) {
+    const statuses=[s?.company?.public_research_status,s?.interviewer?.public_research_status];
+    node.className='source-list empty-state';
+    node.textContent=statuses.includes('no_reliable_sources')?'已检索，但没有找到可可靠归属于该公司或人物的公开资料。':statuses.includes('failed')?'公开检索失败，请检查搜索设置后重试。':'尚未检索。';
+    return;
+  }
+  const qualityLabels={official:'官方',high:'高可信',secondary:'二手来源',unrated:'未评级'};
+  node.className='source-list'; node.innerHTML=sources.map(x=>{const alias=x.identity_match==='corroborated_alias'?`名称近似匹配：输入“${x.input_identity}”，来源“${x.matched_identity}” · `:'';return `<a href="${esc(safeUrl(x.url))}" target="_blank" rel="noreferrer"><strong>${esc(x.title||x.url||'公开资料')}</strong><small>${esc(alias)}${esc(qualityLabels[x.source_quality]||'未评级')} · ${esc((x.snippet||x.text||'').slice(0,150))}</small></a>`}).join('');
 }
 
 function renderBlueprint() {
@@ -214,8 +245,8 @@ document.addEventListener('click', async event => {
   } catch (error) { toast(error.message, true); }
 });
 
-$('candidate-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);try{const payload={role:'candidate',resume_text:$('candidate-resume').value,job_description:$('candidate-jd').value,company_name:$('candidate-company').value,company_context:$('candidate-company-context').value,interviewer_name:$('interviewer-name').value,interviewer_position:$('interviewer-position').value,authorized_public_research:$('candidate-research-consent').checked};const endpoint=$('candidate-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/candidate-prep';if(!$('candidate-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;renderState();toast(state.session.autopilot?.enabled?'AI 已推进到需要你回答的阶段':'候选人策略已生成');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
-$('enterprise-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);try{const payload={role:'interviewer',resume_text:$('enterprise-resume').value,job_description:$('enterprise-jd').value,company_name:$('enterprise-company').value,company_context:$('enterprise-context').value,authorized_public_research:$('enterprise-research-consent').checked};const endpoint=$('enterprise-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/enterprise-design';if(!$('enterprise-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;renderState();toast(state.session.autopilot?.enabled?'AI 已完成设计，等待采集真实面试证据':'面试 Blueprint 已生成');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
+$('candidate-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);showWorkflowStarting();try{const payload={role:'candidate',resume_text:$('candidate-resume').value,job_description:$('candidate-jd').value,company_name:$('candidate-company').value,company_context:$('candidate-company-context').value,interviewer_name:$('interviewer-name').value,interviewer_position:$('interviewer-position').value,authorized_public_research:$('candidate-research-consent').checked};const endpoint=$('candidate-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/candidate-prep';if(!$('candidate-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;await loadSessions();toast(state.session.autopilot?.enabled?'AI 已推进到需要你回答的阶段':'候选人策略已生成');}catch(error){await loadSession();toast(`运行失败：${error.message}`,true)}finally{busy(form,false)}};
+$('enterprise-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);showWorkflowStarting();try{const payload={role:'interviewer',resume_text:$('enterprise-resume').value,job_description:$('enterprise-jd').value,company_name:$('enterprise-company').value,company_context:$('enterprise-context').value,authorized_public_research:$('enterprise-research-consent').checked};const endpoint=$('enterprise-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/enterprise-design';if(!$('enterprise-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;await loadSessions();toast(state.session.autopilot?.enabled?'AI 已完成设计，等待采集真实面试证据':'面试 Blueprint 已生成');}catch(error){await loadSession();toast(`运行失败：${error.message}`,true)}finally{busy(form,false)}};
 
 $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/start`,{method:'POST'});await loadSession();toast('模拟面试已开始');}catch(error){toast(error.message,true)}};
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const question=state.session?.mock_interview?.questions?.[state.session.mock_session.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:question.id,answer:$('mock-answer').value})});$('mock-answer').value='';await loadSession();toast('回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};

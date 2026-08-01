@@ -56,3 +56,18 @@ def test_resume_rejects_unsupported_formats(filename):
 def test_resume_rejects_empty_document():
     with pytest.raises(ResumeProcessingError, match="为空"):
         ResumeProcessor().process("resume.pdf", b"")
+
+
+def test_resume_normalization_removes_control_characters_and_reports_artifacts():
+    normalized = ResumeProcessor._normalize("New H\x00C Group\nExperience")
+    issues = ResumeProcessor._find_issues(normalized, had_encoding_artifacts=True)
+    assert "\x00" not in normalized
+    assert any(issue.code == "encoding_artifacts" for issue in issues)
+
+
+def test_employment_claim_requires_timeline_signal():
+    claims = ResumeProcessor._find_claims(
+        "Example Company is a global technology company.\n2020-01 Example Company Senior Manager"
+    )
+    employment = [claim.statement for claim in claims if claim.category == "employment"]
+    assert employment == ["2020-01 Example Company Senior Manager"]
