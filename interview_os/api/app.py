@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+
 from __future__ import annotations
 
 import logging
@@ -14,9 +15,12 @@ from fastapi.staticfiles import StaticFiles
 
 from interview_os.api.routes import (
     analysis,
+    autopilot,
     debug,
+    evaluations,
     interviews,
     mock_interviews,
+    resumes,
     settings,
     workflows,
 )
@@ -24,16 +28,20 @@ from interview_os.core.debug import DebugEventStore
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.interview_service import (
+    EvaluationStateError,
     InterviewService,
     MockInterviewStateError,
+    ResumeReviewStateError,
     SessionNotFoundError,
     WorkflowExecutionError,
 )
+from interview_os.services.resume_service import ResumeProcessingError
 from interview_os.tools.web_search import SearchProvider, SearchProviderManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
 
 def create_app(
     *,
@@ -80,12 +88,15 @@ def create_app(
     )
     application.include_router(interviews.router, prefix="/api/interviews", tags=["interviews"])
     application.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
+    application.include_router(autopilot.router, prefix="/api/autopilot", tags=["autopilot"])
     application.include_router(settings.router, prefix="/api/settings", tags=["settings"])
     application.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
     application.include_router(
         mock_interviews.router, prefix="/api/mock-interviews", tags=["mock-interviews"]
     )
     application.include_router(debug.router, prefix="/api/debug", tags=["debug"])
+    application.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
+    application.include_router(evaluations.router, prefix="/api/evaluations", tags=["evaluations"])
     application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @application.exception_handler(SessionNotFoundError)
@@ -100,13 +111,23 @@ def create_app(
     async def invalid_mock_state(_: Request, exc: MockInterviewStateError):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @application.exception_handler(EvaluationStateError)
+    async def invalid_evaluation_state(_: Request, exc: EvaluationStateError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @application.exception_handler(ResumeProcessingError)
+    async def invalid_resume(_: Request, exc: ResumeProcessingError):
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @application.exception_handler(ResumeReviewStateError)
+    async def invalid_resume_review(_: Request, exc: ResumeReviewStateError):
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @application.get("/")
     async def root(request: Request):
         accept = request.headers.get("accept", "")
         if "application/json" in accept and "text/html" not in accept:
-            return JSONResponse(
-                {"name": "InterviewOS", "version": "0.2.0", "status": "running"}
-            )
+            return JSONResponse({"name": "InterviewOS", "version": "0.2.0", "status": "running"})
         return FileResponse(WEB_DIR / "index.html")
 
     @application.get("/health")

@@ -10,6 +10,7 @@ from interview_os.tools.web_search import (
     SearchResult,
     TavilySearchProvider,
     WebSearchTool,
+    assess_source_quality,
     search_provider_from_env,
 )
 
@@ -92,3 +93,17 @@ def test_tavily_has_provider_precedence(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     monkeypatch.setenv("SEARXNG_BASE_URL", "http://localhost:8080")
     assert isinstance(search_provider_from_env(), TavilySearchProvider)
+
+
+def test_source_quality_marks_entity_domain_as_official():
+    results = assess_source_quality(
+        [
+            SearchResult(title="Official", url="https://openai.com/careers"),
+            SearchResult(title="Article", url="https://example.net/openai"),
+        ],
+        '"OpenAI" engineering culture',
+    )
+    assert results[0].is_official is True
+    assert results[0].source_quality == "official"
+    assert results[1].source_quality == "secondary"
+    assert results[0].corroboration_count == 2

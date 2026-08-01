@@ -1,4 +1,5 @@
 """Use-case layer coordinating runtimes and persistence."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,15 +14,20 @@ from interview_os.core.message import Message
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
     AnswerEvaluation,
+    AutopilotState,
+    AutopilotStatus,
     InterviewerProfile,
+    InterviewStage,
     InterviewState,
     MockAnswerRecord,
     MockInterviewSession,
     MockSessionStatus,
+    ResumeClaimStatus,
     WorkflowProgress,
     WorkflowStatus,
 )
 from interview_os.database.storage import Storage
+from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.web_search import SearchProvider
 
 
@@ -34,6 +40,14 @@ class WorkflowExecutionError(RuntimeError):
 
 
 class MockInterviewStateError(RuntimeError):
+    pass
+
+
+class EvaluationStateError(RuntimeError):
+    pass
+
+
+class ResumeReviewStateError(RuntimeError):
     pass
 
 
@@ -53,6 +67,7 @@ class InterviewService:
         self.debug_events = debug_events
         self._runtimes: dict[str, AgentRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self.resume_processor = ResumeProcessor()
 
     async def create_session(
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""
@@ -76,6 +91,40 @@ class InterviewService:
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "candidate_agent", text)
 
+    async def upload_resume(self, session_id: str, filename: str, content: bytes) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)
+            runtime.state.candidate.raw_resume_text = text
+            runtime.state.resume_review = review
+            runtime.state.next_action = "Review resume checks, then continue the interview workflow"
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "resume_processed",
+                session_id,
+                detail=f"{review.metadata.file_type}, {review.metadata.character_count} chars, "
+                f"{len(review.issues)} issues, {len(review.claims)} claims",
+            )
+            return runtime.state
+
+    async def update_resume_claim(
+        self, session_id: str, claim_id: UUID, status: ResumeClaimStatus, note: str = ""
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            claim = next(
+                (item for item in runtime.state.resume_review.claims if item.id == claim_id), None
+            )
+            if claim is None:
+                raise ResumeReviewStateError("Resume claim not found")
+            claim.status = status
+            claim.note = note.strip()[:500]
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "resume_claim_updated", session_id, detail=f"{claim.category}: {status}"
+            )
+            return runtime.state
+
     async def analyze_job(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "job_agent", text)
 
@@ -88,7 +137,12 @@ class InterviewService:
             return message
 
     async def analyze_interviewer(
-        self, session_id: str, name: str, position: str = "", company: str = "", public_info: str = ""
+        self,
+        session_id: str,
+        name: str,
+        position: str = "",
+        company: str = "",
+        public_info: str = "",
     ) -> Message:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
@@ -193,6 +247,7 @@ class InterviewService:
         self, session_id: str, question_id: UUID, answer: str
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
+        should_auto_evaluate = False
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
             questions = runtime.state.mock_interview.questions
@@ -233,10 +288,116 @@ class InterviewService:
                 mock_session.status = MockSessionStatus.COMPLETED
                 mock_session.completed_at = datetime.now(timezone.utc)
                 runtime.state.next_action = "Generate evidence-based evaluation"
+                should_auto_evaluate = runtime.state.autopilot.enabled
             else:
                 runtime.state.next_action = "Answer the next mock interview question"
             await self._persist(session_id, runtime.state)
-            return runtime.state
+        if should_auto_evaluate:
+            return await self.run_evaluation(session_id)
+        return runtime.state
+
+    async def run_evaluation(self, session_id: str) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        state = await self._execute_workflow(
+            session_id,
+            runtime,
+            "evaluation",
+            [
+                ("evaluation_agent", "Aggregate evidence and evaluate competencies"),
+                ("feedback_agent", "Generate candidate and interviewer feedback"),
+            ],
+        )
+        if state.autopilot.enabled:
+            state.autopilot.status = AutopilotStatus.COMPLETED
+            state.autopilot.phase = "completed"
+            state.autopilot.pause_reason = ""
+            state.autopilot.completed_actions.extend(
+                action
+                for action in ("answer_evaluation", "final_evaluation", "feedback_generation")
+                if action not in state.autopilot.completed_actions
+            )
+            state.autopilot.updated_at = datetime.now(timezone.utc)
+            await self._persist(session_id, state)
+            self._record_debug("autopilot_completed", session_id)
+        return state
+
+    async def run_autopilot(
+        self,
+        session_id: str,
+        *,
+        role: str,
+        resume_text: str,
+        job_description: str,
+        company_name: str,
+        company_context: str = "",
+        interviewer_name: str = "",
+        interviewer_position: str = "",
+        authorized_public_research: bool = False,
+    ) -> InterviewState:
+        """Advance every safe deterministic/agent step and pause at real-world input."""
+        runtime = await self._get_runtime(session_id)
+        now = datetime.now(timezone.utc)
+        runtime.state.autopilot = AutopilotState(
+            enabled=True,
+            status=AutopilotStatus.RUNNING,
+            phase="intelligence",
+            authorized_public_research=authorized_public_research,
+            started_at=now,
+            updated_at=now,
+        )
+        await self._persist(session_id, runtime.state)
+        self._record_debug("autopilot_started", session_id, detail=role)
+        try:
+            if role == "candidate":
+                state = await self.run_candidate_prep(
+                    session_id,
+                    resume_text=resume_text,
+                    job_description=job_description,
+                    company_name=company_name,
+                    company_context=company_context,
+                    interviewer_name=interviewer_name,
+                    interviewer_position=interviewer_position,
+                )
+                state = await self.start_mock_interview(session_id)
+                state.autopilot.completed_actions = [
+                    "resume_analysis",
+                    "job_analysis",
+                    "company_research",
+                    "strategy_generation",
+                    "mock_plan_generation",
+                ]
+                state.autopilot.phase = "interview"
+                state.autopilot.status = AutopilotStatus.WAITING_FOR_INPUT
+                state.autopilot.pause_reason = "等待候选人回答当前问题"
+                state.next_action = "Answer the current AI-led interview question"
+            else:
+                state = await self.run_enterprise_design(
+                    session_id,
+                    resume_text=resume_text,
+                    job_description=job_description,
+                    company_name=company_name,
+                    company_context=company_context,
+                )
+                state.autopilot.completed_actions = [
+                    "resume_analysis",
+                    "job_analysis",
+                    "company_research",
+                    "interview_blueprint_generation",
+                ]
+                state.autopilot.phase = "interview_execution"
+                state.autopilot.status = AutopilotStatus.WAITING_FOR_INPUT
+                state.autopilot.pause_reason = "等待真实面试回答或面试记录，不能由 AI 代造证据"
+                state.next_action = "Conduct the structured interview and collect evidence"
+            state.autopilot.updated_at = datetime.now(timezone.utc)
+            await self._persist(session_id, state)
+            self._record_debug("autopilot_paused", session_id, detail=state.autopilot.pause_reason)
+            return state
+        except Exception:
+            runtime.state.autopilot.status = AutopilotStatus.FAILED
+            runtime.state.autopilot.phase = "error"
+            runtime.state.autopilot.updated_at = datetime.now(timezone.utc)
+            await self._persist(session_id, runtime.state)
+            raise
 
     @staticmethod
     def current_mock_question(state: InterviewState):
@@ -254,11 +415,16 @@ class InterviewService:
         runtime: AgentRuntime,
         name: str,
         steps: list[tuple[str, str]],
-        company_name: str,
+        company_name: str | None = None,
         interviewer: InterviewerProfile | None = None,
     ) -> InterviewState:
         async with self._lock_for(session_id):
-            runtime.state.company.name = company_name
+            if name == "evaluation" and not runtime.state.evidence:
+                raise EvaluationStateError(
+                    "No interview evidence is available; complete a mock or live interview first"
+                )
+            if company_name is not None:
+                runtime.state.company.name = company_name
             if interviewer is not None:
                 runtime.state.interviewer = interviewer
             runtime.state.workflow = WorkflowProgress(
@@ -290,8 +456,13 @@ class InterviewService:
             runtime.state.workflow.status = WorkflowStatus.COMPLETED
             runtime.state.workflow.current_step = ""
             runtime.state.next_action = (
-                "Start mock interview" if name == "candidate_prep" else "Execute interview blueprint"
+                "Start mock interview"
+                if name == "candidate_prep"
+                else "Execute interview blueprint"
             )
+            if name == "evaluation":
+                runtime.state.current_stage = InterviewStage.COMPLETED
+                runtime.state.next_action = "Review the final evaluation and feedback"
             await self._persist(session_id, runtime.state)
             self._record_debug("workflow_completed", session_id, detail=name)
             return runtime.state
@@ -305,6 +476,11 @@ class InterviewService:
                 raise ValueError("Mock interview agent did not return any questions")
         elif name == "enterprise_design" and not state.blueprint.rounds:
             raise ValueError("Interview design agent did not return any rounds")
+        elif name == "evaluation":
+            if not state.evaluation.competencies:
+                raise ValueError("Evaluation agent did not return competency results")
+            if not state.feedback.overall:
+                raise ValueError("Feedback agent did not return a valid report")
 
     async def _run(self, session_id: str, agent_name: str, instruction: str) -> Message:
         runtime = await self._get_runtime(session_id)

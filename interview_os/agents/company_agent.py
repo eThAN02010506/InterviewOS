@@ -29,16 +29,20 @@ class CompanyAgent(Agent):
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
         company_name = state.company.name or instruction or "Unknown"
         existing_sources = list(state.company.public_sources)
-        search = await self.tools.call(
-            "web_search",
-            query=(
-                f'"{company_name}" official product engineering technology '
-                "company culture hiring news"
-            ),
-            num_results=6,
+        research_allowed = (
+            not state.autopilot.enabled or state.autopilot.authorized_public_research
         )
-        if search.success:
-            existing_sources = search.data["results"]
+        if research_allowed:
+            search = await self.tools.call(
+                "web_search",
+                query=(
+                    f'"{company_name}" official product engineering technology '
+                    "company culture hiring news"
+                ),
+                num_results=6,
+            )
+            if search.success:
+                existing_sources = search.data["results"]
         research = format_search_results(existing_sources) if existing_sources else instruction
         prompt = COMPANY_ANALYSIS_PROMPT.format(
             company_name=company_name,

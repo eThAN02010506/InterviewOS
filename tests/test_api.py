@@ -1,3 +1,6 @@
+from io import BytesIO
+
+from docx import Document
 from fastapi.testclient import TestClient
 
 from interview_os.api.app import create_app
@@ -28,10 +31,25 @@ class WorkflowLLM:
             return '{"questions":[{"question":"Design it","competency":"System Design"}]}'
         if "analyze this interview answer" in prompt:
             return '{"content":0.8,"technical_depth":0.8,"structure":0.8,"impact":0.8,"feedback":[],"improved_answer":"Better","observed_signals":["Clear design"],"missing_signals":[]}'
+        if "based on the following evidence" in prompt:
+            return '{"competencies":[{"competency":"System Design","score":0.8,"confidence":0.8,"supporting_evidence":["Clear design"],"gaps":[]}],"overall_score":0.8,"recommendation":"hire","summary":"Meets the bar","risks":[]}'
+        if "generate evidence-based feedback" in prompt:
+            return '{"overall":"Meets the bar","strengths":["Clear design"],"improvements":[],"action_plan":["Continue practice"],"interviewer_notes":[],"recommendation_reasoning":"Evidence supports hire."}'
         raise AssertionError(prompt)
 
     async def embed(self, text):
         return []
+
+
+def make_resume_docx() -> bytes:
+    document = Document()
+    document.add_paragraph("Ada ada@example.com 13800138000")
+    document.add_paragraph("教育经历 Example University 本科")
+    document.add_paragraph("工作经历 Example有限公司 将性能提升 30%")
+    document.add_paragraph("技能 Python FastAPI")
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
 
 
 def test_session_resume_analysis_flow(tmp_path):
@@ -77,6 +95,40 @@ def test_missing_session_returns_404(tmp_path):
     with TestClient(app) as client:
         response = client.get("/api/interviews/sessions/missing")
     assert response.status_code == 404
+
+
+def test_resume_upload_and_human_confirmation_flow(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-upload.db'}")
+    app = create_app(storage=storage, llm_client=MockLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        uploaded = client.post(
+            f"/api/resumes/{session_id}/upload",
+            files={
+                "file": (
+                    "ada.docx",
+                    make_resume_docx(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        assert uploaded.status_code == 200
+        state = uploaded.json()["state"]
+        assert "Ada" in state["candidate"]["raw_resume_text"]
+        claim = state["resume_review"]["claims"][0]
+
+        confirmed = client.patch(
+            f"/api/resumes/{session_id}/claims/{claim['id']}",
+            json={"status": "confirmed", "note": "候选人已确认"},
+        )
+        invalid = client.post(
+            f"/api/resumes/{session_id}/upload",
+            files={"file": ("old.doc", b"legacy", "application/msword")},
+        )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["state"]["resume_review"]["claims"][0]["status"] == "confirmed"
+    assert invalid.status_code == 422
 
 
 def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
@@ -143,3 +195,31 @@ def test_mock_interview_api_progresses_to_completion(tmp_path):
     assert answered.status_code == 200
     assert answered.json()["mock_session"]["status"] == "completed"
     assert answered.json()["current_question"] is None
+
+
+def test_evaluation_api_generates_dual_side_report(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'evaluation-api.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        without_evidence = client.post(f"/api/evaluations/{session_id}")
+        assert without_evidence.status_code == 409
+
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": session_id,
+                "resume_text": "Python",
+                "job_description": "Platform",
+                "company_name": "Example",
+            },
+        )
+        started = client.post(f"/api/mock-interviews/{session_id}/start").json()
+        client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": started["current_question"]["id"], "answer": "Clear design"},
+        )
+        response = client.post(f"/api/evaluations/{session_id}")
+    assert response.status_code == 200
+    assert response.json()["state"]["evaluation"]["recommendation"] == "hire"
+    assert response.json()["state"]["feedback"]["overall"] == "Meets the bar"

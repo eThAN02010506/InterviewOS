@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -16,6 +18,29 @@ class SearchResult(BaseModel):
     url: str = ""
     snippet: str = ""
     source: str = ""
+    source_quality: str = "unrated"
+    is_official: bool = False
+    corroboration_count: int = 1
+
+
+def assess_source_quality(results: list[SearchResult], query: str) -> list[SearchResult]:
+    """Attach transparent heuristics; relevance never implies factual truth."""
+    quoted = re.search(r'"([^"\n]+)"', query)
+    entity = re.sub(r"[^a-z0-9]", "", (quoted.group(1) if quoted else "").lower())
+    reputable_domains = ("reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com")
+    domains = [urlparse(item.url).hostname or "" for item in results]
+    independent_domains = len(set(domains))
+    for item, domain in zip(results, domains, strict=True):
+        compact_domain = re.sub(r"[^a-z0-9]", "", domain.lower().removeprefix("www."))
+        item.is_official = bool(entity and entity in compact_domain)
+        if item.is_official:
+            item.source_quality = "official"
+        elif domain.endswith(reputable_domains):
+            item.source_quality = "high"
+        else:
+            item.source_quality = "secondary"
+        item.corroboration_count = independent_domains
+    return results
 
 
 class SearchProvider(ABC):
@@ -168,7 +193,7 @@ class SearchProviderManager(SearchProvider):
         }
         if self.selected == "none":
             raise ValueError("Web search provider is disabled")
-        return await providers[self.selected].search(query, limit)
+        return assess_source_quality(await providers[self.selected].search(query, limit), query)
 
 
 def search_provider_from_env() -> SearchProvider | None:
@@ -224,6 +249,9 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
     return "\n".join(
         f"[{index}] {item.get('title', '')}\n"
         f"URL: {item.get('url', '')}\n"
+        f"Quality: {item.get('source_quality', 'unrated')} | "
+        f"Official: {item.get('is_official', False)} | "
+        f"Independent domains: {item.get('corroboration_count', 1)}\n"
         f"Snippet: {item.get('snippet', '')}"
         for index, item in enumerate(results, start=1)
     )

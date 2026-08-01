@@ -1,11 +1,14 @@
 """Feedback Agent - generates structured feedback report."""
+
 from __future__ import annotations
 
 import logging
 
+from pydantic import ValidationError
+
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
-from interview_os.core.state import InterviewState
+from interview_os.core.state import FeedbackReport, InterviewState
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +28,19 @@ class FeedbackAgent(Agent):
         context = (
             f"Evaluated competencies: {state.evaluated_competencies}\n"
             f"Evidence count: {len(state.evidence)}\n"
-            f"Missing signals: {state.missing_signals}"
+            f"Missing signals: {state.missing_signals}\n"
+            f"Evaluation: {state.evaluation.model_dump_json()}"
         )
         prompt = (
-            "Generate a structured feedback report including: "
-            "1. Overall assessment, "
-            "2. Strengths demonstrated, "
-            "3. Areas for improvement, "
-            "4. Specific evidence supporting each point, "
-            "5. Recommendation (hire/no-hire/strong-hire) with reasoning."
+            "Generate evidence-based feedback as JSON with overall, strengths, improvements, "
+            "action_plan, interviewer_notes, and recommendation_reasoning. All fields except "
+            "overall and recommendation_reasoning are lists of strings. Candidate-facing "
+            "improvements must be actionable; interviewer notes must distinguish missing "
+            "signals from negative evidence."
         )
-        raw = await self.think(prompt, context=context)
-        return self.make_response(raw)
+        try:
+            state.feedback = await self.think_structured(prompt, FeedbackReport, context=context)
+        except (ValueError, TypeError, ValidationError) as exc:
+            logger.warning("Failed to parse feedback report: %s", exc)
+            return self.make_response("{}")
+        return self.make_response(state.feedback.model_dump_json())

@@ -18,12 +18,23 @@ settings, and the Debug Console.
 
 The API now persists session state in SQLite. A minimal analysis flow is:
 
+PDF and Word (`.docx`) resumes can be uploaded through
+`POST /api/resumes/{session_id}/upload`. Files are parsed locally before the Agent
+workflow runs. The response includes extraction warnings and human-review items
+for education, employment, certifications, and measurable claims. Uploading a
+resume never starts public web research automatically.
+
 1. `POST /api/interviews/sessions`
 2. `POST /api/analysis/resume` with the returned `session_id`
 3. `POST /api/analysis/job` and `POST /api/analysis/interviewer`
 4. `GET /api/interviews/sessions/{session_id}` to retrieve the accumulated state
 
 For an end-to-end flow, call one of:
+
+- `POST /api/autopilot/{session_id}/run` — automatically executes every authorized
+  analysis and planning step. Candidate mode starts the AI-led interview, evaluates
+  each answer, and generates the final dual-side report after the last answer.
+  Autopilot pauses instead of fabricating candidate answers or real-world evidence.
 
 - `POST /api/workflows/candidate-prep` — candidate, job, company and optional
   interviewer analysis, followed by a structured strategy and mock interview plan.
@@ -44,6 +55,12 @@ After candidate preparation, run an interactive mock interview:
 Each answer receives validated 0–1 scores for content, technical depth, structure,
 and impact. The average becomes evidence confidence for the question competency;
 observed and missing signals remain attached to the persisted answer and evidence.
+
+When evidence is available, `POST /api/evaluations/{session_id}` runs the final
+evaluation and feedback workflow. Candidate UI presents strengths, improvements,
+and an action plan; interviewer UI presents competency scores, evidence confidence,
+signal gaps, and a hiring recommendation. Missing evidence returns `409` instead of
+fabricating a conclusion.
 
 ## Web research
 

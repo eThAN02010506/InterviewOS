@@ -9,24 +9,23 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#overview" aria-label="InterviewOS 首页">
+    <header class="sidebar">
+      <a class="brand" href="#candidate-home" aria-label="InterviewOS 首页">
         <span class="brand-mark">IO</span>
         <span><strong>InterviewOS</strong><small>Interview Intelligence</small></span>
       </a>
-      <nav id="nav" aria-label="主导航">
-        <button class="nav-item active" data-view="overview"><span>01</span>工作台</button>
-        <button class="nav-item" data-view="candidate"><span>02</span>候选人准备</button>
-        <button class="nav-item" data-view="enterprise"><span>03</span>企业面试设计</button>
-        <button class="nav-item" data-view="mock"><span>04</span>模拟面试</button>
-        <button class="nav-item" data-view="settings"><span>05</span>模型与搜索</button>
-        <button class="nav-item" data-view="debug"><span>06</span>Debug Console</button>
-      </nav>
-      <div class="sidebar-foot">
-        <span class="status-dot" id="health-dot"></span>
-        <span id="health-label">正在连接本地服务</span>
+      <div class="role-switch" role="group" aria-label="切换工作空间">
+        <button class="active" data-role="candidate">我是候选人</button>
+        <button data-role="interviewer">我是面试官</button>
       </div>
-    </aside>
+      <nav id="nav" aria-label="当前工作空间导航"></nav>
+      <div class="global-tools">
+        <button class="tool-button" data-global-view="settings">设置</button>
+        <button class="tool-button" data-global-view="debug">Debug</button>
+        <span class="status-dot" id="health-dot" title="本地服务状态"></span>
+        <span class="sr-only" id="health-label">正在连接本地服务</span>
+      </div>
+    </header>
 
     <main>
       <header class="topbar">
@@ -38,10 +37,10 @@
         </div>
       </header>
 
-      <section class="view active" id="view-overview">
+      <section class="view active" id="view-candidate-home">
         <div class="hero panel dark-panel">
-          <div><p class="eyebrow mint">CONTEXT BEFORE QUESTIONS</p><h2>先理解人，再设计面试。</h2>
-          <p>将候选人、岗位、公司和面试官放入同一个推理上下文，生成可追溯的策略、问题与评价证据。</p></div>
+          <div><p class="eyebrow mint">CANDIDATE WORKSPACE</p><h2>了解面试环境，打磨你的表达。</h2>
+          <p>从你的经历出发，融合岗位要求、公司特征与面试官偏好，生成个人策略并通过模拟回答持续改进。</p></div>
           <div class="hero-orbit" aria-hidden="true"><span>候选人</span><span>岗位</span><span>公司</span><span>面试官</span><b>策略</b></div>
         </div>
         <div class="metric-grid">
@@ -56,15 +55,39 @@
         </div>
       </section>
 
+      <section class="view" id="view-interviewer-home">
+        <div class="hero panel interviewer-hero">
+          <div><p class="eyebrow">INTERVIEWER WORKSPACE</p><h2>把每个问题，变成有效证据。</h2>
+          <p>从岗位能力模型出发，结合候选人经历设计面试轮次、追问策略和可观察信号，减少凭感觉的招聘判断。</p></div>
+          <div class="interviewer-principles"><span>能力对齐</span><span>结构化问题</span><span>证据记录</span></div>
+        </div>
+        <div class="metric-grid">
+          <article class="metric panel"><span>候选人</span><strong id="hiring-candidate">待分析</strong><small>当前会话候选人</small></article>
+          <article class="metric panel"><span>岗位能力</span><strong id="hiring-competencies">0</strong><small>已拆解评价维度</small></article>
+          <article class="metric panel"><span>面试轮次</span><strong id="hiring-rounds">0</strong><small>结构化 Blueprint</small></article>
+          <article class="metric panel"><span>证据记录</span><strong id="hiring-evidence">0</strong><small>可追溯能力信号</small></article>
+        </div>
+        <div class="two-col">
+          <article class="panel"><p class="eyebrow">DESIGN FIRST</p><h3>设计本次面试</h3><p class="next-action">输入 JD 和候选人简历，生成面试轮次、问题和评价标准。</p><button class="btn primary" data-go="enterprise">开始设计</button></article>
+          <article class="panel"><p class="eyebrow">EVIDENCE STATUS</p><h3>当前评价进度</h3><div id="hiring-progress" class="progress-list"></div></article>
+        </div>
+      </section>
+
       <section class="view" id="view-candidate">
         <div class="workspace-grid">
           <form class="panel form-panel" id="candidate-form">
             <div class="section-head"><div><p class="eyebrow">CANDIDATE PREP</p><h2>构建个人面试策略</h2></div><span class="step-badge">完整工作流</span></div>
-            <label>简历内容<textarea id="candidate-resume" required rows="8" placeholder="粘贴简历文本，或先使用文件解析接口"></textarea></label>
+            <div class="resume-upload" data-resume-target="candidate-resume">
+              <input class="resume-file" id="candidate-resume-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+              <label for="candidate-resume-file"><strong>上传 PDF 或 Word 简历</strong><span>本地解析 · 最大 10 MB · 不会自动发送到公开搜索</span></label>
+            </div>
+            <div class="resume-review" id="candidate-resume-review"></div>
+            <label>解析后的简历内容<textarea id="candidate-resume" required rows="8" placeholder="也可以直接粘贴简历文本"></textarea></label>
             <label>目标岗位 JD<textarea id="candidate-jd" required rows="7" placeholder="粘贴岗位职责和任职要求"></textarea></label>
             <div class="form-row"><label>公司名称<input id="candidate-company" required placeholder="例如 OpenAI"></label><label>公司补充信息<input id="candidate-company-context" placeholder="产品、团队或岗位背景"></label></div>
             <div class="form-row"><label>面试官姓名<input id="interviewer-name" placeholder="可选"></label><label>职位<input id="interviewer-position" placeholder="可选"></label></div>
-            <button class="btn primary" type="submit">运行候选人准备工作流</button>
+            <div class="autopilot-control"><label><input id="candidate-autopilot" type="checkbox" checked><span><strong>AI 自动驾驶</strong><small>自动研究、分析、生成策略并推进到面试</small></span></label><label><input id="candidate-research-consent" type="checkbox"><span><strong>允许公开检索</strong><small>仅检索公司和面试官公开信息</small></span></label></div>
+            <button class="btn primary" type="submit">启动 AI 自动驾驶</button>
           </form>
           <div class="results-column">
             <article class="panel result-card"><p class="eyebrow">STRATEGY</p><h3>个性化策略</h3><div id="strategy-result" class="empty-state">完成分析后，这里会显示风险、回答框架和重点话题。</div></article>
@@ -77,10 +100,16 @@
         <div class="workspace-grid">
           <form class="panel form-panel" id="enterprise-form">
             <div class="section-head"><div><p class="eyebrow">ENTERPRISE DESIGN</p><h2>设计结构化面试</h2></div><span class="step-badge">证据导向</span></div>
-            <label>候选人简历<textarea id="enterprise-resume" required rows="8"></textarea></label>
+            <div class="resume-upload" data-resume-target="enterprise-resume">
+              <input class="resume-file" id="enterprise-resume-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+              <label for="enterprise-resume-file"><strong>上传候选人 PDF 或 Word 简历</strong><span>解析后先审阅字段、时间线和待核验陈述</span></label>
+            </div>
+            <div class="resume-review" id="enterprise-resume-review"></div>
+            <label>解析后的候选人简历<textarea id="enterprise-resume" required rows="8"></textarea></label>
             <label>岗位 JD<textarea id="enterprise-jd" required rows="7"></textarea></label>
             <div class="form-row"><label>公司名称<input id="enterprise-company" required></label><label>招聘偏好<input id="enterprise-context" placeholder="团队文化、技术方向"></label></div>
-            <button class="btn primary" type="submit">生成面试 Blueprint</button>
+            <div class="autopilot-control"><label><input id="enterprise-autopilot" type="checkbox" checked><span><strong>AI 自动驾驶</strong><small>自动完成审阅、岗位建模和面试设计</small></span></label><label><input id="enterprise-research-consent" type="checkbox"><span><strong>允许公开检索</strong><small>检索公司公开资料并保留来源</small></span></label></div>
+            <button class="btn primary" type="submit">启动 AI 自动驾驶</button>
           </form>
           <div class="panel"><p class="eyebrow">INTERVIEW BLUEPRINT</p><h3>面试轮次与评价标准</h3><div id="blueprint-result" class="empty-state">工作流完成后显示每轮目标、问题和强信号。</div></div>
         </div>
@@ -95,6 +124,16 @@
           </article>
           <article class="panel"><p class="eyebrow">COACH FEEDBACK</p><h3>四维评价</h3><div id="coach-result" class="empty-state">提交回答后显示内容、深度、结构和影响力评分。</div></article>
         </div>
+      </section>
+
+      <section class="view" id="view-candidate-report">
+        <div class="report-head panel"><div><p class="eyebrow">GROWTH REPORT</p><h2>个人改进报告</h2><p>汇总模拟面试中的能力信号、稳定优势和待加强项。</p><button class="btn primary evaluation-trigger">生成最终报告</button></div><span class="report-score" id="report-score">—</span></div>
+        <div class="two-col"><article class="panel"><h3>能力证据</h3><div id="candidate-evidence" class="empty-state">完成模拟面试后生成。</div></article><article class="panel"><h3>建议优先级</h3><div id="candidate-priorities" class="empty-state">尚无足够回答数据。</div></article></div>
+      </section>
+
+      <section class="view" id="view-evaluation">
+        <div class="report-head panel"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2>候选人评估</h2><p>按胜任力查看已观察信号，明确哪些判断仍然缺乏证据。</p><button class="btn primary evaluation-trigger">聚合证据并评估</button></div><div class="recommendation"><small>招聘建议</small><strong id="recommendation-label">待评估</strong><span class="report-score" id="evaluation-score">—</span></div></div>
+        <div class="two-col"><article class="panel"><h3>胜任力信号</h3><div id="evaluation-evidence" class="empty-state">尚无面试证据。</div></article><article class="panel"><h3>信号缺口</h3><div id="evaluation-gaps" class="empty-state">完成面试后更新。</div></article></div>
       </section>
 
       <section class="view" id="view-settings">

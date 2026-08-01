@@ -24,6 +24,15 @@ place that knows every concrete agent type.
 Session mutations are serialized with a per-session lock. Different sessions can
 still run concurrently, while two requests cannot overwrite the same state.
 
+## Resume Intake and Review
+
+`ResumeProcessor` runs before the Agent workflow. It enforces file and text limits,
+extracts PDF/DOCX text, and performs linear-time deterministic checks. The text and
+`ResumeReview` are persisted together. Resume claims default to `unverified` and
+require a user to confirm, dispute, or request supporting material. Public search
+is intentionally separate from upload so candidate data is not disclosed without
+an explicit action.
+
 ## Workflow Execution
 
 `InterviewService` binds real request inputs to the declarative agent topology.
@@ -38,6 +47,19 @@ Free-form LLM text is never treated as a completed workflow result. A missing or
 invalid required result moves `WorkflowProgress` to `failed` with the current step
 and error retained in session state.
 
+## Controlled Autopilot
+
+`AutopilotState` is the control plane above the reusable domain workflows. It records
+phase, completed actions, authorization, pause reason, and terminal status. Candidate
+autopilot runs intelligence and strategy, starts the interview, evaluates every
+answer, and automatically triggers final evaluation. Interviewer autopilot prepares
+the evidence-based blueprint and pauses for real interview evidence. It never invents
+candidate answers or performs public research without explicit authorization.
+
+Search results carry source quality, official-domain and independent-domain signals.
+These are prompt evidence labels rather than truth scores: secondary-source claims
+remain attributed, and absence from the public web is not treated as falsehood.
+
 ## Mock Interview State Machine
 
 `MockInterviewSession` transitions from `idle` to `active` to `completed`. Only the
@@ -49,6 +71,14 @@ does not advance the question index, so the client can safely retry.
 The session stores one response and one evidence item per answered question, giving
 O(q) time and space over a mock plan of q questions. No transcript or prompt history
 is duplicated into the response record.
+
+## Final Evaluation
+
+`EvaluationAgent` separates competency score from evidence confidence and aggregates
+only persisted evidence. `FeedbackAgent` derives two views from the same structured
+result: actionable candidate coaching and evidence-aware interviewer notes. The
+service completes the interview stage only after both outputs validate; an empty
+evidence set is rejected before any LLM call.
 
 ## Runtime Settings
 

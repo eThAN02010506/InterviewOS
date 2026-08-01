@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from interview_os.core.memory import MemorySystem
 from interview_os.core.message import Message, MessageType
 from interview_os.core.state import InterviewState
 from interview_os.core.tool import ToolRegistry
+from interview_os.models.structured import parse_model_output
+
+StructuredModelT = TypeVar("StructuredModelT", bound=BaseModel)
 
 
 class Agent(ABC):
@@ -60,6 +65,26 @@ class Agent(ABC):
 
         response = await self.llm_client.chat(messages)
         return response
+
+    async def think_structured(
+        self,
+        prompt: str,
+        model: type[StructuredModelT],
+        *,
+        context: str = "",
+    ) -> StructuredModelT:
+        """Generate validated JSON and make one bounded repair attempt."""
+        raw = await self.think(prompt, context=context)
+        try:
+            return parse_model_output(raw, model)
+        except (ValueError, TypeError):
+            repair_prompt = (
+                "Repair the previous response into valid JSON only. Do not explain.\n"
+                f"Required JSON Schema:\n{model.model_json_schema()}\n"
+                f"Previous response:\n{raw[:12000]}"
+            )
+            repaired = await self.think(repair_prompt)
+            return parse_model_output(repaired, model)
 
     def make_response(self, content: str, recipient: str = "runtime") -> Message:
         return Message(

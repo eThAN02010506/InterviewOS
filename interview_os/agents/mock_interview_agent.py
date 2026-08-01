@@ -9,7 +9,6 @@ from interview_os.core.agent import Agent
 from interview_os.core.message import Message
 from interview_os.core.state import InterviewState, MockInterviewPlan
 from interview_os.models.prompt_templates import MOCK_QUESTION_PROMPT
-from interview_os.models.structured import parse_model_output
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +33,10 @@ class MockInterviewAgent(Agent):
             job_requirement=str(state.job.competencies),
             interviewer_preference=str(state.interviewer.likely_preferences),
         )
-        raw = await self.think(prompt, context=state.summary())
         try:
-            state.mock_interview = parse_model_output(raw, MockInterviewPlan)
+            state.mock_interview = await self.think_structured(
+                prompt, MockInterviewPlan, context=state.summary()
+            )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse mock interview plan: %s", exc)
         return self.make_response(state.mock_interview.model_dump_json(indent=2))

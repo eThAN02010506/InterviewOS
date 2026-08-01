@@ -10,7 +10,6 @@ from interview_os.core.evidence import Evidence, EvidenceSource
 from interview_os.core.message import Message
 from interview_os.core.state import AnswerEvaluation, InterviewState
 from interview_os.models.prompt_templates import ANSWER_COACH_PROMPT
-from interview_os.models.structured import parse_model_output
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +49,22 @@ class CoachAgent(Agent):
             answer=coach_input.answer,
             competency=coach_input.competency,
         )
-        raw = await self.think(prompt, context=state.summary())
-
         try:
-            evaluation = parse_model_output(raw, AnswerEvaluation)
+            evaluation = await self.think_structured(
+                prompt, AnswerEvaluation, context=state.summary()
+            )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse answer evaluation: %s", exc)
-            return self.make_response("{}")
+            evaluation = AnswerEvaluation(
+                content=0.4,
+                technical_depth=0.4,
+                structure=0.4,
+                impact=0.4,
+                feedback=["自动评分输出无效，本回答需要人工复核。"],
+                improved_answer=coach_input.answer,
+                observed_signals=[],
+                missing_signals=["AI structured scoring failed; human review required"],
+            )
 
         ev = Evidence(
             competency=coach_input.competency,

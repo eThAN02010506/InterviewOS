@@ -38,13 +38,17 @@ class InterviewerAgent(Agent):
         info = state.interviewer
         existing_sources = list(info.public_expressions)
         identity = " ".join(part for part in (info.name or instruction, info.position, info.company) if part)
-        search = await self.tools.call(
-            "web_search",
-            query=f'"{info.name or instruction}" {info.company} {info.position} talk interview blog',
-            num_results=6,
+        research_allowed = (
+            not state.autopilot.enabled or state.autopilot.authorized_public_research
         )
-        if search.success:
-            existing_sources = search.data["results"]
+        if research_allowed:
+            search = await self.tools.call(
+                "web_search",
+                query=f'"{info.name or instruction}" {info.company} {info.position} talk interview blog',
+                num_results=6,
+            )
+            if search.success:
+                existing_sources = search.data["results"]
         research = format_search_results(existing_sources)
         prompt = INTERVIEWER_ANALYSIS_PROMPT.format(
             name=info.name or instruction,

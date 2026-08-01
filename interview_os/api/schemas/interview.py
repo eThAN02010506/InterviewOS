@@ -1,10 +1,13 @@
 """Pydantic schemas for interview API."""
+
 from __future__ import annotations
 
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from interview_os.core.state import ResumeClaimStatus
 
 
 class StartSessionRequest(BaseModel):
@@ -71,9 +74,25 @@ class EnterpriseDesignRequest(BaseModel):
     company_context: str = ""
 
 
+class AutopilotRequest(BaseModel):
+    role: str = Field(pattern="^(candidate|interviewer)$")
+    resume_text: str = Field(min_length=1)
+    job_description: str = Field(min_length=1)
+    company_name: str = Field(min_length=1)
+    company_context: str = ""
+    interviewer_name: str = ""
+    interviewer_position: str = ""
+    authorized_public_research: bool = False
+
+
 class WorkflowResponse(BaseModel):
     session_id: str
     state: dict[str, Any]
+
+
+class ResumeClaimUpdateRequest(BaseModel):
+    status: ResumeClaimStatus
+    note: str = Field(default="", max_length=500)
 
 
 class MockAnswerRequest(BaseModel):

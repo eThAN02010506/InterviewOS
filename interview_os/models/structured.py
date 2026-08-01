@@ -22,14 +22,29 @@ def parse_model_output(raw: str, model: type[ModelT]) -> ModelT:
     if fenced:
         text = fenced.group(1)
 
+    candidates: list[object] = []
     try:
-        payload = json.loads(text)
+        decoded = json.loads(text)
+        if not isinstance(decoded, dict):
+            raise TypeError("structured model output must be a JSON object")
+        candidates.append(decoded)
     except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        payload = json.loads(text[start : end + 1])
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"{", text):
+            try:
+                payload, _ = decoder.raw_decode(text[match.start() :])
+                candidates.append(payload)
+            except json.JSONDecodeError:
+                continue
 
-    if not isinstance(payload, dict):
-        raise TypeError("structured model output must be a JSON object")
-    return model.model_validate(payload)
+    validation_error: Exception | None = None
+    for payload in candidates:
+        if not isinstance(payload, dict):
+            continue
+        try:
+            return model.model_validate(payload)
+        except (ValueError, TypeError) as exc:
+            validation_error = exc
+    if validation_error is not None:
+        raise validation_error
+    raise ValueError("structured model output did not contain a valid JSON object")

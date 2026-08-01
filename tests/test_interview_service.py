@@ -4,6 +4,7 @@ import pytest
 
 from interview_os.database.storage import Storage
 from interview_os.services.interview_service import (
+    EvaluationStateError,
     InterviewService,
     MockInterviewStateError,
     SessionNotFoundError,
@@ -55,6 +56,10 @@ class WorkflowMockLLM:
             return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"]}]}'
         if "analyze this interview answer" in lowered:
             return '{"content":0.8,"technical_depth":0.9,"structure":0.7,"impact":0.6,"feedback":["Add metrics"],"improved_answer":"Improved","observed_signals":["Explained trade-offs"],"missing_signals":["Business impact"]}'
+        if "based on the following evidence" in lowered:
+            return '{"competencies":[{"competency":"System Design","score":0.78,"confidence":0.75,"supporting_evidence":["Explained trade-offs"],"gaps":["Scale evidence"]}],"overall_score":0.78,"recommendation":"lean_hire","summary":"Solid fundamentals","risks":["Limited scale evidence"]}'
+        if "generate evidence-based feedback" in lowered:
+            return '{"overall":"Strong foundation with specific gaps","strengths":["Trade-off reasoning"],"improvements":["Add scale examples"],"action_plan":["Prepare one scaling story"],"interviewer_notes":["Verify production scale"],"recommendation_reasoning":"Evidence supports a lean hire, pending scale validation."}'
         if "interview blueprint" in lowered:
             return '{"position":"Platform Engineer","rounds":[{"name":"Technical","goal":"Depth","questions":[{"question":"Design the system","competency":"System Design","rationale":"Core requirement","strong_signals":["Trade-offs"],"follow_ups":[]}],"evaluation_criteria":["Clear reasoning"]}]}'
         raise AssertionError(f"Unexpected prompt: {prompt}")
@@ -145,6 +150,55 @@ async def test_enterprise_design_workflow_builds_rounds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_autopilot_advances_then_waits_for_real_candidate_input(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+
+    state = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="Python systems engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+        authorized_public_research=False,
+    )
+
+    assert state.autopilot.status.value == "waiting_for_input"
+    assert state.autopilot.phase == "interview"
+    assert "mock_plan_generation" in state.autopilot.completed_actions
+    assert state.company.public_sources == []
+    assert state.mock_interview.questions
+    assert state.mock_session.status.value == "active"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot-complete.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    state = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="Python engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+    )
+    question = service.current_mock_question(state)
+    assert question is not None
+
+    state = await service.submit_mock_answer(session_id, question.id, "I compared trade-offs")
+
+    assert state.autopilot.status.value == "completed"
+    assert state.evaluation.recommendation.value == "lean_hire"
+    assert state.feedback.overall
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_workflow_records_progress(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'failed.db'}")
     await storage.init_db()
@@ -209,4 +263,41 @@ async def test_mock_interview_rejects_out_of_order_answer(tmp_path):
     state = await service.get_state(session_id)
     assert state.mock_session.current_question_index == 0
     assert state.mock_session.responses == []
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'evaluation.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    assert question is not None
+    await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
+
+    state = await service.run_evaluation(session_id)
+    assert state.evaluation.overall_score == pytest.approx(0.78)
+    assert state.evaluation.recommendation.value == "lean_hire"
+    assert state.feedback.action_plan == ["Prepare one scaling story"]
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.78)
+    assert state.current_stage.value == "completed"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_final_evaluation_requires_evidence(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'no-evidence.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    with pytest.raises(EvaluationStateError, match="No interview evidence"):
+        await service.run_evaluation(session_id)
     await storage.close()
