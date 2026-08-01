@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="InterviewOS 本地面试智能工作台">
+  <title>InterviewOS · 面试智能工作台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="InterviewOS 首页">
+        <span class="brand-mark">IO</span>
+        <span><strong>InterviewOS</strong><small>Interview Intelligence</small></span>
+      </a>
+      <nav id="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="overview"><span>01</span>工作台</button>
+        <button class="nav-item" data-view="candidate"><span>02</span>候选人准备</button>
+        <button class="nav-item" data-view="enterprise"><span>03</span>企业面试设计</button>
+        <button class="nav-item" data-view="mock"><span>04</span>模拟面试</button>
+        <button class="nav-item" data-view="settings"><span>05</span>模型与搜索</button>
+        <button class="nav-item" data-view="debug"><span>06</span>Debug Console</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-dot" id="health-dot"></span>
+        <span id="health-label">正在连接本地服务</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow" id="view-eyebrow">LOCAL INTELLIGENCE</p><h1 id="view-title">面试智能工作台</h1></div>
+        <div class="session-control">
+          <span>当前会话</span>
+          <select id="session-select" aria-label="选择会话"><option value="">尚未创建</option></select>
+          <button class="btn compact" id="new-session">新建会话</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-overview">
+        <div class="hero panel dark-panel">
+          <div><p class="eyebrow mint">CONTEXT BEFORE QUESTIONS</p><h2>先理解人，再设计面试。</h2>
+          <p>将候选人、岗位、公司和面试官放入同一个推理上下文，生成可追溯的策略、问题与评价证据。</p></div>
+          <div class="hero-orbit" aria-hidden="true"><span>候选人</span><span>岗位</span><span>公司</span><span>面试官</span><b>策略</b></div>
+        </div>
+        <div class="metric-grid">
+          <article class="metric panel"><span>工作流</span><strong id="metric-workflow">未开始</strong><small id="metric-step">等待输入资料</small></article>
+          <article class="metric panel"><span>公开证据</span><strong id="metric-sources">0</strong><small>公司与面试官来源</small></article>
+          <article class="metric panel"><span>面试题</span><strong id="metric-questions">0</strong><small>个性化模拟问题</small></article>
+          <article class="metric panel"><span>评价证据</span><strong id="metric-evidence">0</strong><small>已记录能力信号</small></article>
+        </div>
+        <div class="two-col">
+          <article class="panel"><div class="section-head"><div><p class="eyebrow">NEXT ACTION</p><h3>下一步</h3></div></div><p class="next-action" id="next-action">创建一个会话，然后选择候选人准备或企业面试设计。</p><button class="btn" data-go="candidate">开始候选人分析</button></article>
+          <article class="panel"><div class="section-head"><div><p class="eyebrow">CONTEXT MAP</p><h3>画像完整度</h3></div></div><div id="profile-progress" class="progress-list"></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-candidate">
+        <div class="workspace-grid">
+          <form class="panel form-panel" id="candidate-form">
+            <div class="section-head"><div><p class="eyebrow">CANDIDATE PREP</p><h2>构建个人面试策略</h2></div><span class="step-badge">完整工作流</span></div>
+            <label>简历内容<textarea id="candidate-resume" required rows="8" placeholder="粘贴简历文本，或先使用文件解析接口"></textarea></label>
+            <label>目标岗位 JD<textarea id="candidate-jd" required rows="7" placeholder="粘贴岗位职责和任职要求"></textarea></label>
+            <div class="form-row"><label>公司名称<input id="candidate-company" required placeholder="例如 OpenAI"></label><label>公司补充信息<input id="candidate-company-context" placeholder="产品、团队或岗位背景"></label></div>
+            <div class="form-row"><label>面试官姓名<input id="interviewer-name" placeholder="可选"></label><label>职位<input id="interviewer-position" placeholder="可选"></label></div>
+            <button class="btn primary" type="submit">运行候选人准备工作流</button>
+          </form>
+          <div class="results-column">
+            <article class="panel result-card"><p class="eyebrow">STRATEGY</p><h3>个性化策略</h3><div id="strategy-result" class="empty-state">完成分析后，这里会显示风险、回答框架和重点话题。</div></article>
+            <article class="panel result-card"><p class="eyebrow">PUBLIC RESEARCH</p><h3>公开资料来源</h3><div id="source-result" class="source-list empty-state">尚未检索。</div></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-enterprise">
+        <div class="workspace-grid">
+          <form class="panel form-panel" id="enterprise-form">
+            <div class="section-head"><div><p class="eyebrow">ENTERPRISE DESIGN</p><h2>设计结构化面试</h2></div><span class="step-badge">证据导向</span></div>
+            <label>候选人简历<textarea id="enterprise-resume" required rows="8"></textarea></label>
+            <label>岗位 JD<textarea id="enterprise-jd" required rows="7"></textarea></label>
+            <div class="form-row"><label>公司名称<input id="enterprise-company" required></label><label>招聘偏好<input id="enterprise-context" placeholder="团队文化、技术方向"></label></div>
+            <button class="btn primary" type="submit">生成面试 Blueprint</button>
+          </form>
+          <div class="panel"><p class="eyebrow">INTERVIEW BLUEPRINT</p><h3>面试轮次与评价标准</h3><div id="blueprint-result" class="empty-state">工作流完成后显示每轮目标、问题和强信号。</div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-mock">
+        <div class="mock-layout">
+          <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
+            <div id="mock-question" class="question-copy empty-state">先完成候选人准备工作流，生成个性化问题。</div>
+            <form id="answer-form"><label>你的回答<textarea id="mock-answer" rows="9" placeholder="按真实面试方式回答" required></textarea></label><button class="btn primary" type="submit">提交并获取反馈</button></form>
+            <button class="btn" id="start-mock">开始模拟面试</button>
+          </article>
+          <article class="panel"><p class="eyebrow">COACH FEEDBACK</p><h3>四维评价</h3><div id="coach-result" class="empty-state">提交回答后显示内容、深度、结构和影响力评分。</div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <form class="panel settings-grid" id="settings-form"><div><p class="eyebrow">MODEL RUNTIME</p><h2>本地模型</h2><label>OpenAI-compatible 地址<input id="setting-base-url"></label><label>模型名<input id="setting-model"></label><label>API Key<input id="setting-llm-key" type="password" placeholder="已配置时留空"></label></div>
+          <div><p class="eyebrow">WEB RESEARCH</p><h2>联网搜索</h2><label>Provider<select id="setting-provider"><option value="tavily">Tavily</option><option value="searxng">SearXNG</option><option value="brave">Brave</option><option value="none">关闭</option></select></label><label>Tavily Key<input id="setting-tavily" type="password" placeholder="已配置时留空"></label><label>SearXNG 地址<input id="setting-searxng"></label><label>Brave Key<input id="setting-brave" type="password" placeholder="已配置时留空"></label></div><button class="btn primary span-two" type="submit">保存并立即应用</button></form>
+      </section>
+
+      <section class="view" id="view-debug">
+        <div class="debug-toolbar panel"><div><p class="eyebrow">LOCAL OBSERVABILITY</p><h2>Debug Console</h2><p>只读运行时诊断 · 本机访问 · 最多保留 500 条事件</p></div><button class="btn" id="probe-llm">检查模型连接</button></div>
+        <div class="debug-grid"><article class="panel"><h3>运行状态</h3><div id="debug-status" class="kv-list"></div></article><article class="panel"><h3>会话</h3><div id="debug-sessions" class="session-list"></div></article></div>
+        <article class="panel console"><div class="section-head"><h3>Agent 事件流</h3><button class="text-btn" id="refresh-events">刷新</button></div><div class="console-head"><span>时间</span><span>级别</span><span>Agent / 动作</span><span>耗时</span></div><div id="event-list"></div></article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="session-dialog"><form method="dialog" id="session-form"><div class="section-head"><h2>创建新会话</h2><button class="icon-btn" id="close-session-dialog" type="button" aria-label="关闭">×</button></div><label>候选人姓名<input id="new-candidate"></label><label>目标岗位<input id="new-job"></label><label>公司名称<input id="new-company"></label><button class="btn primary" value="default">创建会话</button></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

@@ -4,13 +4,23 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from interview_os.api.routes import analysis, interviews, mock_interviews, settings, workflows
+from interview_os.api.routes import (
+    analysis,
+    debug,
+    interviews,
+    mock_interviews,
+    settings,
+    workflows,
+)
+from interview_os.core.debug import DebugEventStore
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.interview_service import (
@@ -23,6 +33,7 @@ from interview_os.tools.web_search import SearchProvider, SearchProviderManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 def create_app(
     *,
@@ -36,15 +47,17 @@ def create_app(
         llm_client = LocalLLMClient()
     search_manager = SearchProviderManager()
     active_search_provider = search_provider or search_manager
+    debug_events = DebugEventStore(capacity=int(os.getenv("DEBUG_EVENT_CAPACITY", "500")))
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         await storage.init_db()
         application.state.interview_service = InterviewService(
-            storage, llm_client, active_search_provider
+            storage, llm_client, active_search_provider, debug_events
         )
         application.state.search_manager = search_manager
         application.state.llm_client = llm_client
+        application.state.debug_events = debug_events
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()
@@ -56,9 +69,12 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
+    allowed_origins = os.getenv(
+        "CORS_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000"
+    ).split(",")
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[origin.strip() for origin in allowed_origins if origin.strip()],
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -69,6 +85,8 @@ def create_app(
     application.include_router(
         mock_interviews.router, prefix="/api/mock-interviews", tags=["mock-interviews"]
     )
+    application.include_router(debug.router, prefix="/api/debug", tags=["debug"])
+    application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @application.exception_handler(SessionNotFoundError)
     async def session_not_found(_: Request, exc: SessionNotFoundError):
@@ -83,8 +101,13 @@ def create_app(
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @application.get("/")
-    async def root():
-        return {"name": "InterviewOS", "version": "0.2.0", "status": "running"}
+    async def root(request: Request):
+        accept = request.headers.get("accept", "")
+        if "application/json" in accept and "text/html" not in accept:
+            return JSONResponse(
+                {"name": "InterviewOS", "version": "0.2.0", "status": "running"}
+            )
+        return FileResponse(WEB_DIR / "index.html")
 
     @application.get("/health")
     async def health():

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any
 
 from interview_os.core.agent import Agent
+from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.message import Message, MessageType
 from interview_os.core.state import InterviewState
 
@@ -14,11 +16,18 @@ logger = logging.getLogger(__name__)
 class AgentRuntime:
     """Agent runtime: registers agents, routes messages, maintains global state."""
 
-    def __init__(self, llm_client: Any = None) -> None:
+    def __init__(
+        self,
+        llm_client: Any = None,
+        debug_events: DebugEventStore | None = None,
+        session_id: str = "",
+    ) -> None:
         self._agents: dict[str, Agent] = {}
         self.state = InterviewState()
         self.llm_client = llm_client
         self._message_log: list[Message] = []
+        self.debug_events = debug_events
+        self.session_id = session_id
 
     def register_agent(self, agent: Agent) -> None:
         self._agents[agent.name] = agent
@@ -40,8 +49,26 @@ class AgentRuntime:
                 content=f"Agent '{agent_name}' not found",
             )
         logger.info("Runtime -> %s: %s", agent_name, instruction[:80])
-        result = await agent.execute(self.state, instruction)
+        started = perf_counter()
+        self._record_debug("agent_started", agent=agent_name)
+        try:
+            result = await agent.execute(self.state, instruction)
+        except Exception as exc:
+            self._record_debug(
+                "agent_failed",
+                agent=agent_name,
+                level=DebugLevel.ERROR,
+                duration_ms=(perf_counter() - started) * 1000,
+                detail=str(exc),
+            )
+            raise
         self._message_log.append(result)
+        self._record_debug(
+            "agent_completed",
+            agent=agent_name,
+            duration_ms=(perf_counter() - started) * 1000,
+            metadata={"message_type": result.type.value, "output_chars": len(result.content)},
+        )
         return result
 
     async def run_pipeline(self, steps: list[tuple[str, str]]) -> list[Message]:
@@ -61,3 +88,28 @@ class AgentRuntime:
     def reset_state(self) -> None:
         self.state = InterviewState()
         self._message_log.clear()
+
+    def _record_debug(
+        self,
+        action: str,
+        *,
+        agent: str = "",
+        level: DebugLevel = DebugLevel.INFO,
+        duration_ms: float | None = None,
+        detail: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self.debug_events is None:
+            return
+        self.debug_events.record(
+            DebugEvent(
+                level=level,
+                category="runtime",
+                action=action,
+                session_id=self.session_id,
+                agent=agent,
+                duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
+                detail=detail[:1000],
+                metadata=metadata or {},
+            )
+        )

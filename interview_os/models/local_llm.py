@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -104,4 +105,19 @@ class LocalLLMClient(LLMClient):
             "model": self.model,
             "embedding_model": self.embedding_model,
             "api_key_configured": bool(self.api_key),
+        }
+
+    async def probe(self) -> dict[str, Any]:
+        """Check the OpenAI-compatible model endpoint without generating text."""
+        started = perf_counter()
+        response = await self._client.get(
+            "/models", headers={"Authorization": f"Bearer {self.api_key}"}
+        )
+        response.raise_for_status()
+        data = response.json()
+        models = data.get("data") or data.get("models") or []
+        return {
+            "ok": True,
+            "latency_ms": round((perf_counter() - started) * 1000, 2),
+            "models": [item.get("id") or item.get("name") for item in models[:10]],
         }

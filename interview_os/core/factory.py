@@ -14,6 +14,7 @@ from interview_os.agents.interviewer_agent import InterviewerAgent
 from interview_os.agents.job_agent import JobAgent
 from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
+from interview_os.core.debug import DebugEventStore
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.tool import ToolRegistry
 from interview_os.tools.web_search import SearchProvider, WebSearchTool
@@ -33,9 +34,16 @@ AGENT_TYPES = (
 )
 
 
-def create_runtime(llm_client: Any = None, search_provider: SearchProvider | None = None) -> AgentRuntime:
+def create_runtime(
+    llm_client: Any = None,
+    search_provider: SearchProvider | None = None,
+    debug_events: DebugEventStore | None = None,
+    session_id: str = "",
+) -> AgentRuntime:
     """Build a fully registered runtime without hiding global state."""
-    runtime = AgentRuntime(llm_client=llm_client)
+    runtime = AgentRuntime(
+        llm_client=llm_client, debug_events=debug_events, session_id=session_id
+    )
     tools = ToolRegistry()
     tools.register(WebSearchTool(search_provider))
     for agent_type in AGENT_TYPES:

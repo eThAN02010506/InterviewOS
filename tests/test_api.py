@@ -39,6 +39,13 @@ def test_session_resume_analysis_flow(tmp_path):
     app = create_app(storage=storage, llm_client=MockLLM(), configure_llm=False)
 
     with TestClient(app) as client:
+        home = client.get("/")
+        assert home.status_code == 200
+        assert "面试智能工作台" in home.text
+        assert client.get("/static/app.js").status_code == 200
+        info = client.get("/", headers={"Accept": "application/json"})
+        assert info.json()["name"] == "InterviewOS"
+
         created = client.post(
             "/api/interviews/sessions",
             json={"candidate_name": "Initial", "job_title": "Engineer"},
@@ -56,6 +63,12 @@ def test_session_resume_analysis_flow(tmp_path):
         fetched = client.get(f"/api/interviews/sessions/{session_id}")
         assert fetched.status_code == 200
         assert fetched.json()["state"]["candidate"]["skills"] == ["Python"]
+
+        debug = client.get("/api/debug/events")
+        assert debug.status_code == 200
+        actions = [event["action"] for event in debug.json()["events"]]
+        assert "session_created" in actions
+        assert "agent_completed" in actions
 
 
 def test_missing_session_returns_404(tmp_path):

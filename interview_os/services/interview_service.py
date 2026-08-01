@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
 from interview_os.core.runtime import AgentRuntime
@@ -44,10 +45,12 @@ class InterviewService:
         storage: Storage,
         llm_client: Any = None,
         search_provider: SearchProvider | None = None,
+        debug_events: DebugEventStore | None = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
         self.search_provider = search_provider
+        self.debug_events = debug_events
         self._runtimes: dict[str, AgentRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -55,13 +58,16 @@ class InterviewService:
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""
     ) -> tuple[str, InterviewState]:
         session_id = str(uuid4())
-        runtime = create_runtime(self.llm_client, self.search_provider)
+        runtime = create_runtime(
+            self.llm_client, self.search_provider, self.debug_events, session_id
+        )
         runtime.state.candidate.name = candidate_name
         runtime.state.job.title = job_title
         runtime.state.company.name = company_name
         self._runtimes[session_id] = runtime
         self._locks[session_id] = asyncio.Lock()
         await self._persist(session_id, runtime.state)
+        self._record_debug("session_created", session_id)
         return session_id, runtime.state
 
     async def get_state(self, session_id: str) -> InterviewState:
@@ -260,6 +266,7 @@ class InterviewService:
                 status=WorkflowStatus.RUNNING,
                 total_steps=len(steps),
             )
+            self._record_debug("workflow_started", session_id, detail=name)
             await self._persist(session_id, runtime.state)
             try:
                 for index, (agent_name, instruction) in enumerate(steps, start=1):
@@ -273,6 +280,12 @@ class InterviewService:
                 runtime.state.workflow.status = WorkflowStatus.FAILED
                 runtime.state.workflow.error = str(exc)
                 await self._persist(session_id, runtime.state)
+                self._record_debug(
+                    "workflow_failed",
+                    session_id,
+                    level=DebugLevel.ERROR,
+                    detail=f"{name}: {exc}",
+                )
                 raise WorkflowExecutionError(str(exc)) from exc
             runtime.state.workflow.status = WorkflowStatus.COMPLETED
             runtime.state.workflow.current_step = ""
@@ -280,6 +293,7 @@ class InterviewService:
                 "Start mock interview" if name == "candidate_prep" else "Execute interview blueprint"
             )
             await self._persist(session_id, runtime.state)
+            self._record_debug("workflow_completed", session_id, detail=name)
             return runtime.state
 
     @staticmethod
@@ -306,7 +320,9 @@ class InterviewService:
         state = await self.storage.get_session_state(session_id)
         if state is None:
             raise SessionNotFoundError(session_id)
-        runtime = create_runtime(self.llm_client, self.search_provider)
+        runtime = create_runtime(
+            self.llm_client, self.search_provider, self.debug_events, session_id
+        )
         runtime.state = InterviewState.model_validate(state)
         self._runtimes[session_id] = runtime
         self._locks.setdefault(session_id, asyncio.Lock())
@@ -317,3 +333,20 @@ class InterviewService:
 
     async def _persist(self, session_id: str, state: InterviewState) -> None:
         await self.storage.save_session(session_id, state.model_dump(mode="json"))
+
+    def get_cached_runtime(self, session_id: str) -> AgentRuntime | None:
+        return self._runtimes.get(session_id)
+
+    def _record_debug(
+        self, action: str, session_id: str, *, level: DebugLevel = DebugLevel.INFO, detail: str = ""
+    ) -> None:
+        if self.debug_events is not None:
+            self.debug_events.record(
+                DebugEvent(
+                    level=level,
+                    category="service",
+                    action=action,
+                    session_id=session_id,
+                    detail=detail[:1000],
+                )
+            )

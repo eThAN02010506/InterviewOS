@@ -12,6 +12,10 @@ cp .env.example .env
 uvicorn interview_os.api.app:app --reload
 ```
 
+Open `http://127.0.0.1:8000` for the local product UI. It includes candidate
+preparation, enterprise interview design, interactive mock interviews, runtime
+settings, and the Debug Console.
+
 The API now persists session state in SQLite. A minimal analysis flow is:
 
 1. `POST /api/interviews/sessions`
@@ -68,6 +72,19 @@ Runtime secrets are intentionally not written to SQLite or returned by the API.
 For persistence across restarts, provide them through the process environment or a
 secret manager. OS-keychain persistence can be added later without changing the
 settings API.
+
+## Debug Console
+
+The UI includes a read-only operational console backed by `/api/debug`. It shows
+bounded Agent lifecycle events, durations, workflow failures, session summaries,
+and a fixed LLM connectivity probe. The console:
+
+- accepts requests only from localhost;
+- stores at most `DEBUG_EVENT_CAPACITY` events (500 by default);
+- truncates message output and never exposes API keys;
+- does not provide arbitrary Python, shell, SQL, or prompt execution.
+
+Do not reverse-proxy `/api/debug` to untrusted networks without authentication.
 
 ## Development Phases
 

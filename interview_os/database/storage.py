@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from interview_os.database.schema import Base, EvidenceRecord, InterviewSession
@@ -41,6 +42,26 @@ class Storage:
         async with self.session_factory() as session:
             record = await session.get(InterviewSession, session_id)
             return json.loads(record.state_json) if record is not None else None
+
+    async def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 200))
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(InterviewSession)
+                .order_by(InterviewSession.updated_at.desc())
+                .limit(bounded_limit)
+            )
+            return [
+                {
+                    "id": record.id,
+                    "candidate_name": record.candidate_name,
+                    "job_title": record.job_title,
+                    "company_name": record.company_name,
+                    "created_at": record.created_at.isoformat(),
+                    "updated_at": record.updated_at.isoformat(),
+                }
+                for record in result.scalars()
+            ]
 
     async def save_evidence(self, session_id: str, evidence: dict[str, Any]) -> None:
         async with self.session_factory() as session:

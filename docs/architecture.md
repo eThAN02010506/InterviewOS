@@ -57,6 +57,22 @@ future Agent runtimes observe provider changes immediately. API keys are write-o
 and retained in process memory; environment variables are the persistent startup
 source. This avoids storing plaintext credentials in the application database.
 
+## Local Web Application
+
+The product UI is a dependency-free static application served by FastAPI from the
+same origin as the API. This is deliberate: InterviewOS targets local models and
+LAN services, so a separately hosted frontend would complicate connectivity and
+secret handling without adding product value. The UI consumes documented API
+routes and stores only the selected session ID in browser-local storage.
+
+## Debug Observability
+
+`DebugEventStore` is an in-memory ring buffer with O(1) append and O(capacity)
+filtered reads. `AgentRuntime` records lifecycle timing without duplicating prompts.
+Debug endpoints are read-only except for a fixed `/models` connectivity probe and
+reject non-loopback clients. The console is observability, not a remote execution
+surface.
+
 ## Agent Communication
 
 Agents communicate via Messages through the Runtime.
