@@ -1,0 +1,88 @@
+"""Runtime settings API and local settings UI."""
+from __future__ import annotations
+
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from interview_os.models.local_llm import LocalLLMClient
+from interview_os.tools.web_search import SearchProviderManager
+
+router = APIRouter()
+
+
+class SearchSettingsUpdate(BaseModel):
+    provider: Literal["none", "tavily", "searxng", "brave"]
+    tavily_api_key: str | None = None
+    searxng_base_url: str | None = None
+    brave_api_key: str | None = None
+
+
+class LLMSettingsUpdate(BaseModel):
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    embedding_model: str | None = None
+
+
+class SettingsUpdate(BaseModel):
+    search: SearchSettingsUpdate | None = None
+    llm: LLMSettingsUpdate | None = None
+
+
+@router.get("")
+async def get_settings(request: Request):
+    search: SearchProviderManager = request.app.state.search_manager
+    llm = request.app.state.llm_client
+    return {
+        "search": search.status(),
+        "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
+        "persistence": "runtime_only",
+    }
+
+
+@router.put("")
+async def update_settings(payload: SettingsUpdate, request: Request):
+    search: SearchProviderManager = request.app.state.search_manager
+    llm = request.app.state.llm_client
+    try:
+        if payload.search:
+            search.configure(**payload.search.model_dump())
+        if payload.llm:
+            if not isinstance(llm, LocalLLMClient):
+                raise ValueError("The injected LLM client cannot be configured from the UI")
+            await llm.reconfigure(**payload.llm.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await get_settings(request)
+
+
+@router.get("/ui", response_class=HTMLResponse)
+async def settings_ui():
+    return HTMLResponse(SETTINGS_HTML)
+
+
+SETTINGS_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>InterviewOS 设置</title><style>
+body{font:15px system-ui;max-width:720px;margin:40px auto;padding:0 20px;color:#17202a}
+fieldset{border:1px solid #d9e0e7;border-radius:10px;margin:18px 0;padding:18px}label{display:block;margin:12px 0 5px}
+input,select,button{box-sizing:border-box;width:100%;padding:10px;border:1px solid #b8c2cc;border-radius:7px}
+button{margin-top:18px;background:#1f6feb;color:white;border:0;cursor:pointer}.hint{color:#65717e;font-size:13px}
+</style></head><body><h1>InterviewOS 设置</h1>
+<p class="hint">密钥不会由 API 回传。页面修改立即生效，但当前仅在本次进程中保存。</p>
+<form id="form"><fieldset><legend>联网搜索</legend><label>Provider</label><select id="provider">
+<option value="tavily">Tavily</option><option value="searxng">SearXNG</option><option value="brave">Brave</option><option value="none">关闭</option></select>
+<label>Tavily API Key</label><input id="tavily" type="password" autocomplete="off" placeholder="已配置时可留空">
+<label>SearXNG 地址</label><input id="searxng" placeholder="http://localhost:8080">
+<label>Brave API Key</label><input id="brave" type="password" autocomplete="off" placeholder="已配置时可留空"></fieldset>
+<fieldset><legend>Local LLM</legend><label>API 地址</label><input id="base_url"><label>模型</label><input id="model">
+<label>API Key</label><input id="llm_key" type="password" autocomplete="off" placeholder="已配置时可留空"></fieldset>
+<button>保存并立即应用</button><p id="status" class="hint"></p></form><script>
+const val=id=>document.getElementById(id).value; const optional=id=>val(id)||null;
+async function load(){const s=await (await fetch('/api/settings')).json();document.getElementById('provider').value=s.search.selected;document.getElementById('base_url').value=s.llm.base_url||'';document.getElementById('model').value=s.llm.model||''}
+form.onsubmit=async e=>{e.preventDefault();const body={search:{provider:val('provider'),tavily_api_key:optional('tavily'),searxng_base_url:optional('searxng'),brave_api_key:optional('brave')},llm:{base_url:optional('base_url'),model:optional('model'),api_key:optional('llm_key')}};
+const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();status.textContent=r.ok?'设置已应用':(d.detail||'保存失败')};load();
+</script></body></html>"""

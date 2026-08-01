@@ -1,0 +1,49 @@
+"""Tests for the Agent Runtime core."""
+import pytest
+
+from interview_os.core.evidence import Evidence
+from interview_os.core.runtime import AgentRuntime
+from interview_os.core.state import InterviewStage, InterviewState
+
+
+def test_evidence_strong_weak():
+    strong = Evidence(competency="Python", signal="knows decorators", confidence=0.9)
+    weak = Evidence(competency="Deploy", signal="never deployed", confidence=0.2)
+    assert strong.is_strong()
+    assert weak.is_weak()
+
+
+def test_state_add_evidence():
+    state = InterviewState()
+    ev = Evidence(competency="System Design", signal="explained RAG", confidence=0.85)
+    state.add_evidence(ev)
+    assert "System Design" in state.evaluated_competencies
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.85)
+
+
+def test_state_mark_evaluated():
+    state = InterviewState(missing_signals=["Python", "ML"])
+    state.mark_evaluated("Python", 0.8)
+    assert "Python" in state.evaluated_competencies
+    assert "Python" not in state.missing_signals
+    assert "ML" in state.missing_signals
+
+
+def test_state_summary():
+    state = InterviewState(current_stage=InterviewStage.TECHNICAL_DEEP_DIVE, next_action="Ask system design")
+    s = state.summary()
+    assert "technical_deep_dive" in s
+    assert "Ask system design" in s
+
+
+def test_runtime_register_and_run():
+    runtime = AgentRuntime()
+    assert runtime.agents == {}
+    assert runtime.state.current_stage == InterviewStage.NOT_STARTED
+
+
+@pytest.mark.asyncio
+async def test_runtime_run_missing_agent_async():
+    runtime = AgentRuntime()
+    result = await runtime.run("nonexistent")
+    assert "not found" in result.content

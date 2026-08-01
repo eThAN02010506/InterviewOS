@@ -1,0 +1,18 @@
+# Local LLM Configuration
+providers:
+  ollama:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+  vllm:
+    base_url: http://localhost:8000/v1
+    api_key: token-placeholder
+
+models:
+  chat:
+    - qwen2.5:14b
+    - qwen2.5:32b
+    - glm4:9b
+    - llama3.1:8b
+  embedding:
+    - BAAI/bge-small-zh-v1.5
+    - nomic-embed-text
