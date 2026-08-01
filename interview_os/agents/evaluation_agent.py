@@ -47,6 +47,21 @@ class EvaluationAgent(Agent):
             self.record_degradation(
                 "Structured evaluation failed; aggregated recorded evidence without adding facts"
             )
+        evidence_competencies = {
+            evidence.competency.strip().casefold() for evidence in state.evidence if evidence.competency
+        }
+        reported_competencies = {
+            item.competency.strip().casefold() for item in report.competencies if item.competency
+        }
+        ungrounded_competencies = reported_competencies - evidence_competencies
+        if state.evidence and (not reported_competencies or ungrounded_competencies):
+            logger.warning(
+                "Evaluation report omitted or invented competency results; using evidence aggregate"
+            )
+            report = self._fallback_report(state)
+            self.record_degradation(
+                "Structured evaluation competencies were not grounded; aggregated recorded evidence"
+            )
         state.evaluation = report
         state.enforce_evaluation_evidence_floor()
         report = state.evaluation

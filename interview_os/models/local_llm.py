@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 import httpx
 
 from interview_os.models.llm_interface import LLMClient
+from interview_os.services.settings_service import PermissionRestrictedJsonStore
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,9 @@ class LocalLLMClient(LLMClient):
         api_key: str | None = None,
         model: str | None = None,
         embedding_model: str | None = None,
+        input_cost_per_million: float = 0.0,
+        output_cost_per_million: float = 0.0,
+        metrics_path: str | Path | None = None,
     ) -> None:
         self.base_url: str = base_url or os.getenv("LLM_BASE_URL") or "http://localhost:11434/v1"
         self.api_key: str = api_key or os.getenv("LLM_API_KEY") or "ollama"
@@ -33,14 +38,21 @@ class LocalLLMClient(LLMClient):
         self.embedding_model: str = (
             embedding_model or os.getenv("EMBEDDING_MODEL") or "BAAI/bge-small-zh-v1.5"
         )
+        self.input_cost_per_million = max(0.0, input_cost_per_million)
+        self.output_cost_per_million = max(0.0, output_cost_per_million)
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120.0)
-        self._metrics = {
+        self._metrics_store = (
+            PermissionRestrictedJsonStore(metrics_path) if metrics_path is not None else None
+        )
+        defaults = {
             "requests": 0,
             "failures": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_latency_ms": 0.0,
         }
+        loaded = self._metrics_store.load() if self._metrics_store else {}
+        self._metrics = {key: loaded.get(key, value) for key, value in defaults.items()}
 
     async def chat(
         self,
@@ -76,6 +88,7 @@ class LocalLLMClient(LLMClient):
             return f"[LLM Error: {exc}]"
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
+            self._persist_metrics()
 
     async def embed(self, text: str) -> list[float]:
         payload = {"model": self.embedding_model, "input": text}
@@ -102,6 +115,8 @@ class LocalLLMClient(LLMClient):
         api_key: str | None = None,
         model: str | None = None,
         embedding_model: str | None = None,
+        input_cost_per_million: float | None = None,
+        output_cost_per_million: float | None = None,
     ) -> None:
         """Apply UI settings without replacing the object held by existing agents."""
         if base_url is not None and base_url.rstrip("/") != self.base_url.rstrip("/"):
@@ -114,29 +129,47 @@ class LocalLLMClient(LLMClient):
             self.model = model
         if embedding_model is not None:
             self.embedding_model = embedding_model
+        if input_cost_per_million is not None:
+            self.input_cost_per_million = max(0.0, input_cost_per_million)
+        if output_cost_per_million is not None:
+            self.output_cost_per_million = max(0.0, output_cost_per_million)
 
     def settings_status(self) -> dict[str, Any]:
         requests = int(self._metrics["requests"])
+        estimated_cost = (
+            float(self._metrics["prompt_tokens"]) * self.input_cost_per_million
+            + float(self._metrics["completion_tokens"]) * self.output_cost_per_million
+        ) / 1_000_000
         return {
             "base_url": self.base_url,
             "model": self.model,
             "embedding_model": self.embedding_model,
             "api_key_configured": bool(self.api_key),
+            "input_cost_per_million": self.input_cost_per_million,
+            "output_cost_per_million": self.output_cost_per_million,
             "metrics": {
                 **self._metrics,
                 "average_latency_ms": round(float(self._metrics["total_latency_ms"]) / requests, 2)
                 if requests
                 else 0.0,
+                "estimated_cost_usd": round(estimated_cost, 6),
+                "persistent": self._metrics_store is not None,
             },
         }
 
-    def secret_snapshot(self) -> dict[str, str]:
+    def secret_snapshot(self) -> dict[str, Any]:
         return {
             "base_url": self.base_url,
             "api_key": self.api_key,
             "model": self.model,
             "embedding_model": self.embedding_model,
+            "input_cost_per_million": self.input_cost_per_million,
+            "output_cost_per_million": self.output_cost_per_million,
         }
+
+    def _persist_metrics(self) -> None:
+        if self._metrics_store is not None:
+            self._metrics_store.save(self._metrics)
 
     async def probe(self) -> dict[str, Any]:
         """Check the OpenAI-compatible model endpoint without generating text."""

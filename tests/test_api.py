@@ -239,7 +239,12 @@ def test_evaluation_api_generates_dual_side_report(tmp_path):
         response = client.post(f"/api/evaluations/{session_id}")
     assert response.status_code == 200
     assert response.json()["state"]["evaluation"]["recommendation"] == "insufficient_evidence"
-    assert response.json()["state"]["feedback"]["overall"] == "Meets the bar"
+    assert "证据不足" in response.json()["state"]["feedback"]["overall"]
+    notes = response.json()["state"]["feedback"]["interviewer_notes"]
+    assert notes == [
+        "当前仅有 1 条证据，覆盖 1 个胜任力；未达到招聘决策门槛。",
+        "证据不足不是负面证据，需要继续采集独立回答",
+    ]
 
 
 def test_mock_interview_asks_followup_before_advancing(tmp_path):
@@ -291,4 +296,6 @@ def test_interviewer_transcript_import_generates_hiring_report(tmp_path):
     assert response.status_code == 200
     result = response.json()["state"]
     assert len(result["live_interview_records"]) == 1
+    assert result["evidence"][0]["source"] == "live_interview"
     assert result["evaluation"]["recommendation"] == "insufficient_evidence"
+    assert "不能给出录用" in result["feedback"]["recommendation_reasoning"]

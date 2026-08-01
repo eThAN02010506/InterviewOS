@@ -32,6 +32,7 @@ async def debug_status(request: Request):
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "search": search,
         "event_capacity": request.app.state.debug_events.capacity,
+        "events_persistent": request.app.state.debug_events.persistent,
     }
 
 

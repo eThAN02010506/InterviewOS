@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import UUID, uuid4
@@ -35,12 +38,18 @@ class DebugEvent(BaseModel):
 class DebugEventStore:
     """A process-local ring buffer with predictable O(capacity) memory."""
 
-    def __init__(self, capacity: int = 500) -> None:
+    def __init__(self, capacity: int = 500, path: str | Path | None = None) -> None:
         if capacity < 1:
             raise ValueError("Debug event capacity must be positive")
         self.capacity = capacity
         self._events: deque[DebugEvent] = deque(maxlen=capacity)
         self._lock = Lock()
+        self._path = Path(path).expanduser() if path is not None else None
+        self._load()
+
+    @property
+    def persistent(self) -> bool:
+        return self._path is not None
 
     def record(self, event: DebugEvent) -> None:
         event = event.model_copy(
@@ -51,6 +60,7 @@ class DebugEventStore:
         )
         with self._lock:
             self._events.append(event)
+            self._persist_locked()
 
     def list_events(
         self,
@@ -74,6 +84,33 @@ class DebugEventStore:
             if len(result) == bounded_limit:
                 break
         return result
+
+    def _load(self) -> None:
+        if self._path is None or not self._path.exists():
+            return
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            events = payload.get("events", []) if isinstance(payload, dict) else []
+            self._events.extend(DebugEvent.model_validate(item) for item in events)
+        except (OSError, ValueError, TypeError):
+            self._events.clear()
+
+    def _persist_locked(self) -> None:
+        if self._path is None:
+            return
+        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self._path.parent, 0o700)
+        temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {"events": [item.model_dump(mode="json") for item in self._events]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        temporary.replace(self._path)
+        os.chmod(self._path, 0o600)
 
 
 _SECRET_PATTERN = re.compile(

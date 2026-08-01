@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -74,6 +75,37 @@ class CandidateFailingWorkflowLLM(WorkflowMockLLM):
         if "structured candidate profile" in prompt or "candidateprofile" in prompt:
             return "not json"
         return await super().chat(messages, **kwargs)
+
+
+class EmptyEvaluationWorkflowLLM(WorkflowMockLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "based on the following evidence" in prompt:
+            return '{"competencies":[],"overall_score":0,"recommendation":"insufficient_evidence","summary":"","risks":[]}'
+        return await super().chat(messages, **kwargs)
+
+
+class UngroundedEvaluationWorkflowLLM(WorkflowMockLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "based on the following evidence" in prompt:
+            return '{"competencies":[{"competency":"Generic Communication","score":0.9,"confidence":0.9,"supporting_evidence":[],"gaps":[]}],"overall_score":0.9,"recommendation":"hire","summary":"Strong","risks":[]}'
+        return await super().chat(messages, **kwargs)
+
+
+class ConcurrencyTrackingLLM(WorkflowMockLLM):
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+
+    async def chat(self, messages, **kwargs):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.02)
+            return await super().chat(messages, **kwargs)
+        finally:
+            self.active -= 1
 
 
 class InvalidProfileLLM:
@@ -162,6 +194,25 @@ async def test_candidate_prep_workflow_persists_structured_results(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_candidate_prep_runs_independent_agents_concurrently(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'parallel.db'}")
+    await storage.init_db()
+    llm = ConcurrencyTrackingLLM()
+    service = InterviewService(storage, llm, FakeSearchProvider())
+    session_id, _ = await service.create_session()
+
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+    )
+
+    assert llm.max_active >= 3
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_enterprise_design_workflow_builds_rounds(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'design.db'}")
     await storage.init_db()
@@ -229,6 +280,60 @@ async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     )
 
     assert state.autopilot.status.value == "completed"
+
+
+@pytest.mark.asyncio
+async def test_evaluation_falls_back_when_model_omits_competencies(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'empty-evaluation.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, EmptyEvaluationWorkflowLLM())
+    try:
+        session_id, _ = await service.create_session()
+        await service.run_candidate_prep(
+            session_id,
+            resume_text="Python platform engineer",
+            job_description="Platform engineer responsible for system design",
+            company_name="Example",
+        )
+        state = await service.start_mock_interview(session_id)
+        question = service.current_mock_question(state)
+        assert question is not None
+        await service.submit_mock_answer(session_id, question.id, "Clear trade-offs and metrics")
+
+        state = await service.run_evaluation(session_id)
+
+        assert state.evaluation.competencies
+        assert "已按已记录证据完成确定性聚合" in state.evaluation.summary
+        assert state.workflow.status.value == "completed"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_evaluation_rejects_competencies_not_bound_to_evidence(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'ungrounded-evaluation.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, UngroundedEvaluationWorkflowLLM())
+    try:
+        session_id, _ = await service.create_session()
+        await service.run_candidate_prep(
+            session_id,
+            resume_text="Python platform engineer",
+            job_description="Platform engineer responsible for system design",
+            company_name="Example",
+        )
+        state = await service.start_mock_interview(session_id)
+        question = service.current_mock_question(state)
+        assert question is not None
+        await service.submit_mock_answer(session_id, question.id, "Clear trade-offs and metrics")
+
+        state = await service.run_evaluation(session_id)
+
+        evidence_competencies = {item.competency for item in state.evidence}
+        assert {item.competency for item in state.evaluation.competencies} <= evidence_competencies
+        assert "Generic Communication" not in state.evaluated_competencies
+    finally:
+        await storage.close()
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.overall
     await storage.close()

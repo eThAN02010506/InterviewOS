@@ -408,6 +408,21 @@ class InterviewState(BaseModel):
             self.evaluation.risks.append(warning)
         if self.evaluation.summary and not self.evaluation.summary.startswith("证据门槛未满足"):
             self.evaluation.summary = f"证据门槛未满足。{self.evaluation.summary}"
+        if self.feedback.overall:
+            self.feedback.overall = "当前证据不足，单题表现仅供参考，不能形成录用结论。"
+        if self.feedback.recommendation_reasoning:
+            self.feedback.recommendation_reasoning = (
+                "证据门槛未满足：至少需要 3 条证据并覆盖 2 个胜任力；"
+                "当前不能给出录用或不录用建议。"
+            )
+        note = "证据不足不是负面证据，需要继续采集独立回答"
+        self.feedback.interviewer_notes = [
+            (
+                f"当前仅有 {len(self.evidence)} 条证据，覆盖 "
+                f"{len(evidence_competencies)} 个胜任力；未达到招聘决策门槛。"
+            ),
+            note,
+        ]
 
     def summary(self) -> str:
         return (

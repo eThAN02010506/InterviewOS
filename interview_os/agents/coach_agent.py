@@ -18,6 +18,7 @@ class CoachInput(BaseModel):
     question: str
     answer: str
     competency: str = "Answer Quality"
+    evidence_source: EvidenceSource = EvidenceSource.MOCK_INTERVIEW
 
 
 class CoachAgent(Agent):
@@ -70,7 +71,7 @@ class CoachAgent(Agent):
             competency=coach_input.competency,
             signal="; ".join(evaluation.observed_signals) or coach_input.answer[:200],
             confidence=evaluation.overall_score(),
-            source=EvidenceSource.MOCK_INTERVIEW,
+            source=coach_input.evidence_source,
             notes="; ".join(evaluation.missing_signals),
         )
         state.add_evidence(ev)

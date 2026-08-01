@@ -54,12 +54,23 @@ def create_app(
     settings_store: LocalSettingsStore | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
+    use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
     settings_store = settings_store or LocalSettingsStore()
     saved_settings = settings_store.load()
+    runtime_dir = settings_store.path.parent
     if llm_client is None and configure_llm:
-        llm_client = LocalLLMClient(**saved_settings.get("llm", {}))
-    debug_events = DebugEventStore(capacity=int(os.getenv("DEBUG_EVENT_CAPACITY", "500")))
-    search_manager = SearchProviderManager(debug_events=debug_events)
+        llm_client = LocalLLMClient(
+            **saved_settings.get("llm", {}), metrics_path=runtime_dir / "llm_metrics.json"
+        )
+    debug_events = DebugEventStore(
+        capacity=int(os.getenv("DEBUG_EVENT_CAPACITY", "500")),
+        path=runtime_dir / "debug_events.json" if use_persistent_runtime else None,
+    )
+    search_manager = SearchProviderManager(
+        debug_events=debug_events,
+        cache_path=runtime_dir / "search_cache.json" if use_persistent_runtime else None,
+        metrics_path=runtime_dir / "search_metrics.json" if use_persistent_runtime else None,
+    )
     saved_search = saved_settings.get("search")
     if isinstance(saved_search, dict):
         try:

@@ -14,6 +14,7 @@ class EvidenceSource(str, Enum):
     SYSTEM_DESIGN_ROUND = "system_design_round"
     BEHAVIORAL_ROUND = "behavioral_round"
     MOCK_INTERVIEW = "mock_interview"
+    LIVE_INTERVIEW = "live_interview"
     RESUME_REVIEW = "resume_review"
 
 

@@ -6,7 +6,8 @@ import os
 import re
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from time import monotonic
+from pathlib import Path
+from time import time
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.tool import Tool, ToolResult
+from interview_os.services.settings_service import PermissionRestrictedJsonStore
 
 
 class SearchResult(BaseModel):
@@ -232,6 +234,8 @@ class SearchProviderManager(SearchProvider):
         cache_ttl_seconds: float = 3600,
         cache_capacity: int = 128,
         debug_events: DebugEventStore | None = None,
+        cache_path: str | Path | None = None,
+        metrics_path: str | Path | None = None,
     ) -> None:
         self._credentials = {
             "tavily": os.getenv("TAVILY_API_KEY", "").strip(),
@@ -244,9 +248,19 @@ class SearchProviderManager(SearchProvider):
         )
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache_capacity = cache_capacity
-        self._cache_hits = 0
-        self._cache_misses = 0
+        self._cache_store = (
+            PermissionRestrictedJsonStore(cache_path) if cache_path is not None else None
+        )
+        self._metrics_store = (
+            PermissionRestrictedJsonStore(metrics_path) if metrics_path is not None else None
+        )
+        persisted_metrics = self._metrics_store.load() if self._metrics_store else {}
+        self._cache_hits = int(persisted_metrics.get("cache_hits", 0))
+        self._cache_misses = int(persisted_metrics.get("cache_misses", 0))
+        self._provider_requests = int(persisted_metrics.get("provider_requests", 0))
+        self.search_request_cost_usd = 0.0
         self.debug_events = debug_events
+        self._load_cache()
 
     def _default_provider(self) -> str:
         return next(
@@ -260,6 +274,7 @@ class SearchProviderManager(SearchProvider):
         tavily_api_key: str | None = None,
         searxng_base_url: str | None = None,
         brave_api_key: str | None = None,
+        search_request_cost_usd: float | None = None,
     ) -> None:
         if provider not in {"none", "tavily", "searxng", "brave"}:
             raise ValueError(f"Unsupported search provider: {provider}")
@@ -274,7 +289,8 @@ class SearchProviderManager(SearchProvider):
         if provider != "none" and not self._credentials[provider]:
             raise ValueError(f"Credentials for {provider} are not configured")
         self.selected = provider
-        self._cache.clear()
+        if search_request_cost_usd is not None:
+            self.search_request_cost_usd = max(0.0, search_request_cost_usd)
 
     def secret_snapshot(self) -> dict[str, Any]:
         return {
@@ -282,6 +298,7 @@ class SearchProviderManager(SearchProvider):
             "tavily_api_key": self._credentials["tavily"],
             "searxng_base_url": self._credentials["searxng"],
             "brave_api_key": self._credentials["brave"],
+            "search_request_cost_usd": self.search_request_cost_usd,
         }
 
     def status(self) -> dict[str, Any]:
@@ -293,7 +310,13 @@ class SearchProviderManager(SearchProvider):
                 "capacity": self._cache_capacity,
                 "hits": self._cache_hits,
                 "misses": self._cache_misses,
+                "persistent": self._cache_store is not None,
             },
+            "provider_requests": self._provider_requests,
+            "search_request_cost_usd": self.search_request_cost_usd,
+            "estimated_cost_usd": round(
+                self._provider_requests * self.search_request_cost_usd, 6
+            ),
         }
 
     async def search(
@@ -301,9 +324,10 @@ class SearchProviderManager(SearchProvider):
     ) -> list[SearchResult]:
         key = (self.selected, query.strip(), limit, search_depth)
         cached = self._cache.get(key)
-        if cached and monotonic() - cached[0] <= self._cache_ttl_seconds:
+        if cached and time() - cached[0] <= self._cache_ttl_seconds:
             self._cache_hits += 1
             self._cache.move_to_end(key)
+            self._persist_metrics()
             self._record_search(query, len(cached[1]), cache_hit=True)
             return [item.model_copy(deep=True) for item in cached[1]]
         if cached:
@@ -320,10 +344,13 @@ class SearchProviderManager(SearchProvider):
         results = assess_source_quality(
             await providers[self.selected].search(query, limit, search_depth=search_depth), query
         )
-        self._cache[key] = (monotonic(), [item.model_copy(deep=True) for item in results])
+        self._provider_requests += 1
+        self._cache[key] = (time(), [item.model_copy(deep=True) for item in results])
         self._cache.move_to_end(key)
         while len(self._cache) > self._cache_capacity:
             self._cache.popitem(last=False)
+        self._persist_cache()
+        self._persist_metrics()
         self._record_search(query, len(results), cache_hit=False)
         return results
 
@@ -343,6 +370,52 @@ class SearchProviderManager(SearchProvider):
                 },
             )
         )
+
+    def _load_cache(self) -> None:
+        if self._cache_store is None:
+            return
+        entries = self._cache_store.load().get("entries", [])
+        for entry in entries[-self._cache_capacity :]:
+            try:
+                key = (
+                    str(entry["provider"]),
+                    str(entry["query"]),
+                    int(entry["limit"]),
+                    str(entry["depth"]),
+                )
+                timestamp = float(entry["timestamp"])
+                if time() - timestamp > self._cache_ttl_seconds:
+                    continue
+                results = [SearchResult.model_validate(item) for item in entry["results"]]
+                self._cache[key] = (timestamp, results)
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    def _persist_cache(self) -> None:
+        if self._cache_store is None:
+            return
+        entries = [
+            {
+                "provider": key[0],
+                "query": key[1],
+                "limit": key[2],
+                "depth": key[3],
+                "timestamp": timestamp,
+                "results": [item.model_dump(mode="json") for item in results],
+            }
+            for key, (timestamp, results) in self._cache.items()
+        ]
+        self._cache_store.save({"entries": entries})
+
+    def _persist_metrics(self) -> None:
+        if self._metrics_store is not None:
+            self._metrics_store.save(
+                {
+                    "cache_hits": self._cache_hits,
+                    "cache_misses": self._cache_misses,
+                    "provider_requests": self._provider_requests,
+                }
+            )
 
 
 def search_provider_from_env() -> SearchProvider | None:

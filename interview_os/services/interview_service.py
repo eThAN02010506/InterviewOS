@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -299,6 +300,7 @@ class InterviewService:
                     "question": asked_question,
                     "answer": answer,
                     "competency": question.competency or "Answer Quality",
+                    "evidence_source": "mock_interview",
                 }
             )
             message = await runtime.run("coach_agent", payload)
@@ -508,7 +510,12 @@ class InterviewService:
                 message = await runtime.run(
                     "coach_agent",
                     json.dumps(
-                        {"question": question, "answer": answer, "competency": competency},
+                        {
+                            "question": question,
+                            "answer": answer,
+                            "competency": competency,
+                            "evidence_source": "live_interview",
+                        },
                         ensure_ascii=False,
                     ),
                 )
@@ -545,6 +552,7 @@ class InterviewService:
         interviewer: InterviewerProfile | None = None,
         parallel_prefix: int = 0,
     ) -> InterviewState:
+        workflow_started = perf_counter()
         async with self._lock_for(session_id):
             if name == "evaluation" and not runtime.state.evidence:
                 raise EvaluationStateError(
@@ -611,7 +619,12 @@ class InterviewService:
                 runtime.state.current_stage = InterviewStage.COMPLETED
                 runtime.state.next_action = "Review the final evaluation and feedback"
             await self._persist(session_id, runtime.state)
-            self._record_debug("workflow_completed", session_id, detail=name)
+            self._record_debug(
+                "workflow_completed",
+                session_id,
+                detail=name,
+                duration_ms=(perf_counter() - workflow_started) * 1000,
+            )
             return runtime.state
 
     async def resolve_entity_candidate(
@@ -702,7 +715,13 @@ class InterviewService:
         return self._runtimes.get(session_id)
 
     def _record_debug(
-        self, action: str, session_id: str, *, level: DebugLevel = DebugLevel.INFO, detail: str = ""
+        self,
+        action: str,
+        session_id: str,
+        *,
+        level: DebugLevel = DebugLevel.INFO,
+        detail: str = "",
+        duration_ms: float | None = None,
     ) -> None:
         if self.debug_events is not None:
             self.debug_events.record(
@@ -711,6 +730,7 @@ class InterviewService:
                     category="service",
                     action=action,
                     session_id=session_id,
+                    duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
                     detail=detail[:1000],
                 )
             )

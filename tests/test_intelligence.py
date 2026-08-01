@@ -1,7 +1,10 @@
 import asyncio
 
+import httpx
+
 from interview_os.core.debug import DebugEvent, DebugEventStore
 from interview_os.core.state import InterviewState, ResumeClaim, ResumeClaimStatus
+from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.intelligence_service import (
     build_fact_cards,
     resolve_entity,
@@ -104,3 +107,89 @@ def test_search_manager_uses_bounded_cache(monkeypatch):
     asyncio.run(manager.search("Example"))
     assert calls == 1
     assert manager.status()["cache"]["hits"] == 1
+
+
+def test_search_cache_and_metrics_survive_restart(monkeypatch, tmp_path):
+    calls = 0
+
+    async def fake_search(self, query, limit=5, *, search_depth="basic"):
+        nonlocal calls
+        calls += 1
+        return [SearchResult(title="Result", url="https://example.com", snippet=query)]
+
+    monkeypatch.setattr(TavilySearchProvider, "search", fake_search)
+    cache_path = tmp_path / "search-cache.json"
+    metrics_path = tmp_path / "search-metrics.json"
+    first = SearchProviderManager(cache_path=cache_path, metrics_path=metrics_path)
+    first.configure(
+        provider="tavily", tavily_api_key="secret", search_request_cost_usd=0.01
+    )
+    asyncio.run(first.search("Persistent Example"))
+
+    second = SearchProviderManager(cache_path=cache_path, metrics_path=metrics_path)
+    second.configure(
+        provider="tavily", tavily_api_key="secret", search_request_cost_usd=0.01
+    )
+    results = asyncio.run(second.search("Persistent Example"))
+
+    assert results[0].title == "Result"
+    assert calls == 1
+    assert second.status()["cache"]["hits"] == 1
+    assert second.status()["provider_requests"] == 1
+    assert second.status()["estimated_cost_usd"] == 0.01
+
+
+def test_debug_events_survive_restart_after_redaction(tmp_path):
+    path = tmp_path / "events.json"
+    first = DebugEventStore(path=path)
+    first.record(
+        DebugEvent(category="search", action="query", detail="api_key=secret ada@example.com")
+    )
+
+    restored = DebugEventStore(path=path)
+    event = restored.list_events()[0]
+    assert "secret" not in event.detail
+    assert "ada@example.com" not in event.detail
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_llm_metrics_and_estimated_cost_survive_restart(tmp_path):
+    async def run_request():
+        metrics_path = tmp_path / "llm-metrics.json"
+        client = LocalLLMClient(
+            base_url="http://local.test/v1",
+            model="test",
+            metrics_path=metrics_path,
+            input_cost_per_million=2,
+            output_cost_per_million=4,
+        )
+        await client._client.aclose()
+
+        async def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+                },
+            )
+
+        client._client = httpx.AsyncClient(
+            base_url=client.base_url, transport=httpx.MockTransport(handler)
+        )
+        assert await client.chat([{"role": "user", "content": "hello"}]) == "ok"
+        await client.close()
+        restored = LocalLLMClient(
+            base_url="http://local.test/v1",
+            model="test",
+            metrics_path=metrics_path,
+            input_cost_per_million=2,
+            output_cost_per_million=4,
+        )
+        status = restored.settings_status()
+        await restored.close()
+        return status
+
+    status = asyncio.run(run_request())
+    assert status["metrics"]["requests"] == 1
+    assert status["metrics"]["estimated_cost_usd"] == 0.004

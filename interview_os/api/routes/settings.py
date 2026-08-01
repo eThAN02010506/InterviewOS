@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.settings_service import LocalSettingsStore
@@ -20,6 +20,7 @@ class SearchSettingsUpdate(BaseModel):
     tavily_api_key: str | None = None
     searxng_base_url: str | None = None
     brave_api_key: str | None = None
+    search_request_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -27,6 +28,8 @@ class LLMSettingsUpdate(BaseModel):
     api_key: str | None = None
     model: str | None = None
     embedding_model: str | None = None
+    input_cost_per_million: float | None = Field(default=None, ge=0)
+    output_cost_per_million: float | None = Field(default=None, ge=0)
 
 
 class SettingsUpdate(BaseModel):

@@ -109,7 +109,7 @@ def sync_entity_resolutions(state: InterviewState) -> None:
 
 def build_fact_cards(state: InterviewState) -> None:
     cards: list[FactCard] = []
-    seen: set[tuple[str, str]] = set()
+    indexed: dict[tuple[str, str], FactCard] = {}
     batches = (
         ("company", state.company.name, state.company.public_sources),
         ("interviewer", state.interviewer.name, state.interviewer.public_expressions),
@@ -117,24 +117,33 @@ def build_fact_cards(state: InterviewState) -> None:
     for category, subject, sources in batches:
         for source in sources:
             url = str(source.get("url", "")).strip()
-            claim = _fact_claim(source)
-            key = (category, url or claim)
-            if not claim or key in seen:
+            claim = _fact_claim(source, subject)
+            normalized_claim = re.sub(r"[^\w\u4e00-\u9fff]", "", claim.lower())[:120]
+            key = (category, normalized_claim)
+            if not claim:
                 continue
-            seen.add(key)
             quality = str(source.get("source_quality", "unrated"))
             verified = bool(source.get("is_official")) or quality in {"official", "high"}
-            cards.append(
-                FactCard(
-                    category=_category_for(category, claim),
-                    subject=subject,
-                    claim=claim,
-                    status=FactStatus.VERIFIED if verified else FactStatus.INFERRED,
-                    confidence=0.9 if verified else 0.65,
-                    source_urls=[url] if url else [],
-                    note="来自公开来源摘要，建议打开原文复核" if not verified else "高可信来源",
-                )
+            existing = indexed.get(key)
+            if existing:
+                if url and url not in existing.source_urls:
+                    existing.source_urls.append(url)
+                if verified:
+                    existing.status = FactStatus.VERIFIED
+                existing.confidence = min(0.95, existing.confidence + 0.08)
+                existing.note = f"{len(existing.source_urls)} 个公开来源交叉支持"
+                continue
+            card = FactCard(
+                category=_category_for(category, claim),
+                subject=subject,
+                claim=claim,
+                status=FactStatus.VERIFIED if verified else FactStatus.INFERRED,
+                confidence=0.9 if verified else 0.65,
+                source_urls=[url] if url else [],
+                note="来自公开来源摘要，建议打开原文复核" if not verified else "高可信来源",
             )
+            indexed[key] = card
+            cards.append(card)
     conflict = _position_conflict(state)
     if conflict:
         cards.insert(0, conflict)
@@ -155,13 +164,39 @@ def resolve_entity(state: InterviewState, resolution_id, *, accept: bool) -> Ent
     return resolution
 
 
-def _fact_claim(source: dict[str, Any]) -> str:
-    text = re.sub(r"\s+", " ", str(source.get("snippet") or source.get("text") or "")).strip()
-    title = re.sub(r"\s+", " ", str(source.get("title", ""))).strip()
-    if text:
-        sentence = re.split(r"(?<=[。！？.!?])\s*", text, maxsplit=1)[0]
-        return sentence[:280]
-    return title[:280]
+def _fact_claim(source: dict[str, Any], subject: str) -> str:
+    text = _clean_public_text(str(source.get("snippet") or source.get("text") or ""))
+    title = _clean_public_text(str(source.get("title", "")))
+    sentences = [
+        item.strip(" -—:：")
+        for item in re.split(r"(?<=[。！？.!?])\s+|[\r\n]+", text)
+        if 18 <= len(item.strip()) <= 220
+    ]
+    boilerplate = ("首页", "登录", "注册", "搜索", "新闻 专栏", "Image ", "全部删除")
+    candidates = [item for item in sentences if sum(token in item for token in boilerplate) < 2]
+    if candidates:
+        candidates.sort(
+            key=lambda item: (
+                subject.lower() in item.lower(),
+                bool(
+                    re.search(
+                        r"创始|技术|负责|研发|产品|观点|表示|提出|engineer|founder",
+                        item,
+                        re.IGNORECASE,
+                    )
+                ),
+                -abs(len(item) - 100),
+            ),
+            reverse=True,
+        )
+        return candidates[0][:220]
+    return title[:180]
+
+
+def _clean_public_text(value: str) -> str:
+    value = re.sub(r"Image\s*\d*:?", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"[#*_`]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _category_for(default: str, claim: str) -> str:

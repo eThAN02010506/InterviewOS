@@ -60,4 +60,5 @@ class FeedbackAgent(Agent):
             self.record_degradation(
                 "Structured feedback failed; summarized the finalized evidence report"
             )
+        state.enforce_evaluation_evidence_floor()
         return self.make_response(state.feedback.model_dump_json())

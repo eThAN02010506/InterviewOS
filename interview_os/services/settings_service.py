@@ -5,32 +5,43 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
-class LocalSettingsStore:
-    def __init__(self, path: str | Path | None = None) -> None:
-        configured = path or os.getenv("INTERVIEW_OS_SETTINGS_PATH")
-        self.path = (
-            Path(configured).expanduser()
-            if configured
-            else Path.home() / ".interview_os" / "settings.json"
-        )
+class PermissionRestrictedJsonStore:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
+        self._lock = Lock()
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
             return {}
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            with self._lock:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
         return payload if isinstance(payload, dict) else {}
 
     def save(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        temporary.replace(self.path)
-        os.chmod(self.path, 0o600)
+        with self._lock:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.path.parent, 0o700)
+            temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.chmod(temporary, 0o600)
+            temporary.replace(self.path)
+            os.chmod(self.path, 0o600)
+
+
+class LocalSettingsStore(PermissionRestrictedJsonStore):
+    def __init__(self, path: str | Path | None = None) -> None:
+        configured = path or os.getenv("INTERVIEW_OS_SETTINGS_PATH")
+        super().__init__(
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".interview_os" / "settings.json"
+        )
