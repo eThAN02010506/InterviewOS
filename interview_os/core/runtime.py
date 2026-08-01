@@ -1,4 +1,5 @@
 """Agent Runtime - orchestrates multiple agents through the interview lifecycle."""
+
 from __future__ import annotations
 
 import logging
@@ -77,9 +78,7 @@ class AgentRuntime:
             msg = await self.run(agent_name, instruction)
             results.append(msg)
             if msg.type == MessageType.RESPONSE:
-                self.state.conversation_history.append(
-                    {"agent": agent_name, "output": msg.content}
-                )
+                self.state.conversation_history.append({"agent": agent_name, "output": msg.content})
         return results
 
     def get_message_log(self) -> list[Message]:

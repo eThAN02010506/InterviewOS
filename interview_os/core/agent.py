@@ -1,4 +1,5 @@
 """Agent base class - the core abstraction of our self-built runtime."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -6,6 +7,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.memory import MemorySystem
 from interview_os.core.message import Message, MessageType
 from interview_os.core.state import InterviewState
@@ -38,6 +40,8 @@ class Agent(ABC):
         self.tools = tools or ToolRegistry()
         self.llm_client = llm_client
         self._system_prompt = self._build_system_prompt()
+        self.debug_events: DebugEventStore | None = None
+        self.session_id = ""
 
     def _build_system_prompt(self) -> str:
         return (
@@ -49,8 +53,7 @@ class Agent(ABC):
         )
 
     @abstractmethod
-    async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        ...
+    async def execute(self, state: InterviewState, instruction: str = "") -> Message: ...
 
     async def think(self, prompt: str, context: str = "") -> str:
         messages = [{"role": "system", "content": self._system_prompt}]
@@ -78,13 +81,38 @@ class Agent(ABC):
         try:
             return parse_model_output(raw, model)
         except (ValueError, TypeError):
+            if self.debug_events is not None:
+                self.debug_events.record(
+                    DebugEvent(
+                        level=DebugLevel.WARNING,
+                        category="model",
+                        action="structured_output_retry",
+                        session_id=self.session_id,
+                        agent=self.name,
+                        detail=f"Repairing invalid {model.__name__} output",
+                    )
+                )
             repair_prompt = (
                 "Repair the previous response into valid JSON only. Do not explain.\n"
                 f"Required JSON Schema:\n{model.model_json_schema()}\n"
                 f"Previous response:\n{raw[:12000]}"
             )
             repaired = await self.think(repair_prompt)
-            return parse_model_output(repaired, model)
+            try:
+                return parse_model_output(repaired, model)
+            except (ValueError, TypeError):
+                if self.debug_events is not None:
+                    self.debug_events.record(
+                        DebugEvent(
+                            level=DebugLevel.ERROR,
+                            category="model",
+                            action="structured_output_retry_failed",
+                            session_id=self.session_id,
+                            agent=self.name,
+                            detail=f"Could not validate {model.__name__}",
+                        )
+                    )
+                raise
 
     def make_response(self, content: str, recipient: str = "runtime") -> Message:
         return Message(
@@ -93,3 +121,16 @@ class Agent(ABC):
             recipient=recipient,
             content=content,
         )
+
+    def record_degradation(self, detail: str) -> None:
+        if self.debug_events is not None:
+            self.debug_events.record(
+                DebugEvent(
+                    level=DebugLevel.WARNING,
+                    category="agent",
+                    action="deterministic_fallback",
+                    session_id=self.session_id,
+                    agent=self.name,
+                    detail=detail,
+                )
+            )

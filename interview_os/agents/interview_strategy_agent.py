@@ -1,4 +1,5 @@
 """Interview Strategy Agent - three-way fusion: Candidate + Job + Interviewer."""
+
 from __future__ import annotations
 
 import logging
@@ -31,10 +32,13 @@ class InterviewStrategyAgent(Agent):
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
         prompt = STRATEGY_FUSION_PROMPT.format(
             candidate_profile=(
-                state.candidate.model_dump_json(exclude={"raw_resume_text"})
-                + f"\nResume evidence excerpt: {state.candidate.raw_resume_text[:12000]}"
+                f"Candidate name: {state.candidate.name}\n"
+                f"Confirmed resume facts only:\n{state.candidate_evidence_context()[:12000]}"
             ),
-            job_requirements=state.job.model_dump_json(),
+            job_requirements=(
+                state.job.model_dump_json()
+                + f"\nRequirement provenance: {state.job_review.model_dump_json()}"
+            ),
             interviewer_profile=state.interviewer.model_dump_json(),
         )
         try:
@@ -53,9 +57,14 @@ class InterviewStrategyAgent(Agent):
     @staticmethod
     def _is_title_only(raw_description: str) -> bool:
         text = raw_description.strip()
-        return bool(text) and len(text) <= 120 and "\n" not in text and not any(
-            marker in text
-            for marker in ("：", ":", "职责", "要求", "responsibilities", "requirements")
+        return (
+            bool(text)
+            and len(text) <= 120
+            and "\n" not in text
+            and not any(
+                marker in text
+                for marker in ("：", ":", "职责", "要求", "responsibilities", "requirements")
+            )
         )
 
     @staticmethod
@@ -63,14 +72,11 @@ class InterviewStrategyAgent(Agent):
         """Drop strategy statements containing metrics absent from supplied evidence."""
         evidence = "\n".join(
             (
-                state.candidate.raw_resume_text,
+                state.candidate_evidence_context(),
                 state.job.raw_description,
+                " ".join(str(item.get("snippet", "")) for item in state.company.public_sources),
                 " ".join(
-                    str(item.get("snippet", "")) for item in state.company.public_sources
-                ),
-                " ".join(
-                    str(item.get("snippet", ""))
-                    for item in state.interviewer.public_expressions
+                    str(item.get("snippet", "")) for item in state.interviewer.public_expressions
                 ),
             )
         )

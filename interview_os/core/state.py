@@ -80,8 +80,10 @@ class ResumeIssueSeverity(str, Enum):
 class ResumeClaimStatus(str, Enum):
     UNVERIFIED = "unverified"
     CONFIRMED = "confirmed"
+    MODIFIED = "modified"
     NEEDS_DOCUMENTS = "needs_documents"
     DISPUTED = "disputed"
+    IGNORED = "ignored"
 
 
 class ResumeFileMetadata(BaseModel):
@@ -103,6 +105,7 @@ class ResumeClaim(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     category: str
     statement: str
+    original_statement: str = ""
     status: ResumeClaimStatus = ResumeClaimStatus.UNVERIFIED
     verification_method: str = "candidate_confirmation"
     note: str = ""
@@ -124,6 +127,59 @@ class JobDescription(BaseModel):
     preferred_skills: list[str] = Field(default_factory=list)
     responsibilities: list[str] = Field(default_factory=list)
     competencies: list[str] = Field(default_factory=list)
+
+
+class RequirementOrigin(str, Enum):
+    EXPLICIT = "explicit"
+    INFERRED = "inferred"
+
+
+class JobRequirement(BaseModel):
+    text: str
+    origin: RequirementOrigin
+
+
+class JobDescriptionReview(BaseModel):
+    is_title_only: bool = False
+    completeness_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    missing_sections: list[str] = Field(default_factory=list)
+    requirements: list[JobRequirement] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ResolutionStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class EntityResolution(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    entity_type: str
+    input_name: str
+    proposed_name: str
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    source_urls: list[str] = Field(default_factory=list)
+    status: ResolutionStatus = ResolutionStatus.PENDING
+    resolved_at: datetime | None = None
+
+
+class FactStatus(str, Enum):
+    VERIFIED = "verified"
+    INFERRED = "inferred"
+    CONFLICT = "conflict"
+
+
+class FactCard(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    category: str
+    subject: str
+    claim: str
+    status: FactStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_urls: list[str] = Field(default_factory=list)
+    note: str = ""
 
 
 class CompanyInfo(BaseModel):
@@ -221,6 +277,7 @@ class MockAnswerRecord(BaseModel):
     competency: str
     answer: str
     evaluation: AnswerEvaluation
+    is_follow_up: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -234,6 +291,8 @@ class MockInterviewSession(BaseModel):
     status: MockSessionStatus = MockSessionStatus.IDLE
     current_question_index: int = 0
     responses: list[MockAnswerRecord] = Field(default_factory=list)
+    pending_follow_up: str = ""
+    pending_parent_question_id: UUID | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
@@ -273,18 +332,32 @@ class FeedbackReport(BaseModel):
     recommendation_reasoning: str = ""
 
 
+class LiveInterviewRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    question: str
+    answer: str
+    competency: str
+    evaluation: AnswerEvaluation
+    source: str = "interview_transcript"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class InterviewState(BaseModel):
     candidate: CandidateProfile = Field(default_factory=CandidateProfile)
     resume_review: ResumeReview = Field(default_factory=ResumeReview)
     job: JobDescription = Field(default_factory=JobDescription)
+    job_review: JobDescriptionReview = Field(default_factory=JobDescriptionReview)
     company: CompanyInfo = Field(default_factory=CompanyInfo)
     interviewer: InterviewerProfile = Field(default_factory=InterviewerProfile)
+    entity_resolutions: list[EntityResolution] = Field(default_factory=list)
+    fact_cards: list[FactCard] = Field(default_factory=list)
     strategy: InterviewStrategy = Field(default_factory=InterviewStrategy)
     blueprint: InterviewBlueprint = Field(default_factory=InterviewBlueprint)
     mock_interview: MockInterviewPlan = Field(default_factory=MockInterviewPlan)
     mock_session: MockInterviewSession = Field(default_factory=MockInterviewSession)
     evaluation: EvaluationReport = Field(default_factory=EvaluationReport)
     feedback: FeedbackReport = Field(default_factory=FeedbackReport)
+    live_interview_records: list[LiveInterviewRecord] = Field(default_factory=list)
     workflow: WorkflowProgress = Field(default_factory=WorkflowProgress)
     autopilot: AutopilotState = Field(default_factory=AutopilotState)
     current_stage: InterviewStage = InterviewStage.NOT_STARTED
@@ -309,6 +382,32 @@ class InterviewState(BaseModel):
 
     def is_complete(self) -> bool:
         return self.current_stage == InterviewStage.COMPLETED
+
+    def confirmed_resume_facts(self) -> list[str]:
+        return [
+            claim.statement
+            for claim in self.resume_review.claims
+            if claim.status in {ResumeClaimStatus.CONFIRMED, ResumeClaimStatus.MODIFIED}
+        ]
+
+    def candidate_evidence_context(self) -> str:
+        confirmed = self.confirmed_resume_facts()
+        if self.resume_review.claims:
+            return "\n".join(confirmed) or "No resume claims have been confirmed yet."
+        return self.candidate.raw_resume_text
+
+    def enforce_evaluation_evidence_floor(self) -> None:
+        evidence_competencies = {
+            item.competency for item in self.evidence if item.competency.strip()
+        }
+        if len(self.evidence) >= 3 and len(evidence_competencies) >= 2:
+            return
+        self.evaluation.recommendation = HiringRecommendation.INSUFFICIENT_EVIDENCE
+        warning = "至少需要 3 条证据并覆盖 2 个胜任力，才能形成招聘建议"
+        if warning not in self.evaluation.risks:
+            self.evaluation.risks.append(warning)
+        if self.evaluation.summary and not self.evaluation.summary.startswith("证据门槛未满足"):
+            self.evaluation.summary = f"证据门槛未满足。{self.evaluation.summary}"
 
     def summary(self) -> str:
         return (

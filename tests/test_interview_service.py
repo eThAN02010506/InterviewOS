@@ -223,9 +223,13 @@ async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     assert question is not None
 
     state = await service.submit_mock_answer(session_id, question.id, "I compared trade-offs")
+    assert state.mock_session.pending_follow_up == "How does it scale?"
+    state = await service.submit_mock_answer(
+        session_id, question.id, "At ten times traffic, p95 stayed below 100 ms"
+    )
 
     assert state.autopilot.status.value == "completed"
-    assert state.evaluation.recommendation.value == "lean_hire"
+    assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.overall
     await storage.close()
 
@@ -301,6 +305,10 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     state = await service.submit_mock_answer(
         session_id, question.id, "I compared options and explained the trade-offs."
     )
+    assert state.mock_session.status.value == "active"
+    state = await service.submit_mock_answer(
+        session_id, question.id, "At ten times traffic, p95 stayed below 100 ms."
+    )
     assert state.mock_session.status.value == "completed"
     assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.75)
     assert state.evidence[-1].competency == "System Design"
@@ -349,7 +357,7 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
 
     state = await service.run_evaluation(session_id)
     assert state.evaluation.overall_score == pytest.approx(0.78)
-    assert state.evaluation.recommendation.value == "lean_hire"
+    assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == ["Prepare one scaling story"]
     assert state.evaluated_competencies["System Design"] == pytest.approx(0.78)
     assert state.current_stage.value == "completed"

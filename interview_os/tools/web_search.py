@@ -1,15 +1,19 @@
 """Provider-neutral web search for person and company research."""
+
 from __future__ import annotations
 
 import os
 import re
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+from time import monotonic
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
 
+from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.tool import Tool, ToolResult
 
 
@@ -104,9 +108,10 @@ def _one_character_alias(haystack: str, needle: str) -> str:
     width = len(needle)
     for start in range(len(haystack) - width + 1):
         candidate = haystack[start : start + width]
-        if all("\u4e00" <= char <= "\u9fff" for char in candidate) and sum(
-            left != right for left, right in zip(candidate, needle, strict=True)
-        ) == 1:
+        if (
+            all("\u4e00" <= char <= "\u9fff" for char in candidate)
+            and sum(left != right for left, right in zip(candidate, needle, strict=True)) == 1
+        ):
             return candidate
     return ""
 
@@ -221,16 +226,32 @@ class TavilySearchProvider(SearchProvider):
 class SearchProviderManager(SearchProvider):
     """Mutable provider router shared by all session runtimes."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        cache_ttl_seconds: float = 3600,
+        cache_capacity: int = 128,
+        debug_events: DebugEventStore | None = None,
+    ) -> None:
         self._credentials = {
             "tavily": os.getenv("TAVILY_API_KEY", "").strip(),
             "searxng": os.getenv("SEARXNG_BASE_URL", "").strip(),
             "brave": os.getenv("BRAVE_SEARCH_API_KEY", "").strip(),
         }
         self.selected = self._default_provider()
+        self._cache: OrderedDict[tuple[str, str, int, str], tuple[float, list[SearchResult]]] = (
+            OrderedDict()
+        )
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._cache_capacity = cache_capacity
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self.debug_events = debug_events
 
     def _default_provider(self) -> str:
-        return next((name for name in ("tavily", "searxng", "brave") if self._credentials[name]), "none")
+        return next(
+            (name for name in ("tavily", "searxng", "brave") if self._credentials[name]), "none"
+        )
 
     def configure(
         self,
@@ -253,16 +274,41 @@ class SearchProviderManager(SearchProvider):
         if provider != "none" and not self._credentials[provider]:
             raise ValueError(f"Credentials for {provider} are not configured")
         self.selected = provider
+        self._cache.clear()
+
+    def secret_snapshot(self) -> dict[str, Any]:
+        return {
+            "provider": self.selected,
+            "tavily_api_key": self._credentials["tavily"],
+            "searxng_base_url": self._credentials["searxng"],
+            "brave_api_key": self._credentials["brave"],
+        }
 
     def status(self) -> dict[str, Any]:
         return {
             "selected": self.selected,
             "configured": {name: bool(value) for name, value in self._credentials.items()},
+            "cache": {
+                "size": len(self._cache),
+                "capacity": self._cache_capacity,
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
+            },
         }
 
     async def search(
         self, query: str, limit: int = 5, *, search_depth: str = "basic"
     ) -> list[SearchResult]:
+        key = (self.selected, query.strip(), limit, search_depth)
+        cached = self._cache.get(key)
+        if cached and monotonic() - cached[0] <= self._cache_ttl_seconds:
+            self._cache_hits += 1
+            self._cache.move_to_end(key)
+            self._record_search(query, len(cached[1]), cache_hit=True)
+            return [item.model_copy(deep=True) for item in cached[1]]
+        if cached:
+            self._cache.pop(key, None)
+        self._cache_misses += 1
         value = self._credentials.get(self.selected, "")
         providers: dict[str, SearchProvider] = {
             "tavily": TavilySearchProvider(value),
@@ -271,8 +317,31 @@ class SearchProviderManager(SearchProvider):
         }
         if self.selected == "none":
             raise ValueError("Web search provider is disabled")
-        return assess_source_quality(
+        results = assess_source_quality(
             await providers[self.selected].search(query, limit, search_depth=search_depth), query
+        )
+        self._cache[key] = (monotonic(), [item.model_copy(deep=True) for item in results])
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._cache_capacity:
+            self._cache.popitem(last=False)
+        self._record_search(query, len(results), cache_hit=False)
+        return results
+
+    def _record_search(self, query: str, count: int, *, cache_hit: bool) -> None:
+        if self.debug_events is None:
+            return
+        self.debug_events.record(
+            DebugEvent(
+                level=DebugLevel.INFO,
+                category="search",
+                action="cache_hit" if cache_hit else "provider_request",
+                detail=query[:500],
+                metadata={
+                    "provider": self.selected,
+                    "result_count": count,
+                    "source_filter": "exact entity or one-character alias with corroboration",
+                },
+            )
         )
 
 

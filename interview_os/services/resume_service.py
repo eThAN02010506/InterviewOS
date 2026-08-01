@@ -39,9 +39,7 @@ class ResumeProcessor:
         text, pages = (
             self._extract_pdf(content) if suffix == ".pdf" else self._extract_docx(content)
         )
-        had_encoding_artifacts = bool(
-            re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]", text)
-        )
+        had_encoding_artifacts = bool(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]", text))
         text = self._normalize(text)
         if not text:
             raise ResumeProcessingError("未能从简历中提取文字；扫描版 PDF 请先进行 OCR")
@@ -220,7 +218,10 @@ class ResumeProcessor:
                 if pattern.search(statement) and key not in seen:
                     claims.append(
                         ResumeClaim(
-                            category=category, statement=statement, verification_method=method
+                            category=category,
+                            statement=statement,
+                            original_statement=statement,
+                            verification_method=method,
                         )
                     )
                     seen.add(key)

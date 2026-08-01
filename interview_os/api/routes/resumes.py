@@ -27,7 +27,9 @@ async def upload_resume(session_id: str, service: Service, file: Annotated[Uploa
 async def update_claim(
     session_id: str, claim_id: UUID, req: ResumeClaimUpdateRequest, service: Service
 ):
-    state = await service.update_resume_claim(session_id, claim_id, req.status, req.note)
+    state = await service.update_resume_claim(
+        session_id, claim_id, req.status, req.note, statement=req.statement
+    )
     return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))
 
 

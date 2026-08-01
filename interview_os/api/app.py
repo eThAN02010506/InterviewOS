@@ -18,6 +18,7 @@ from interview_os.api.routes import (
     autopilot,
     debug,
     evaluations,
+    intelligence,
     interviews,
     mock_interviews,
     resumes,
@@ -36,6 +37,7 @@ from interview_os.services.interview_service import (
     WorkflowExecutionError,
 )
 from interview_os.services.resume_service import ResumeProcessingError
+from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.web_search import SearchProvider, SearchProviderManager
 
 logging.basicConfig(level=logging.INFO)
@@ -49,13 +51,22 @@ def create_app(
     llm_client: Any = None,
     search_provider: SearchProvider | None = None,
     configure_llm: bool = True,
+    settings_store: LocalSettingsStore | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
+    settings_store = settings_store or LocalSettingsStore()
+    saved_settings = settings_store.load()
     if llm_client is None and configure_llm:
-        llm_client = LocalLLMClient()
-    search_manager = SearchProviderManager()
-    active_search_provider = search_provider or search_manager
+        llm_client = LocalLLMClient(**saved_settings.get("llm", {}))
     debug_events = DebugEventStore(capacity=int(os.getenv("DEBUG_EVENT_CAPACITY", "500")))
+    search_manager = SearchProviderManager(debug_events=debug_events)
+    saved_search = saved_settings.get("search")
+    if isinstance(saved_search, dict):
+        try:
+            search_manager.configure(**saved_search)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid persisted search settings")
+    active_search_provider = search_provider or search_manager
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -66,6 +77,7 @@ def create_app(
         application.state.search_manager = search_manager
         application.state.llm_client = llm_client
         application.state.debug_events = debug_events
+        application.state.settings_store = settings_store
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()
@@ -97,6 +109,9 @@ def create_app(
     application.include_router(debug.router, prefix="/api/debug", tags=["debug"])
     application.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
     application.include_router(evaluations.router, prefix="/api/evaluations", tags=["evaluations"])
+    application.include_router(
+        intelligence.router, prefix="/api/intelligence", tags=["intelligence"]
+    )
     application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @application.exception_handler(SessionNotFoundError)

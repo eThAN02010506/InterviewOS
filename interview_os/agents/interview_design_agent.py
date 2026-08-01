@@ -1,4 +1,5 @@
 """Interview Design Agent - creates interview blueprint for enterprise side."""
+
 from __future__ import annotations
 
 import logging
@@ -26,8 +27,8 @@ class InterviewDesignAgent(Agent):
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
         context = (
             f"Position: {state.job.title}\n"
-            f"Required competencies: {state.job.competencies}\n"
-            f"Candidate strengths: {state.candidate.strengths}\n"
+            f"Job review with explicit/inferred labels: {state.job_review.model_dump_json()}\n"
+            f"Confirmed candidate facts: {state.candidate_evidence_context()}\n"
             f"Company DNA: {state.company.dna}\n"
             f"Company preferences: {state.company.preferences}"
         )

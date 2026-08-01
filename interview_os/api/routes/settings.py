@@ -1,4 +1,5 @@
 """Runtime settings API and local settings UI."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -8,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from interview_os.models.local_llm import LocalLLMClient
+from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.web_search import SearchProviderManager
 
 router = APIRouter()
@@ -30,6 +32,7 @@ class LLMSettingsUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     search: SearchSettingsUpdate | None = None
     llm: LLMSettingsUpdate | None = None
+    persist: bool = True
 
 
 @router.get("")
@@ -39,7 +42,8 @@ async def get_settings(request: Request):
     return {
         "search": search.status(),
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
-        "persistence": "runtime_only",
+        "persistence": "local_permission_restricted",
+        "persisted_locally": request.app.state.settings_store.path.exists(),
     }
 
 
@@ -47,6 +51,7 @@ async def get_settings(request: Request):
 async def update_settings(payload: SettingsUpdate, request: Request):
     search: SearchProviderManager = request.app.state.search_manager
     llm = request.app.state.llm_client
+    store: LocalSettingsStore = request.app.state.settings_store
     try:
         if payload.search:
             search.configure(**payload.search.model_dump())
@@ -54,6 +59,11 @@ async def update_settings(payload: SettingsUpdate, request: Request):
             if not isinstance(llm, LocalLLMClient):
                 raise ValueError("The injected LLM client cannot be configured from the UI")
             await llm.reconfigure(**payload.llm.model_dump())
+        if payload.persist:
+            saved = {"search": search.secret_snapshot()}
+            if isinstance(llm, LocalLLMClient):
+                saved["llm"] = llm.secret_snapshot()
+            store.save(saved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await get_settings(request)
@@ -72,7 +82,7 @@ fieldset{border:1px solid #d9e0e7;border-radius:10px;margin:18px 0;padding:18px}
 input,select,button{box-sizing:border-box;width:100%;padding:10px;border:1px solid #b8c2cc;border-radius:7px}
 button{margin-top:18px;background:#1f6feb;color:white;border:0;cursor:pointer}.hint{color:#65717e;font-size:13px}
 </style></head><body><h1>InterviewOS 设置</h1>
-<p class="hint">密钥不会由 API 回传。页面修改立即生效，但当前仅在本次进程中保存。</p>
+<p class="hint">密钥不会由 API 回传、日志或 Debug Console 展示。设置会保存到仅当前用户可读的本地文件。</p>
 <form id="form"><fieldset><legend>联网搜索</legend><label>Provider</label><select id="provider">
 <option value="tavily">Tavily</option><option value="searxng">SearXNG</option><option value="brave">Brave</option><option value="none">关闭</option></select>
 <label>Tavily API Key</label><input id="tavily" type="password" autocomplete="off" placeholder="已配置时可留空">

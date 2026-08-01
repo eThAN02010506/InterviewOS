@@ -108,8 +108,8 @@ function hydrateSessionForms() {
   const values = {
     'candidate-resume': s.candidate?.raw_resume_text,
     'enterprise-resume': s.candidate?.raw_resume_text,
-    'candidate-jd': s.job?.title,
-    'enterprise-jd': s.job?.title,
+    'candidate-jd': s.job?.raw_description || s.job?.title,
+    'enterprise-jd': s.job?.raw_description || s.job?.title,
     'candidate-company': s.company?.name,
     'enterprise-company': s.company?.name,
     'interviewer-name': s.interviewer?.name,
@@ -125,7 +125,7 @@ function renderState() {
   const sources = (s?.company?.public_sources?.length || 0) + (s?.interviewer?.public_expressions?.length || 0);
   $('metric-sources').textContent = sources; $('metric-questions').textContent = s?.mock_interview?.questions?.length || 0; $('metric-evidence').textContent = s?.evidence?.length || 0;
   $('next-action').textContent = s?.next_action || '创建一个会话，然后选择候选人准备或企业面试设计。';
-  renderResumeReview();
+  renderResumeReview(); renderJDReview(); renderFacts(); maybePromptEntityResolution();
   const profiles = [['候选人', !!s?.candidate?.skills?.length],['岗位',!!s?.job?.competencies?.length],['公司',!!s?.company?.dna],['面试官',!!s?.interviewer?.name]];
   $('profile-progress').innerHTML = profiles.map(([name, done]) => `<div class="progress-item"><span>${name}</span><div class="progress-track"><i style="width:${done?100:8}%"></i></div><b>${done?'完成':'待分析'}</b></div>`).join('');
   $('hiring-candidate').textContent = s?.candidate?.name || '待分析';
@@ -148,9 +148,33 @@ function renderResumeReview() {
     node.classList.add('visible');
     node.innerHTML = `<div class="review-summary"><strong>${esc(review.metadata.filename)}</strong><span>${review.metadata.character_count} 字 · ${review.issues.length} 项提示 · ${unresolved.length} 项待确认</span></div>
       ${(review.issues || []).map(issue => `<div class="review-issue ${esc(issue.severity)}"><b>${esc(issue.severity === 'warning' ? '请检查' : '提示')}</b><span>${esc(issue.message)}</span></div>`).join('')}
-      ${unresolved.slice(0, 8).map(claim => `<div class="review-claim"><div><small>${esc(claim.category)}</small><span>${esc(claim.statement)}</span></div><button type="button" data-confirm-claim="${esc(claim.id)}">确认</button></div>`).join('')}
+      ${unresolved.slice(0, 8).map(claim => `<div class="review-claim"><div><small>${esc(claim.category)}</small><span>${esc(claim.statement)}</span></div><div class="claim-actions"><button type="button" data-claim-action="confirmed" data-claim-id="${esc(claim.id)}">确认</button><button type="button" data-claim-action="modified" data-claim-id="${esc(claim.id)}">修改</button><button type="button" data-claim-action="needs_documents" data-claim-id="${esc(claim.id)}">要材料</button><button type="button" data-claim-action="ignored" data-claim-id="${esc(claim.id)}">忽略</button></div></div>`).join('')}
       ${unresolved.length > 8 ? `<p class="review-more">另有 ${unresolved.length - 8} 项，可在后续审阅中处理。</p>` : ''}`;
   });
+}
+
+function renderJDReview() {
+  const review=state.session?.job_review;
+  [$('candidate-jd-review'),$('enterprise-jd-review')].forEach(node=>{
+    if(!review?.requirements?.length && !review?.warnings?.length){node.innerHTML='';return;}
+    const explicit=(review.requirements||[]).filter(x=>x.origin==='explicit');
+    const inferred=(review.requirements||[]).filter(x=>x.origin==='inferred');
+    node.innerHTML=`<div class="review-summary"><strong>JD 完整度 ${Math.round((review.completeness_score||0)*100)}%</strong><span>${review.is_title_only?'仅职位名称，无法生成岗位专属问题':'已完成结构检查'}</span></div>${review.missing_sections?.length?`<p class="jd-warning">请补充：${esc(review.missing_sections.join('、'))}</p>`:''}${list('明确要求',explicit.map(x=>x.text))}${list('AI 推测（需确认）',inferred.map(x=>x.text))}`;
+  });
+}
+
+function renderFacts(){
+  const node=$('fact-result'); const cards=state.session?.fact_cards||[];
+  if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
+  const labels={verified:'已验证',inferred:'推测',conflict:'冲突'};
+  node.className='fact-list';node.innerHTML=cards.map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')}</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}</article>`).join('');
+}
+
+function maybePromptEntityResolution(){
+  const dialog=$('entity-dialog'); if(dialog.open)return;
+  const item=(state.session?.entity_resolutions||[]).find(x=>x.status==='pending'); if(!item)return;
+  dialog.dataset.resolutionId=item.id;$('entity-copy').textContent=`搜索结果显示“${item.proposed_name}”可能是“${item.input_name}”的正确实体。是否将“${item.input_name}”更正为“${item.proposed_name}”？`;
+  dialog.showModal();
 }
 
 function renderReports() {
@@ -203,8 +227,8 @@ function renderBlueprint() {
 function renderMock() {
   const plan=state.session?.mock_interview?.questions||[]; const session=state.session?.mock_session; const index=session?.current_question_index||0;
   $('mock-progress').textContent=`${Math.min(index,plan.length)} / ${plan.length}`; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
-  const current=session?.status==='active'?plan[index]:null; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none'; $('answer-form').style.display=current?'block':'none';
-  $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${esc(current.competency||'综合能力')}</small>${esc(current.question)}`:(session?.status==='completed'?'所有问题均已完成，可以进入证据评价。':'先完成候选人准备工作流，生成个性化问题。');
+  const current=session?.status==='active'?plan[index]:null; const questionText=session?.pending_follow_up||current?.question; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none'; $('answer-form').style.display=current?'block':'none';
+  $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'所有问题均已完成，最终报告已自动生成。':'先完成候选人准备工作流，生成个性化问题。');
   const last=session?.responses?.at(-1); const node=$('coach-result');
   if (!last) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
   const e=last.evaluation; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div>${list('改进建议',e.feedback)}<div class="result-block"><h4>优化回答</h4><p>${esc(e.improved_answer)}</p></div>`;
@@ -237,19 +261,29 @@ document.querySelectorAll('.resume-file').forEach(input => input.onchange = asyn
 });
 
 document.addEventListener('click', async event => {
-  const button = event.target.closest('[data-confirm-claim]');
+  const button = event.target.closest('[data-claim-action]');
   if (!button || !state.sessionId) return;
+  if(button.dataset.claimAction==='modified'){
+    const claim=state.session?.resume_review?.claims?.find(x=>x.id===button.dataset.claimId);if(!claim)return;
+    $('claim-dialog').dataset.claimId=claim.id;$('claim-statement').value=claim.statement;$('claim-note').value='';$('claim-dialog').showModal();return;
+  }
   try {
-    const data = await api(`/api/resumes/${state.sessionId}/claims/${button.dataset.confirmClaim}`, {method:'PATCH', body:JSON.stringify({status:'confirmed'})});
-    state.session = data.state; renderState(); toast('该陈述已由当前用户确认');
+    const data = await api(`/api/resumes/${state.sessionId}/claims/${button.dataset.claimId}`, {method:'PATCH', body:JSON.stringify({status:button.dataset.claimAction})});
+    state.session = data.state; renderState(); toast({confirmed:'已确认，后续 Agent 可使用',needs_documents:'已标记为需要材料',ignored:'已忽略，后续 Agent 不会使用'}[button.dataset.claimAction]||'已更新');
   } catch (error) { toast(error.message, true); }
 });
+
+$('cancel-claim').onclick=()=>$('claim-dialog').close();
+$('save-claim').onclick=async()=>{const dialog=$('claim-dialog');try{const data=await api(`/api/resumes/${state.sessionId}/claims/${dialog.dataset.claimId}`,{method:'PATCH',body:JSON.stringify({status:'modified',statement:$('claim-statement').value,note:$('claim-note').value})});state.session=data.state;dialog.close();renderState();toast('修改后的事实已确认，后续 Agent 将使用新表述');}catch(error){toast(error.message,true)}};
+
+async function resolveEntity(accept){const dialog=$('entity-dialog');try{const data=await api(`/api/intelligence/${state.sessionId}/entities/${dialog.dataset.resolutionId}`,{method:'PATCH',body:JSON.stringify({accept})});state.session=data.state;dialog.close();hydrateSessionForms();renderState();toast(accept?'实体名称已更正':'已保留原名称');}catch(error){toast(error.message,true)}}
+$('accept-entity').onclick=()=>resolveEntity(true);$('reject-entity').onclick=()=>resolveEntity(false);
 
 $('candidate-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);showWorkflowStarting();try{const payload={role:'candidate',resume_text:$('candidate-resume').value,job_description:$('candidate-jd').value,company_name:$('candidate-company').value,company_context:$('candidate-company-context').value,interviewer_name:$('interviewer-name').value,interviewer_position:$('interviewer-position').value,authorized_public_research:$('candidate-research-consent').checked};const endpoint=$('candidate-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/candidate-prep';if(!$('candidate-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;await loadSessions();toast(state.session.autopilot?.enabled?'AI 已推进到需要你回答的阶段':'候选人策略已生成');}catch(error){await loadSession();toast(`运行失败：${error.message}`,true)}finally{busy(form,false)}};
 $('enterprise-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);showWorkflowStarting();try{const payload={role:'interviewer',resume_text:$('enterprise-resume').value,job_description:$('enterprise-jd').value,company_name:$('enterprise-company').value,company_context:$('enterprise-context').value,authorized_public_research:$('enterprise-research-consent').checked};const endpoint=$('enterprise-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/enterprise-design';if(!$('enterprise-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;await loadSessions();toast(state.session.autopilot?.enabled?'AI 已完成设计，等待采集真实面试证据':'面试 Blueprint 已生成');}catch(error){await loadSession();toast(`运行失败：${error.message}`,true)}finally{busy(form,false)}};
 
 $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/start`,{method:'POST'});await loadSession();toast('模拟面试已开始');}catch(error){toast(error.message,true)}};
-$('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const question=state.session?.mock_interview?.questions?.[state.session.mock_session.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:question.id,answer:$('mock-answer').value})});$('mock-answer').value='';await loadSession();toast('回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
+$('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value})});$('mock-answer').value='';await loadSession();toast(state.session?.mock_session?.pending_follow_up?'回答已评分，AI 正在追问缺失证据':'回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 document.querySelectorAll('.evaluation-trigger').forEach(button => button.onclick = async () => {
   if (!await ensureSession()) return;
   busy(button, true);
@@ -262,10 +296,12 @@ document.querySelectorAll('.evaluation-trigger').forEach(button => button.onclic
   finally { busy(button, false); }
 });
 
+$('transcript-form').onsubmit=async e=>{e.preventDefault();if(!await ensureSession())return;const form=e.currentTarget;const lines=$('transcript-input').value.split('\n').map(x=>x.trim()).filter(Boolean);const entries=lines.map(line=>{const parts=line.split('|').map(x=>x.trim());return {competency:parts[0]||'综合能力',question:parts[1]||'',answer:parts.slice(2).join(' | ')};});if(entries.some(x=>!x.question||!x.answer)){toast('每行必须包含“能力 | 问题 | 回答”三部分',true);return;}busy(form,true);try{const data=await api(`/api/evaluations/${state.sessionId}/transcript`,{method:'POST',body:JSON.stringify({entries,auto_evaluate:true})});state.session=data.state;renderState();toast(`已导入 ${entries.length} 条真实回答并生成评价`);}catch(error){toast(error.message,true)}finally{busy(form,false)}};
+
 async function loadSettings(){try{const s=await api('/api/settings');$('setting-provider').value=s.search.selected;$('setting-base-url').value=s.llm.base_url||'';$('setting-model').value=s.llm.model||'';}catch(error){toast(error.message,true)}}
 $('settings-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;busy(form,true);try{await api('/api/settings',{method:'PUT',body:JSON.stringify({search:{provider:$('setting-provider').value,tavily_api_key:optional('setting-tavily'),searxng_base_url:optional('setting-searxng'),brave_api_key:optional('setting-brave')},llm:{base_url:optional('setting-base-url'),model:optional('setting-model'),api_key:optional('setting-llm-key')}})});toast('设置已立即应用');await loadSettings();}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 
-async function refreshDebug(){try{const [status,events,sessions]=await Promise.all([api('/api/debug/status'),api('/api/debug/events?limit=100'),api('/api/debug/sessions')]);$('debug-status').innerHTML=[['应用',status.application.status],['模型',status.llm.model||'managed'],['模型地址',status.llm.base_url||'—'],['搜索',status.search.selected],['事件容量',status.event_capacity]].map(([k,v])=>`<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('');$('debug-sessions').innerHTML=sessions.sessions.map(s=>`<div class="session-row"><span>${esc(s.candidate_name||'未命名')}<small>${esc(s.job_title||'未指定岗位')}</small></span><code>${esc(s.id.slice(0,8))}</code></div>`).join('')||'<div class="empty-state">暂无会话</div>';renderEvents(events.events);}catch(error){toast(error.message,true)}}
+async function refreshDebug(){try{const [status,events,sessions]=await Promise.all([api('/api/debug/status'),api('/api/debug/events?limit=100'),api('/api/debug/sessions')]);const metrics=status.llm.metrics||{};const cache=status.search.cache||{};$('debug-status').innerHTML=[['应用',status.application.status],['模型',status.llm.model||'managed'],['模型地址',status.llm.base_url||'—'],['模型请求 / 失败',`${metrics.requests||0} / ${metrics.failures||0}`],['Token 输入 / 输出',`${metrics.prompt_tokens||0} / ${metrics.completion_tokens||0}`],['平均耗时',`${metrics.average_latency_ms||0} ms`],['搜索',status.search.selected],['缓存命中 / 未命中',`${cache.hits||0} / ${cache.misses||0}`],['事件容量',status.event_capacity]].map(([k,v])=>`<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('');$('debug-sessions').innerHTML=sessions.sessions.map(s=>`<div class="session-row"><span>${esc(s.candidate_name||'未命名')}<small>${esc(s.job_title||'未指定岗位')}</small></span><code>${esc(s.id.slice(0,8))}</code></div>`).join('')||'<div class="empty-state">暂无会话</div>';renderEvents(events.events);}catch(error){toast(error.message,true)}}
 function renderEvents(events){$('event-list').innerHTML=events.map(e=>`<div class="event-row"><span>${new Date(e.timestamp).toLocaleTimeString()}</span><span class="${esc(e.level)}">${esc(e.level)}</span><span>${esc(e.agent||e.category)} · ${esc(e.action)}${e.detail?` · ${esc(e.detail)}`:''}</span><span>${e.duration_ms?`${e.duration_ms} ms`:'—'}</span></div>`).join('')||'<div class="empty-state">暂无运行事件</div>';}
 $('refresh-events').onclick=refreshDebug;$('probe-llm').onclick=async()=>{try{const d=await api('/api/debug/probes/llm',{method:'POST'});toast(`模型连接正常 · ${d.latency_ms||0} ms`);await refreshDebug();}catch(error){toast(error.message,true)}};
 

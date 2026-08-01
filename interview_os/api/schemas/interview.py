@@ -93,6 +93,22 @@ class WorkflowResponse(BaseModel):
 class ResumeClaimUpdateRequest(BaseModel):
     status: ResumeClaimStatus
     note: str = Field(default="", max_length=500)
+    statement: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class EntityResolutionRequest(BaseModel):
+    accept: bool
+
+
+class TranscriptEntryRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=12000)
+    competency: str = Field(default="综合能力", max_length=200)
+
+
+class TranscriptImportRequest(BaseModel):
+    entries: list[TranscriptEntryRequest] = Field(min_length=1, max_length=50)
+    auto_evaluate: bool = True
 
 
 class MockAnswerRequest(BaseModel):

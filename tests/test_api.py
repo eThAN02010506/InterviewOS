@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from interview_os.api.app import create_app
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
+from interview_os.services.settings_service import LocalSettingsStore
 
 
 class MockLLM:
@@ -39,6 +40,16 @@ class WorkflowLLM:
 
     async def embed(self, text):
         return []
+
+
+class FollowupWorkflowLLM(WorkflowLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "mock interview plan" in prompt:
+            return '{"questions":[{"question":"Design it","competency":"System Design","follow_ups":["What evidence supports that trade-off?"]}]}'
+        if "analyze this interview answer" in prompt:
+            return '{"content":0.6,"technical_depth":0.6,"structure":0.6,"impact":0.5,"feedback":["Add evidence"],"improved_answer":"Better","observed_signals":["Design thinking"],"missing_signals":["Measured impact"]}'
+        return await super().chat(messages, **kwargs)
 
 
 def make_resume_docx() -> bytes:
@@ -134,7 +145,12 @@ def test_resume_upload_and_human_confirmation_flow(tmp_path):
 def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
     llm = LocalLLMClient(base_url="http://localhost:11434/v1", api_key="local", model="test")
-    app = create_app(storage=storage, llm_client=llm, configure_llm=False)
+    app = create_app(
+        storage=storage,
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
     with TestClient(app) as client:
         page = client.get("/api/settings/ui")
         assert page.status_code == 200
@@ -148,7 +164,8 @@ def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
         body = updated.json()
         assert body["search"]["selected"] == "tavily"
         assert body["search"]["configured"]["tavily"] is True
-        assert "tvly-secret" not in updated.text
+    assert "tvly-secret" not in updated.text
+    assert (tmp_path / "settings.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_candidate_prep_api_returns_structured_workflow(tmp_path):
@@ -221,5 +238,57 @@ def test_evaluation_api_generates_dual_side_report(tmp_path):
         )
         response = client.post(f"/api/evaluations/{session_id}")
     assert response.status_code == 200
-    assert response.json()["state"]["evaluation"]["recommendation"] == "hire"
+    assert response.json()["state"]["evaluation"]["recommendation"] == "insufficient_evidence"
     assert response.json()["state"]["feedback"]["overall"] == "Meets the bar"
+
+
+def test_mock_interview_asks_followup_before_advancing(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'followup.db'}")
+    app = create_app(storage=storage, llm_client=FollowupWorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": session_id,
+                "resume_text": "Python",
+                "job_description": "Platform",
+                "company_name": "Example",
+            },
+        )
+        started = client.post(f"/api/mock-interviews/{session_id}/start").json()
+        question_id = started["current_question"]["id"]
+        first = client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": question_id, "answer": "I made a trade-off."},
+        ).json()
+        assert first["current_question"]["question"] == "What evidence supports that trade-off?"
+        second = client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": question_id, "answer": "Latency fell by 30%."},
+        ).json()
+    assert second["mock_session"]["status"] == "completed"
+    assert second["mock_session"]["responses"][1]["is_follow_up"] is True
+
+
+def test_interviewer_transcript_import_generates_hiring_report(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'transcript.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        response = client.post(
+            f"/api/evaluations/{session_id}/transcript",
+            json={
+                "entries": [
+                    {
+                        "competency": "System Design",
+                        "question": "Design a service",
+                        "answer": "I measured latency and explained the trade-offs.",
+                    }
+                ]
+            },
+        )
+    assert response.status_code == 200
+    result = response.json()["state"]
+    assert len(result["live_interview_records"]) == 1
+    assert result["evaluation"]["recommendation"] == "insufficient_evidence"

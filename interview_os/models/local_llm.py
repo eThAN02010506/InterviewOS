@@ -2,6 +2,7 @@
 
 Supports Ollama / vLLM / LM Studio backends.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,10 +30,17 @@ class LocalLLMClient(LLMClient):
         self.base_url: str = base_url or os.getenv("LLM_BASE_URL") or "http://localhost:11434/v1"
         self.api_key: str = api_key or os.getenv("LLM_API_KEY") or "ollama"
         self.model: str = model or os.getenv("LLM_MODEL") or "qwen2.5:14b"
-        self.embedding_model: str = embedding_model or os.getenv(
-            "EMBEDDING_MODEL"
-        ) or "BAAI/bge-small-zh-v1.5"
+        self.embedding_model: str = (
+            embedding_model or os.getenv("EMBEDDING_MODEL") or "BAAI/bge-small-zh-v1.5"
+        )
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120.0)
+        self._metrics = {
+            "requests": 0,
+            "failures": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_latency_ms": 0.0,
+        }
 
     async def chat(
         self,
@@ -48,6 +56,8 @@ class LocalLLMClient(LLMClient):
             "max_tokens": max_tokens,
             **kwargs,
         }
+        started = perf_counter()
+        self._metrics["requests"] += 1
         try:
             resp = await self._client.post(
                 "/chat/completions",
@@ -56,10 +66,16 @@ class LocalLLMClient(LLMClient):
             )
             resp.raise_for_status()
             data = resp.json()
+            usage = data.get("usage") or {}
+            self._metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+            self._metrics["completion_tokens"] += int(usage.get("completion_tokens") or 0)
             return data["choices"][0]["message"]["content"]
         except httpx.HTTPError as exc:
+            self._metrics["failures"] += 1
             logger.error("LLM chat failed: %s", exc)
             return f"[LLM Error: {exc}]"
+        finally:
+            self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
 
     async def embed(self, text: str) -> list[float]:
         payload = {"model": self.embedding_model, "input": text}
@@ -100,11 +116,26 @@ class LocalLLMClient(LLMClient):
             self.embedding_model = embedding_model
 
     def settings_status(self) -> dict[str, Any]:
+        requests = int(self._metrics["requests"])
         return {
             "base_url": self.base_url,
             "model": self.model,
             "embedding_model": self.embedding_model,
             "api_key_configured": bool(self.api_key),
+            "metrics": {
+                **self._metrics,
+                "average_latency_ms": round(float(self._metrics["total_latency_ms"]) / requests, 2)
+                if requests
+                else 0.0,
+            },
+        }
+
+    def secret_snapshot(self) -> dict[str, str]:
+        return {
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": self.model,
+            "embedding_model": self.embedding_model,
         }
 
     async def probe(self) -> dict[str, Any]:

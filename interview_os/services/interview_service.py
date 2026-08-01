@@ -18,6 +18,7 @@ from interview_os.core.state import (
     AutopilotStatus,
     CandidateProfile,
     CompanyInfo,
+    EntityResolution,
     EvaluationReport,
     FeedbackReport,
     InterviewBlueprint,
@@ -26,6 +27,8 @@ from interview_os.core.state import (
     InterviewState,
     InterviewStrategy,
     JobDescription,
+    JobDescriptionReview,
+    LiveInterviewRecord,
     MockAnswerRecord,
     MockInterviewPlan,
     MockInterviewSession,
@@ -35,6 +38,12 @@ from interview_os.core.state import (
     WorkflowStatus,
 )
 from interview_os.database.storage import Storage
+from interview_os.services.intelligence_service import (
+    build_fact_cards,
+    resolve_entity,
+    review_job_description,
+    sync_entity_resolutions,
+)
 from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.web_search import SearchProvider
 
@@ -116,7 +125,12 @@ class InterviewService:
             return runtime.state
 
     async def update_resume_claim(
-        self, session_id: str, claim_id: UUID, status: ResumeClaimStatus, note: str = ""
+        self,
+        session_id: str,
+        claim_id: UUID,
+        status: ResumeClaimStatus,
+        note: str = "",
+        statement: str | None = None,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
@@ -127,6 +141,12 @@ class InterviewService:
                 raise ResumeReviewStateError("Resume claim not found")
             claim.status = status
             claim.note = note.strip()[:500]
+            if statement is not None:
+                revised = statement.strip()[:2000]
+                if not revised:
+                    raise ResumeReviewStateError("Resume claim statement cannot be empty")
+                claim.original_statement = claim.original_statement or claim.statement
+                claim.statement = revised
             await self._persist(session_id, runtime.state)
             self._record_debug(
                 "resume_claim_updated", session_id, detail=f"{claim.category}: {status}"
@@ -141,6 +161,7 @@ class InterviewService:
         async with self._lock_for(session_id):
             runtime.state.company.name = name
             message = await runtime.run("company_agent", context)
+            self._sync_intelligence(runtime.state)
             await self._persist(session_id, runtime.state)
             return message
 
@@ -161,6 +182,7 @@ class InterviewService:
                 public_expressions=[{"text": public_info}] if public_info else [],
             )
             message = await runtime.run("interviewer_agent")
+            self._sync_intelligence(runtime.state)
             await self._persist(session_id, runtime.state)
             return message
 
@@ -206,6 +228,7 @@ class InterviewService:
             steps,
             company_name=company_name,
             interviewer=interviewer,
+            parallel_prefix=4 if interviewer else 3,
         )
 
     async def run_enterprise_design(
@@ -230,6 +253,7 @@ class InterviewService:
             "enterprise_design",
             steps,
             company_name=company_name,
+            parallel_prefix=3,
         )
 
     async def start_mock_interview(self, session_id: str) -> InterviewState:
@@ -264,12 +288,15 @@ class InterviewService:
             if mock_session.current_question_index >= len(questions):
                 raise MockInterviewStateError("Mock interview has no remaining questions")
             question = questions[mock_session.current_question_index]
-            if question.id != question_id:
+            is_follow_up = bool(mock_session.pending_follow_up)
+            expected_id = mock_session.pending_parent_question_id or question.id
+            if expected_id != question_id:
                 raise MockInterviewStateError("Answer does not match the current question")
+            asked_question = mock_session.pending_follow_up or question.question
 
             payload = json.dumps(
                 {
-                    "question": question.question,
+                    "question": asked_question,
                     "answer": answer,
                     "competency": question.competency or "Answer Quality",
                 }
@@ -285,12 +312,21 @@ class InterviewService:
             mock_session.responses.append(
                 MockAnswerRecord(
                     question_id=question.id,
-                    question=question.question,
+                    question=asked_question,
                     competency=question.competency,
                     answer=answer,
                     evaluation=evaluation,
+                    is_follow_up=is_follow_up,
                 )
             )
+            if not is_follow_up and evaluation.missing_signals and question.follow_ups:
+                mock_session.pending_follow_up = question.follow_ups[0]
+                mock_session.pending_parent_question_id = question.id
+                runtime.state.next_action = "Answer the evidence-seeking follow-up question"
+                await self._persist(session_id, runtime.state)
+                return runtime.state
+            mock_session.pending_follow_up = ""
+            mock_session.pending_parent_question_id = None
             mock_session.current_question_index += 1
             if mock_session.current_question_index == len(questions):
                 mock_session.status = MockSessionStatus.COMPLETED
@@ -355,12 +391,15 @@ class InterviewService:
             )
             runtime.state.candidate.raw_resume_text = resume_text
             runtime.state.job = JobDescription()
+            runtime.state.job_review = JobDescriptionReview()
             runtime.state.company = CompanyInfo(name=company_name)
             runtime.state.interviewer = InterviewerProfile(
                 name=interviewer_name,
                 position=interviewer_position,
                 company=company_name,
             )
+            runtime.state.entity_resolutions = []
+            runtime.state.fact_cards = []
             runtime.state.strategy = InterviewStrategy()
             runtime.state.blueprint = InterviewBlueprint()
             runtime.state.mock_interview = MockInterviewPlan()
@@ -441,7 +480,60 @@ class InterviewService:
             questions
         ):
             return None
-        return questions[session.current_question_index]
+        question = questions[session.current_question_index]
+        if session.pending_follow_up:
+            return question.model_copy(
+                update={
+                    "question": session.pending_follow_up,
+                    "rationale": "根据上一回答中缺失的证据进行追问",
+                }
+            )
+        return question
+
+    async def import_interview_transcript(
+        self,
+        session_id: str,
+        entries: list[dict[str, str]],
+        *,
+        auto_evaluate: bool = True,
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            for entry in entries[:50]:
+                question = entry.get("question", "").strip()
+                answer = entry.get("answer", "").strip()
+                competency = entry.get("competency", "").strip() or "综合能力"
+                if not question or not answer:
+                    raise EvaluationStateError("Transcript entries require question and answer")
+                message = await runtime.run(
+                    "coach_agent",
+                    json.dumps(
+                        {"question": question, "answer": answer, "competency": competency},
+                        ensure_ascii=False,
+                    ),
+                )
+                try:
+                    evaluation = AnswerEvaluation.model_validate_json(message.content)
+                except (ValueError, TypeError) as exc:
+                    raise EvaluationStateError("Transcript answer evaluation failed") from exc
+                runtime.state.live_interview_records.append(
+                    LiveInterviewRecord(
+                        question=question,
+                        answer=answer,
+                        competency=competency,
+                        evaluation=evaluation,
+                    )
+                )
+            runtime.state.next_action = "Generate evidence-based hiring evaluation"
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "interview_transcript_imported",
+                session_id,
+                detail=f"{min(len(entries), 50)} entries",
+            )
+        if auto_evaluate:
+            return await self.run_evaluation(session_id)
+        return runtime.state
 
     async def _execute_workflow(
         self,
@@ -451,6 +543,7 @@ class InterviewService:
         steps: list[tuple[str, str]],
         company_name: str | None = None,
         interviewer: InterviewerProfile | None = None,
+        parallel_prefix: int = 0,
     ) -> InterviewState:
         async with self._lock_for(session_id):
             if name == "evaluation" and not runtime.state.evidence:
@@ -469,11 +562,31 @@ class InterviewService:
             self._record_debug("workflow_started", session_id, detail=name)
             await self._persist(session_id, runtime.state)
             try:
-                for index, (agent_name, instruction) in enumerate(steps, start=1):
+                start_index = 0
+                if parallel_prefix:
+                    initial = steps[:parallel_prefix]
+                    runtime.state.workflow.current_step = " + ".join(
+                        agent_name for agent_name, _ in initial
+                    )
+                    await self._persist(session_id, runtime.state)
+                    await asyncio.gather(
+                        *(
+                            runtime.run(agent_name, instruction)
+                            for agent_name, instruction in initial
+                        )
+                    )
+                    start_index = len(initial)
+                    runtime.state.workflow.completed_steps = start_index
+                    self._sync_intelligence(runtime.state)
+                    await self._persist(session_id, runtime.state)
+                for index, (agent_name, instruction) in enumerate(
+                    steps[start_index:], start=start_index + 1
+                ):
                     runtime.state.workflow.current_step = agent_name
                     await self._persist(session_id, runtime.state)
                     await runtime.run(agent_name, instruction)
                     runtime.state.workflow.completed_steps = index
+                    self._sync_intelligence(runtime.state)
                     await self._persist(session_id, runtime.state)
                 self._validate_workflow_result(name, runtime.state)
             except Exception as exc:
@@ -500,6 +613,31 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
             self._record_debug("workflow_completed", session_id, detail=name)
             return runtime.state
+
+    async def resolve_entity_candidate(
+        self, session_id: str, resolution_id: UUID, *, accept: bool
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            try:
+                resolution: EntityResolution = resolve_entity(
+                    runtime.state, resolution_id, accept=accept
+                )
+            except LookupError as exc:
+                raise ResumeReviewStateError(str(exc)) from exc
+            self._sync_intelligence(runtime.state)
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "entity_resolution_updated",
+                session_id,
+                detail=f"{resolution.input_name} -> {resolution.proposed_name}: {resolution.status.value}",
+            )
+            return runtime.state
+
+    @staticmethod
+    def _sync_intelligence(state: InterviewState) -> None:
+        sync_entity_resolutions(state)
+        build_fact_cards(state)
 
     @staticmethod
     def _validate_workflow_result(name: str, state: InterviewState) -> None:
@@ -534,8 +672,24 @@ class InterviewService:
             self.llm_client, self.search_provider, self.debug_events, session_id
         )
         runtime.state = InterviewState.model_validate(state)
+        if not runtime.state.job_review.requirements and (
+            runtime.state.job.raw_description or runtime.state.job.title
+        ):
+            inferred = [
+                *runtime.state.job.required_skills,
+                *runtime.state.job.preferred_skills,
+                *runtime.state.job.competencies,
+            ]
+            runtime.state.job_review = review_job_description(
+                runtime.state.job.raw_description or runtime.state.job.title,
+                list(dict.fromkeys(inferred)),
+            )
+        self._sync_intelligence(runtime.state)
+        if runtime.state.evaluation.finalized_at:
+            runtime.state.enforce_evaluation_evidence_floor()
         self._runtimes[session_id] = runtime
         self._locks.setdefault(session_id, asyncio.Lock())
+        await self._persist(session_id, runtime.state)
         return runtime
 
     def _lock_for(self, session_id: str) -> asyncio.Lock:

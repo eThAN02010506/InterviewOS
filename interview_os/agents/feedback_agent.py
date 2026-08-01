@@ -42,5 +42,22 @@ class FeedbackAgent(Agent):
             state.feedback = await self.think_structured(prompt, FeedbackReport, context=context)
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse feedback report: %s", exc)
-            return self.make_response("{}")
+            evidence_count = len(state.evidence)
+            state.feedback = FeedbackReport(
+                overall=state.evaluation.summary or "已根据现有证据完成评价。",
+                strengths=[
+                    item.signal
+                    for item in state.evidence
+                    if item.confidence >= 0.7 and item.signal
+                ][:5],
+                improvements=list(dict.fromkeys(state.missing_signals))[:5],
+                action_plan=["补充至少两道不同胜任力问题，以形成交叉验证"],
+                interviewer_notes=[f"当前共有 {evidence_count} 条可追溯证据"],
+                recommendation_reasoning=(
+                    "结构化反馈生成失败，本段仅转述确定性证据聚合结果；未添加新事实。"
+                ),
+            )
+            self.record_degradation(
+                "Structured feedback failed; summarized the finalized evidence report"
+            )
         return self.make_response(state.feedback.model_dump_json())

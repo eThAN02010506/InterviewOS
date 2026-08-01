@@ -1,4 +1,5 @@
 """Composition root for the InterviewOS agent runtime."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -41,11 +42,12 @@ def create_runtime(
     session_id: str = "",
 ) -> AgentRuntime:
     """Build a fully registered runtime without hiding global state."""
-    runtime = AgentRuntime(
-        llm_client=llm_client, debug_events=debug_events, session_id=session_id
-    )
+    runtime = AgentRuntime(llm_client=llm_client, debug_events=debug_events, session_id=session_id)
     tools = ToolRegistry()
     tools.register(WebSearchTool(search_provider))
     for agent_type in AGENT_TYPES:
-        runtime.register_agent(agent_type(llm_client=llm_client, tools=tools))
+        agent = agent_type(llm_client=llm_client, tools=tools)
+        agent.debug_events = debug_events
+        agent.session_id = session_id
+        runtime.register_agent(agent)
     return runtime

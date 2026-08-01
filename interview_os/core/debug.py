@@ -1,6 +1,8 @@
 """Bounded, read-only observability primitives for the local debug console."""
+
 from __future__ import annotations
 
+import re
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
@@ -41,6 +43,12 @@ class DebugEventStore:
         self._lock = Lock()
 
     def record(self, event: DebugEvent) -> None:
+        event = event.model_copy(
+            update={
+                "detail": _redact_text(event.detail),
+                "metadata": _redact_value(event.metadata),
+            }
+        )
         with self._lock:
             self._events.append(event)
 
@@ -66,3 +74,31 @@ class DebugEventStore:
             if len(result) == bounded_limit:
                 break
         return result
+
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(?:tvly-[\w-]{8,}|(?:api[_ -]?key|authorization|token)\s*[:=]\s*[^\s,;}]+)"
+)
+_EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+_PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
+
+
+def _redact_text(value: str) -> str:
+    value = _SECRET_PATTERN.sub("[REDACTED_SECRET]", value)
+    value = _EMAIL_PATTERN.sub("[REDACTED_EMAIL]", value)
+    return _PHONE_PATTERN.sub("[REDACTED_PHONE]", value)
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED_SECRET]"
+            if any(marker in key.lower() for marker in ("key", "token", "authorization", "secret"))
+            else _redact_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value

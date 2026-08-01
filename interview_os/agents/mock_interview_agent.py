@@ -1,4 +1,5 @@
 """Mock Interview Agent - generates personalized questions."""
+
 from __future__ import annotations
 
 import logging
@@ -29,8 +30,8 @@ class MockInterviewAgent(Agent):
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
         prompt = MOCK_QUESTION_PROMPT.format(
-            candidate_background=state.candidate.model_dump_json(),
-            job_requirement=str(state.job.competencies),
+            candidate_background=state.candidate_evidence_context(),
+            job_requirement=state.job_review.model_dump_json(),
             interviewer_preference=str(state.interviewer.likely_preferences),
         )
         try:

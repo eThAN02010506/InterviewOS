@@ -1,4 +1,5 @@
 """Local-only, read-only operational debug console API."""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -61,14 +62,33 @@ async def debug_session(session_id: str, service: Service):
     runtime = service.get_cached_runtime(session_id)
     messages = runtime.get_message_log() if runtime else []
     return {
-        "state": state.model_dump(mode="json"),
+        "state": {
+            "session_id": session_id,
+            "stage": state.current_stage.value,
+            "autopilot": state.autopilot.status.value,
+            "evidence_count": len(state.evidence),
+            "fact_card_count": len(state.fact_cards),
+            "resume_claim_counts": {
+                status: sum(
+                    1 for claim in state.resume_review.claims if claim.status.value == status
+                )
+                for status in (
+                    "unverified",
+                    "confirmed",
+                    "modified",
+                    "needs_documents",
+                    "disputed",
+                    "ignored",
+                )
+            },
+        },
         "messages": [
             {
                 "id": str(message.id),
                 "type": message.type.value,
                 "sender": message.sender,
                 "recipient": message.recipient,
-                "content": message.content[:4000],
+                "content_chars": len(message.content),
                 "timestamp": message.timestamp.isoformat(),
             }
             for message in messages[-100:]
