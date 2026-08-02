@@ -47,14 +47,18 @@ The system is built around a few product rules:
 
 - Public research enriches company and interviewer understanding, but searched
   identity corrections require user confirmation before changing the canonical
-  entity.
+  entity. The confirmation dialog also allows a user-edited canonical name instead
+  of forcing the searched alias.
 - Resume parsing can identify suspicious or incomplete claims; downstream Agents
   should rely on confirmed or explicitly accepted facts.
 - JD quality matters. A title-only JD is treated as insufficient context, and the
   UI should ask for responsibilities, requirements, and team background while
-  separating explicit requirements from AI assumptions.
+  separating explicit requirements from AI assumptions. Inferred requirements can
+  be confirmed, edited into explicit requirements, or removed before later Agents
+  use them.
 - Search conclusions are organized into fact cards with source URLs and status:
-  verified, inferred, conflicting, or needs review.
+  verified, inferred, conflicting, or needs review. The UI groups cards by conflict,
+  company, interviewer, technology, and public-opinion categories.
 - Secrets and sensitive resume/transcript content must not appear in logs, SQLite
   exports, settings responses, or the Debug Console.
 
@@ -150,15 +154,21 @@ Do not reverse-proxy `/api/debug` to untrusted networks without authentication.
 The turn-based live copilot is implemented. It records one speaker turn in the
 browser, sends it to the configured LAN ASR, and asks the configured text model for
 a grounded next question. Typed/pasted dialogue remains available when audio fails.
+The live evidence review loop is also implemented: transcript segments can be
+edited before confirmation, candidate answers can be converted into traceable
+`live_interview` evidence, and the review queue shows whether enough evidence and
+competency coverage exists to generate a hiring recommendation.
+
 The remaining roadmap is deliberately separated:
 
 1. **Completed turn-based MVP** — live state, typed or recorded turns, structured
-   planning, visible consent controls, deterministic fallbacks, and interviewer
-   decisions.
+   planning, visible consent controls, deterministic fallbacks, interviewer
+   decisions, transcript review, evidence confirmation, and final evaluation gates.
 2. **Continuous streaming** — partial transcript events, answer-boundary detection,
    WebSocket reconnect and deduplication, and optional speaker diarization.
-3. **Evidence map** — confirmed turns become `live_interview` evidence; competency
-   coverage and missing signals update during the interview.
+3. **Evidence map hardening** — confirmed turns already become `live_interview`
+   evidence; next work is richer coverage guidance, rollback/re-evaluation, and
+   long-interview summaries.
 4. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    rolling summaries, redacted observability, and cost measurement.
 
@@ -182,18 +192,14 @@ is not the default evidence source until that truncation behavior is resolved.
 
 The next work should move in this order:
 
-1. **Live evidence closure** — convert confirmed live transcript turns into
-   `live_interview` evidence, expose transcript review, and make final hiring
-   evaluation consume only reviewed evidence.
-2. **Interviewer-side real test pass** — run a complete interviewer workflow:
-   design interview, import or collect records, review evidence, generate report,
-   and verify hiring recommendation behavior under insufficient and sufficient
-   evidence.
-3. **Continuous listening** — add streaming transcript events, answer-boundary
+1. **Continuous listening** — add streaming transcript events, answer-boundary
    detection, reconnect/deduplication, and rolling summaries so long interviews do
    not resend the whole transcript to the LLM.
-4. **Search and fact-card hardening** — improve entity confirmation UI, conflict
-   display, source ranking, Tavily result caching, and public-claim traceability.
-5. **Operational hardening** — expand Debug Console timings, retry paths, redacted
+2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
+   with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
+   retries.
+3. **Search and fact-card hardening** — improve source ranking, Tavily result
+   caching, public-claim traceability, and conflict resolution decisions.
+4. **Operational hardening** — expand Debug Console timings, retry paths, redacted
    cost/token metrics, local secret persistence tests, and 60-90 minute live
    interview load tests.
