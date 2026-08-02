@@ -181,8 +181,10 @@ segments can also be merged into one answer before scoring, which is important f
 chunked ASR output and longer responses. The review queue now proposes conservative
 answer-boundary suggestions for consecutive unarchived candidate segments after the
 same interviewer question; the interviewer still confirms before any evidence is
-created. Confirmed live records can also be re-evaluated with an updated question
-or competency while preserving the same transcript trace.
+created. Boundary confidence is explainable with factors such as linked interviewer
+question, consecutive candidate segments, answer length, ASR involvement, and
+ending-language cues. Confirmed live records can also be re-evaluated with an
+updated question or competency while preserving the same transcript trace.
 
 A conservative **chunked continuous listening MVP** is also implemented. It reuses
 the existing HTTP ASR upload endpoint instead of introducing a second protocol too
@@ -225,7 +227,7 @@ The remaining roadmap is deliberately separated:
    detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
-   guidance and question-usage tracking; next work is better boundary confidence.
+   guidance, question-usage tracking, and explainable boundary confidence.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    redacted observability, and cost measurement.
 

@@ -575,19 +575,23 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
             f"/api/live-interviews/{session_id}/segments",
             json={"speaker": "interviewer", "text": "请讲一次架构演进。"},
         ).json()["state"]["live_interview"]["segments"][0]
+        first_text = "第一阶段我先拆分核心服务，把订单、库存和支付链路分开，并补了基础压测。"
+        second_text = "第二阶段我补了监控、灰度发布和回滚预案，最终上线后错误率和延迟指标都比较稳定，以上。"
         first = client.post(
             f"/api/live-interviews/{session_id}/segments",
-            json={"speaker": "candidate", "text": "第一阶段我先拆分核心服务。"},
+            json={"speaker": "candidate", "text": first_text},
         ).json()["state"]["live_interview"]["segments"][1]
         second = client.post(
             f"/api/live-interviews/{session_id}/segments",
-            json={"speaker": "candidate", "text": "第二阶段我补了监控和灰度发布。"},
+            json={"speaker": "candidate", "text": second_text},
         ).json()["state"]["live_interview"]["segments"][2]
         live = client.get(f"/api/live-interviews/{session_id}").json()["state"]["live_interview"]
         boundary = live["answer_boundary_suggestions"][0]
         assert boundary["question_segment_id"] == question["id"]
         assert boundary["answer_segment_ids"] == [first["id"], second["id"]]
-        assert boundary["confidence"] > 0.5
+        assert boundary["confidence"] >= 0.75
+        assert "已关联最近面试官问题" in boundary["confidence_factors"]
+        assert "末段出现回答结束信号" in boundary["confidence_factors"]
 
         merged = client.post(
             f"/api/live-interviews/{session_id}/evidence/merge",
@@ -607,7 +611,7 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     assert len(state["live_interview_records"]) == 1
     assert len(state["evidence"]) == 1
     record = state["live_interview_records"][0]
-    assert record["answer"] == "第一阶段我先拆分核心服务。\n第二阶段我补了监控和灰度发布。"
+    assert record["answer"] == f"{first_text}\n{second_text}"
     assert record["transcript_segment_ids"] == [question["id"], first["id"], second["id"]]
     assert state["live_interview"]["answer_boundary_suggestions"] == []
     assert state["evidence"][0]["source_record_id"] == record["id"]
@@ -705,6 +709,7 @@ def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
     planned_events = [item for item in events if item["action"] == "live_question_planned"]
     assert planned_events
     assert "top_gap=System Design" in planned_events[0]["detail"]
+    assert "top_boundary_confidence=" in planned_events[0]["detail"]
 
 
 def test_live_question_usage_tracks_blueprint_progress(tmp_path):

@@ -419,6 +419,7 @@ class LiveAnswerBoundarySuggestion(BaseModel):
     answer_segment_ids: list[UUID] = Field(default_factory=list, min_length=2, max_length=20)
     suggested_competency: str = Field(default="综合能力", min_length=1, max_length=200)
     reason: str = Field(default="", max_length=1000)
+    confidence_factors: list[str] = Field(default_factory=list, max_length=8)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

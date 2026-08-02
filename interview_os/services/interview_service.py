@@ -322,7 +322,8 @@ class InterviewService:
                 f"recent_segments={min(12, len(runtime.state.live_interview.segments))}; "
                 f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}; "
                 f"top_gap={runtime.state.live_interview.coverage_guidance[0].competency if runtime.state.live_interview.coverage_guidance else 'none'}; "
-                f"pending_blueprint={sum(1 for item in runtime.state.live_interview.question_usage if item.status == 'pending')}"
+                f"pending_blueprint={sum(1 for item in runtime.state.live_interview.question_usage if item.status == 'pending')}; "
+                f"top_boundary_confidence={runtime.state.live_interview.answer_boundary_suggestions[-1].confidence if runtime.state.live_interview.answer_boundary_suggestions else 0}"
             ),
         )
         return runtime.state
@@ -1270,6 +1271,7 @@ class InterviewService:
             if len(candidate_run) < 2:
                 return
             question_text = current_question.text if current_question else ""
+            confidence, factors = self._score_live_boundary(candidate_run, current_question)
             suggested_competency = (
                 self._infer_live_competency(state, question_text)
                 or (state.job.competencies[0] if state.job.competencies else "")
@@ -1280,7 +1282,8 @@ class InterviewService:
                     question_segment_id=current_question.id if current_question else None,
                     answer_segment_ids=[item.id for item in candidate_run],
                     suggested_competency=suggested_competency,
-                    confidence=min(0.9, 0.55 + 0.1 * len(candidate_run)),
+                    confidence=confidence,
+                    confidence_factors=factors,
                     reason=(
                         "连续候选人片段之间没有新的面试官问题，"
                         "建议作为同一回答合并复核后再归档证据。"
@@ -1306,6 +1309,40 @@ class InterviewService:
             candidate_run = []
         flush_run()
         live.answer_boundary_suggestions = suggestions[-5:]
+
+    def _score_live_boundary(
+        self,
+        candidate_run: list[TranscriptSegment],
+        current_question: TranscriptSegment | None,
+    ) -> tuple[float, list[str]]:
+        score = 0.45
+        factors: list[str] = []
+        if current_question is not None:
+            score += 0.12
+            factors.append("已关联最近面试官问题")
+        else:
+            score -= 0.08
+            factors.append("未找到明确面试官问题，需人工确认上下文")
+        run_bonus = min(0.18, 0.06 * (len(candidate_run) - 1))
+        score += run_bonus
+        factors.append(f"{len(candidate_run)} 段连续候选人发言")
+        total_chars = sum(len(item.text) for item in candidate_run)
+        if total_chars >= 160:
+            score += 0.1
+            factors.append("回答较长，适合作为完整回答合并")
+        elif total_chars >= 70:
+            score += 0.06
+            factors.append("回答长度达到合并阈值")
+        else:
+            score -= 0.04
+            factors.append("回答较短，可能只是补充短句")
+        last_text = candidate_run[-1].text
+        if re.search(r"(以上|大概就是|基本就是|总结|最后|最终|就这些|谢谢|that's all)", last_text, re.IGNORECASE):
+            score += 0.08
+            factors.append("末段出现回答结束信号")
+        if any(item.source == "asr" for item in candidate_run):
+            factors.append("包含 ASR 分段，建议复核文本后再合并")
+        return max(0.2, min(0.92, round(score, 2))), factors[:8]
 
     def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
         live = state.live_interview
