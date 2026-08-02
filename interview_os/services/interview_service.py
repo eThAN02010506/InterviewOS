@@ -30,11 +30,16 @@ from interview_os.core.state import (
     JobDescription,
     JobDescriptionReview,
     LiveInterviewRecord,
+    LiveInterviewSession,
+    LiveInterviewStatus,
     MockAnswerRecord,
     MockInterviewPlan,
     MockInterviewSession,
     MockSessionStatus,
+    QuestionSuggestionStatus,
     ResumeClaimStatus,
+    TranscriptSegment,
+    TranscriptSpeaker,
     WorkflowProgress,
     WorkflowStatus,
 )
@@ -46,6 +51,7 @@ from interview_os.services.intelligence_service import (
     sync_entity_resolutions,
 )
 from interview_os.services.resume_service import ResumeProcessor
+from interview_os.tools.asr import ASRClient, ASRError
 from interview_os.tools.web_search import SearchProvider
 
 
@@ -69,6 +75,10 @@ class ResumeReviewStateError(RuntimeError):
     pass
 
 
+class LiveInterviewStateError(RuntimeError):
+    pass
+
+
 class InterviewService:
     """Owns session-scoped runtimes and serializes mutations per session."""
 
@@ -78,14 +88,204 @@ class InterviewService:
         llm_client: Any = None,
         search_provider: SearchProvider | None = None,
         debug_events: DebugEventStore | None = None,
+        asr_client: ASRClient | None = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
         self.search_provider = search_provider
         self.debug_events = debug_events
+        self.asr_client = asr_client
         self._runtimes: dict[str, AgentRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self.resume_processor = ResumeProcessor()
+
+    async def start_live_interview(
+        self, session_id: str, *, consent_confirmed: bool
+    ) -> InterviewState:
+        if not consent_confirmed:
+            raise LiveInterviewStateError("开始监听前必须确认候选人已知情并同意转写")
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if live.status == LiveInterviewStatus.COMPLETED:
+                runtime.state.live_interview = LiveInterviewSession()
+                live = runtime.state.live_interview
+            live.status = LiveInterviewStatus.ACTIVE
+            live.consent_confirmed = True
+            live.started_at = live.started_at or datetime.now(timezone.utc)
+            live.completed_at = None
+            runtime.state.next_action = "Listen to the interview and prepare the next question"
+            await self._persist(session_id, runtime.state)
+        self._record_debug("live_interview_started", session_id)
+        return runtime.state
+
+    async def set_live_interview_status(
+        self, session_id: str, status: LiveInterviewStatus
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if not live.consent_confirmed:
+                raise LiveInterviewStateError("Live interview has not been started with consent")
+            if status not in {
+                LiveInterviewStatus.ACTIVE,
+                LiveInterviewStatus.PAUSED,
+                LiveInterviewStatus.COMPLETED,
+            }:
+                raise LiveInterviewStateError("Unsupported live interview status")
+            live.status = status
+            if status == LiveInterviewStatus.COMPLETED:
+                live.completed_at = datetime.now(timezone.utc)
+                runtime.state.next_action = "Review the transcript before final evaluation"
+            await self._persist(session_id, runtime.state)
+        self._record_debug(f"live_interview_{status.value}", session_id)
+        return runtime.state
+
+    async def append_live_transcript(
+        self,
+        session_id: str,
+        *,
+        text: str,
+        speaker: TranscriptSpeaker,
+        source: str = "manual",
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        clean_text = text.strip()
+        if not clean_text:
+            raise LiveInterviewStateError("Transcript text cannot be empty")
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if live.status != LiveInterviewStatus.ACTIVE:
+                raise LiveInterviewStateError("Live interview must be active before adding transcript")
+            live.current_speaker = speaker
+            live.segments.append(
+                TranscriptSegment(
+                    sequence=len(live.segments) + 1,
+                    speaker=speaker,
+                    text=clean_text,
+                    source=source,
+                )
+            )
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_transcript_added",
+            session_id,
+            detail=f"speaker={speaker.value}; source={source}; chars={len(clean_text)}",
+        )
+        return runtime.state
+
+    async def transcribe_live_audio(
+        self,
+        session_id: str,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        speaker: TranscriptSpeaker,
+        language: str = "zh",
+    ) -> tuple[InterviewState, str]:
+        if self.asr_client is None:
+            raise LiveInterviewStateError("ASR client is not configured")
+        if len(content) > 25 * 1024 * 1024:
+            raise LiveInterviewStateError("Audio chunk exceeds the 25 MB limit")
+        runtime = await self._get_runtime(session_id)
+        if runtime.state.live_interview.status != LiveInterviewStatus.ACTIVE:
+            raise LiveInterviewStateError("Live interview must be active before transcribing audio")
+        started = perf_counter()
+        try:
+            transcript = await self.asr_client.transcribe(
+                content,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+            )
+        except ASRError as exc:
+            self._record_debug(
+                "asr_transcription_failed",
+                session_id,
+                level=DebugLevel.ERROR,
+                detail=str(exc),
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            raise WorkflowExecutionError(str(exc)) from exc
+        state = await self.append_live_transcript(
+            session_id, text=transcript, speaker=speaker, source="asr"
+        )
+        self._record_debug(
+            "asr_transcription_completed",
+            session_id,
+            detail=f"speaker={speaker.value}; bytes={len(content)}; chars={len(transcript)}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return state, transcript
+
+    async def plan_live_next_question(self, session_id: str) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if live.status != LiveInterviewStatus.ACTIVE:
+                raise LiveInterviewStateError("Live interview must be active to plan a question")
+            candidate_segments = [
+                item
+                for item in live.segments
+                if item.speaker == TranscriptSpeaker.CANDIDATE and item.stable and item.confirmed
+            ]
+            if not candidate_segments:
+                raise LiveInterviewStateError("需要至少一段候选人回答后才能准备下一问题")
+            await runtime.run(
+                "live_interview_agent",
+                "根据最新候选人回答准备一个问题；优先补齐关键证据，然后推进未覆盖能力。",
+            )
+            runtime.state.next_action = "Interviewer reviews the suggested next question"
+            await self._persist(session_id, runtime.state)
+        self._record_debug("live_question_planned", session_id)
+        return runtime.state
+
+    async def decide_live_suggestion(
+        self,
+        session_id: str,
+        suggestion_id: UUID,
+        *,
+        status: QuestionSuggestionStatus,
+        final_question: str = "",
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            suggestion = next(
+                (
+                    item
+                    for item in runtime.state.live_interview.suggestions
+                    if item.id == suggestion_id
+                ),
+                None,
+            )
+            if suggestion is None:
+                raise LiveInterviewStateError("Question suggestion was not found")
+            if suggestion.status != QuestionSuggestionStatus.PENDING:
+                raise LiveInterviewStateError("Question suggestion has already been decided")
+            suggestion.status = status
+            suggestion.final_question = (
+                final_question.strip() or suggestion.suggested_question
+                if status in {QuestionSuggestionStatus.ADOPTED, QuestionSuggestionStatus.EDITED}
+                else ""
+            )
+            if status in {QuestionSuggestionStatus.ADOPTED, QuestionSuggestionStatus.EDITED}:
+                source_id = suggestion.source_question_id.strip()
+                if source_id and source_id not in runtime.state.live_interview.used_question_ids:
+                    runtime.state.live_interview.used_question_ids.append(source_id)
+                runtime.state.live_interview.segments.append(
+                    TranscriptSegment(
+                        sequence=len(runtime.state.live_interview.segments) + 1,
+                        speaker=TranscriptSpeaker.INTERVIEWER,
+                        text=suggestion.final_question,
+                        source="copilot",
+                    )
+                )
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_question_decided", session_id, detail=f"status={status.value}"
+        )
+        return runtime.state
 
     async def create_session(
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""

@@ -1,8 +1,18 @@
 # InterviewOS
 
-> A Local LLM-powered Interview Intelligence Operating System
+> Local-first interview intelligence for candidates, interviewers, and live
+> interview execution.
 
-Based on a Python self-built domain-specific Agent Runtime for interview intelligence.
+InterviewOS is a Python + Local LLM Agent system for recruitment and interview
+scenarios. Its long-term product direction is not just "generate interview
+questions"; it is an AI interview operating system that can understand the
+candidate, job, company, interviewer, public evidence, and live conversation, then
+help the human interviewer run a structured, evidence-grounded interview.
+
+The product deliberately keeps a human confirmation boundary. AI can analyze,
+prepare, listen, summarize, suggest, and score against evidence, but it must pause
+for real candidate input, explicit consent, entity corrections, resume claim review,
+and final interviewer decisions.
 
 ## Quick Start
 
@@ -15,6 +25,38 @@ uvicorn interview_os.api.app:app --reload
 Open `http://127.0.0.1:8000` for the local product UI. It includes candidate
 preparation, enterprise interview design, interactive mock interviews, runtime
 settings, and the Debug Console.
+
+The interviewer workspace includes a **Live Interview Copilot**. With explicit
+consent, it processes typed or recorded interview turns and prepares the next
+follow-up or main question. It is a decision-support surface: the interviewer
+chooses, edits, skips, or postpones every suggested question. See the
+[product requirements](docs/product_requirements.md) for scope, privacy rules,
+delivery phases, and acceptance criteria.
+
+## Current Product Shape
+
+InterviewOS currently has two primary UI modes:
+
+- Candidate mode: resume upload, JD/company/interviewer analysis, preparation
+  strategy, mock interview, scored answers, and improvement report.
+- Interviewer mode: interview design, candidate evidence review, live interview
+  copilot, debug console, and hiring evaluation once enough confirmed evidence
+  exists.
+
+The system is built around a few product rules:
+
+- Public research enriches company and interviewer understanding, but searched
+  identity corrections require user confirmation before changing the canonical
+  entity.
+- Resume parsing can identify suspicious or incomplete claims; downstream Agents
+  should rely on confirmed or explicitly accepted facts.
+- JD quality matters. A title-only JD is treated as insufficient context, and the
+  UI should ask for responsibilities, requirements, and team background while
+  separating explicit requirements from AI assumptions.
+- Search conclusions are organized into fact cards with source URLs and status:
+  verified, inferred, conflicting, or needs review.
+- Secrets and sensitive resume/transcript content must not appear in logs, SQLite
+  exports, settings responses, or the Debug Console.
 
 The API now persists session state in SQLite. A minimal analysis flow is:
 
@@ -83,12 +125,12 @@ and provider so the analysis can be traced back to public sources.
 Runtime search and Local LLM settings can also be changed at
 `http://127.0.0.1:8000/api/settings/ui`. Secrets are write-only and are never
 returned to the browser. UI changes take effect immediately for existing sessions;
-environment variables remain the persistent startup configuration.
+settings are stored in a local permission-restricted file and environment variables
+can still provide startup defaults.
 
-Runtime secrets are intentionally not written to SQLite or returned by the API.
-For persistence across restarts, provide them through the process environment or a
-secret manager. OS-keychain persistence can be added later without changing the
-settings API.
+Runtime secrets are not written to SQLite, returned by the API, or included in the
+Debug Console. A platform keychain or external secret manager can replace the local
+settings store later without changing the settings API.
 
 ## Debug Console
 
@@ -103,9 +145,55 @@ and a fixed LLM connectivity probe. The console:
 
 Do not reverse-proxy `/api/debug` to untrusted networks without authentication.
 
-## Development Phases
+## Live Interview Copilot
 
-- Phase 1: Core Runtime (Agent / State / Memory / Tool)
-- Phase 2: Recruitment Analysis (Resume / JD / Interview Designer)
-- Phase 3: Candidate Intelligence (Interviewer Analysis / Company Analysis / Mock Interview)
-- Phase 4: Real-time Assistance (Whisper / Live Copilot)
+The turn-based live copilot is implemented. It records one speaker turn in the
+browser, sends it to the configured LAN ASR, and asks the configured text model for
+a grounded next question. Typed/pasted dialogue remains available when audio fails.
+The remaining roadmap is deliberately separated:
+
+1. **Completed turn-based MVP** — live state, typed or recorded turns, structured
+   planning, visible consent controls, deterministic fallbacks, and interviewer
+   decisions.
+2. **Continuous streaming** — partial transcript events, answer-boundary detection,
+   WebSocket reconnect and deduplication, and optional speaker diarization.
+3. **Evidence map** — confirmed turns become `live_interview` evidence; competency
+   coverage and missing signals update during the interview.
+4. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
+   rolling summaries, redacted observability, and cost measurement.
+
+The live path must not invoke an LLM for every partial word. Stable transcript turns
+feed a bounded context made from recent dialogue, a rolling summary, the interview
+blueprint, and confirmed evidence. The target is transcript feedback within two
+seconds and a next-question suggestion within five seconds after an answer ends.
+
+The default LAN ASR integration is `http://192.168.1.97:8003` (MiMo-V2.5-ASR),
+behind a configurable provider adapter rather than hard-coded into the interview
+workflow. Its `/health`, OpenAI-compatible `/v1/audio/transcriptions`, WAV input,
+and JSON text response have been verified. Streaming support and concurrency limits
+remain part of long-interview hardening. When ASR is unavailable, the live workspace
+retains typed/pasted transcript input as the safe fallback.
+
+`http://192.168.1.8:9001` was tested with the same multi-sentence WAV fixture. Its
+OpenAI-compatible endpoint was faster, but returned only the first sentence, so it
+is not the default evidence source until that truncation behavior is resolved.
+
+## Next Implementation Plan
+
+The next work should move in this order:
+
+1. **Live evidence closure** — convert confirmed live transcript turns into
+   `live_interview` evidence, expose transcript review, and make final hiring
+   evaluation consume only reviewed evidence.
+2. **Interviewer-side real test pass** — run a complete interviewer workflow:
+   design interview, import or collect records, review evidence, generate report,
+   and verify hiring recommendation behavior under insufficient and sufficient
+   evidence.
+3. **Continuous listening** — add streaming transcript events, answer-boundary
+   detection, reconnect/deduplication, and rolling summaries so long interviews do
+   not resend the whole transcript to the LLM.
+4. **Search and fact-card hardening** — improve entity confirmation UI, conflict
+   display, source ranking, Tavily result caching, and public-claim traceability.
+5. **Operational hardening** — expand Debug Console timings, retry paths, redacted
+   cost/token metrics, local secret persistence tests, and 60-90 minute live
+   interview load tests.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -120,3 +120,21 @@ class MockSessionResponse(BaseModel):
     session_id: str
     mock_session: dict[str, Any]
     current_question: dict[str, Any] | None = None
+
+
+class LiveInterviewStartRequest(BaseModel):
+    consent_confirmed: bool
+
+
+class LiveInterviewStatusRequest(BaseModel):
+    status: Literal["active", "paused", "completed"]
+
+
+class LiveTranscriptRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    speaker: Literal["interviewer", "candidate", "unknown"] = "unknown"
+
+
+class LiveSuggestionDecisionRequest(BaseModel):
+    status: Literal["adopted", "edited", "skipped"]
+    final_question: str = Field(default="", max_length=4000)

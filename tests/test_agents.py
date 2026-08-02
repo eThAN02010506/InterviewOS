@@ -5,9 +5,18 @@ from interview_os.agents.candidate_agent import CandidateAgent
 from interview_os.agents.coach_agent import CoachAgent
 from interview_os.agents.company_agent import CompanyAgent
 from interview_os.agents.interview_strategy_agent import InterviewStrategyAgent
+from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
 from interview_os.core.message import MessageType
-from interview_os.core.state import AnswerEvaluation, InterviewState, JobDescription
+from interview_os.core.state import (
+    AnswerEvaluation,
+    InterviewState,
+    JobDescription,
+    QuestionSuggestion,
+    QuestionSuggestionType,
+    TranscriptSegment,
+    TranscriptSpeaker,
+)
 from interview_os.models.structured import parse_model_output
 
 
@@ -65,6 +74,37 @@ class InventedMetricsLLM:
 
     async def embed(self, text):
         return []
+
+
+def test_live_suggestion_migrates_legacy_main_question_type():
+    suggestion = QuestionSuggestion.model_validate(
+        {
+            "suggested_question": "请说明架构权衡",
+            "question_type": "main",
+            "competency": "系统设计",
+        }
+    )
+    assert suggestion.question_type == QuestionSuggestionType.NEXT_MAIN
+
+
+@pytest.mark.asyncio
+async def test_live_question_fallback_does_not_repeat_measured_results():
+    agent = LiveInterviewAgent(llm_client=InvalidLLM())
+    state = InterviewState(job=JobDescription(competencies=["架构设计"]))
+    state.live_interview.segments.append(
+        TranscriptSegment(
+            sequence=1,
+            speaker=TranscriptSpeaker.CANDIDATE,
+            text="我定位连接池瓶颈并灰度上线，最终 P95 降低了 40%。",
+        )
+    )
+
+    await agent.execute(state)
+
+    suggestion = state.live_interview.suggestions[0]
+    assert suggestion.competency == "架构设计"
+    assert "替代方案" in suggestion.suggested_question
+    assert "回滚" in suggestion.suggested_question
 
 
 @pytest.mark.asyncio

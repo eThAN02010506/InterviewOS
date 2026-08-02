@@ -20,6 +20,7 @@ from interview_os.api.routes import (
     evaluations,
     intelligence,
     interviews,
+    live_interviews,
     mock_interviews,
     resumes,
     settings,
@@ -31,6 +32,7 @@ from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.interview_service import (
     EvaluationStateError,
     InterviewService,
+    LiveInterviewStateError,
     MockInterviewStateError,
     ResumeReviewStateError,
     SessionNotFoundError,
@@ -38,6 +40,7 @@ from interview_os.services.interview_service import (
 )
 from interview_os.services.resume_service import ResumeProcessingError
 from interview_os.services.settings_service import LocalSettingsStore
+from interview_os.tools.asr import ASRClient
 from interview_os.tools.web_search import SearchProvider, SearchProviderManager
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +55,7 @@ def create_app(
     search_provider: SearchProvider | None = None,
     configure_llm: bool = True,
     settings_store: LocalSettingsStore | None = None,
+    asr_client: ASRClient | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
@@ -78,20 +82,23 @@ def create_app(
         except (TypeError, ValueError):
             logger.warning("Ignoring invalid persisted search settings")
     active_search_provider = search_provider or search_manager
+    asr_client = asr_client or ASRClient(**saved_settings.get("asr", {}))
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         await storage.init_db()
         application.state.interview_service = InterviewService(
-            storage, llm_client, active_search_provider, debug_events
+            storage, llm_client, active_search_provider, debug_events, asr_client
         )
         application.state.search_manager = search_manager
         application.state.llm_client = llm_client
         application.state.debug_events = debug_events
         application.state.settings_store = settings_store
+        application.state.asr_client = asr_client
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()
+        await asr_client.close()
         await storage.close()
 
     application = FastAPI(
@@ -123,6 +130,9 @@ def create_app(
     application.include_router(
         intelligence.router, prefix="/api/intelligence", tags=["intelligence"]
     )
+    application.include_router(
+        live_interviews.router, prefix="/api/live-interviews", tags=["live-interviews"]
+    )
     application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @application.exception_handler(SessionNotFoundError)
@@ -148,6 +158,10 @@ def create_app(
     @application.exception_handler(ResumeReviewStateError)
     async def invalid_resume_review(_: Request, exc: ResumeReviewStateError):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @application.exception_handler(LiveInterviewStateError)
+    async def invalid_live_interview(_: Request, exc: LiveInterviewStateError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @application.get("/")
     async def root(request: Request):

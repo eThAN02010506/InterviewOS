@@ -31,6 +31,7 @@ async def debug_status(request: Request):
         "application": {"status": "running", "version": "0.2.0"},
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "search": search,
+        "asr": request.app.state.asr_client.status(),
         "event_capacity": request.app.state.debug_events.capacity,
         "events_persistent": request.app.state.debug_events.persistent,
     }
@@ -106,3 +107,11 @@ async def probe_llm(request: Request):
         return await llm.probe()
     except (httpx.HTTPError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=502, detail=f"LLM probe failed: {exc}") from exc
+
+
+@router.post("/probes/asr", dependencies=[Depends(require_local_request)])
+async def probe_asr(request: Request):
+    result = await request.app.state.asr_client.probe()
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error", "ASR probe failed"))
+    return result

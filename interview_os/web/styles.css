@@ -334,6 +334,45 @@ dialog form { padding: 26px; }
 #toast.show { opacity: 1; transform: none; }
 #toast.error { background: #752f2f; }
 .loading { opacity: 0.55; pointer-events: none; }
+.hidden { display: none !important; }
+
+.live-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 14px; padding: 26px 30px; }
+.live-toolbar h2 { margin: 2px 0 6px; }
+.live-toolbar p:not(.eyebrow) { margin: 0; color: var(--muted); }
+.live-status { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.live-status span { width: 10px; height: 10px; background: #aeb8b3; border-radius: 50%; }
+.live-status span.active { background: #20a46b; box-shadow: 0 0 0 5px rgba(32,164,107,.12); animation: live-pulse 1.5s infinite; }
+.live-status span.paused { background: var(--amber); }
+.live-status span.completed { background: var(--forest); }
+@keyframes live-pulse { 50% { box-shadow: 0 0 0 9px rgba(32,164,107,0); } }
+.live-consent { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; padding: 18px 24px; border-color: #c9d9d1; }
+.live-consent label { display: flex; align-items: flex-start; gap: 10px; margin: 0; cursor: pointer; }
+.live-consent input { width: auto; margin-top: 3px; }
+.live-consent span, .live-consent strong, .live-consent small { display: block; }
+.live-consent small { margin-top: 3px; color: var(--muted); }
+.live-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .75fr); gap: 14px; }
+.live-side { display: grid; align-content: start; gap: 14px; }
+.live-transcript-panel { min-height: 600px; }
+.live-session-actions, .speaker-control, .suggestion-actions { display: flex; align-items: end; gap: 8px; }
+.speaker-control { margin: 18px 0 8px; padding: 13px; background: var(--soft); border-radius: 9px; }
+.speaker-control label { flex: 1; margin: 0; }
+.speaker-control select { margin-top: 5px; }
+.recording-note { margin: 8px 0 15px; color: var(--muted); font-size: 10px; }
+.manual-transcript { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 9px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.manual-transcript textarea { min-height: 72px; }
+.transcript-stream { max-height: 540px; overflow-y: auto; }
+.transcript-segment { max-width: 88%; margin: 12px 0; padding: 12px 14px; background: #f2f6f4; border-radius: 4px 12px 12px 12px; }
+.transcript-segment.interviewer { margin-left: auto; background: #eaf4ef; border-radius: 12px 4px 12px 12px; }
+.transcript-segment.unknown { border: 1px dashed var(--amber); }
+.transcript-segment span { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+.transcript-segment p { margin: 5px 0 0; line-height: 1.65; }
+.suggestion-card h4 { margin: 14px 0 8px; font-size: 19px; line-height: 1.5; }
+.suggestion-card > p { color: var(--muted); line-height: 1.6; }
+.suggestion-meta { display: flex; align-items: center; gap: 7px; }
+.suggestion-meta span, .suggestion-meta b, .suggestion-meta em { padding: 4px 7px; background: var(--soft); border-radius: 5px; font-size: 9px; font-style: normal; }
+.suggestion-meta em { margin-left: auto; color: var(--green); }
+.evidence-gap { margin: 12px 0; padding: 10px; color: #745020; background: #fff7e9; border-radius: 7px; }
+.evidence-gap small { display: block; margin-bottom: 3px; font-weight: 700; }
 
 @media (max-width: 1120px) {
   .sidebar { gap: 14px; padding-inline: 20px; }
@@ -358,7 +397,7 @@ dialog form { padding: 26px; }
   .hero-orbit { display: none; }
   .interviewer-principles { display: none; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
-  .two-col, .mock-layout, .debug-grid, .settings-grid { grid-template-columns: 1fr; }
+  .two-col, .mock-layout, .debug-grid, .settings-grid, .live-grid { grid-template-columns: 1fr; }
   .settings-grid .span-two { grid-column: auto; }
 }
 
@@ -372,6 +411,8 @@ dialog form { padding: 26px; }
   .topbar h1 { font-size: 22px; }
   .hero h2 { font-size: 31px; }
   .metric-grid, .form-row { grid-template-columns: 1fr; }
+  .live-toolbar, .live-consent, .speaker-control { align-items: stretch; flex-direction: column; }
+  .manual-transcript { grid-template-columns: 1fr; }
   .console-head, .event-row { grid-template-columns: 85px 52px 1fr; }
   .console-head span:last-child, .event-row span:last-child { display: none; }
 }

@@ -4,6 +4,9 @@ const state = {
   session: null,
   view: ''
 };
+let liveRecorder = null;
+let liveAudioChunks = [];
+let liveMediaStream = null;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const optional = id => $(id).value.trim() || null;
@@ -41,7 +44,7 @@ const navigation = {
     ['candidate-home', '总览'], ['candidate', '面试准备'], ['mock', '模拟面试'], ['candidate-report', '改进报告']
   ],
   interviewer: [
-    ['interviewer-home', '总览'], ['enterprise', '面试设计'], ['evaluation', '候选人评估']
+    ['interviewer-home', '总览'], ['enterprise', '面试设计'], ['live', '实时辅助'], ['evaluation', '候选人评估']
   ]
 };
 const globalViews = new Set(['settings', 'debug']);
@@ -50,7 +53,7 @@ const viewMeta = {
   candidate:['PERSONAL STRATEGY','面试准备'], mock:['PRACTICE & EVIDENCE','模拟面试'],
   'candidate-report':['GROWTH & REVIEW','个人改进报告'],
   'interviewer-home':['INTERVIEWER WORKSPACE','面试官工作台'],
-  enterprise:['INTERVIEW ARCHITECTURE','面试设计'], evaluation:['EVIDENCE REVIEW','候选人评估'],
+  enterprise:['INTERVIEW ARCHITECTURE','面试设计'], live:['LIVE INTERVIEW COPILOT','实时面试辅助'], evaluation:['EVIDENCE REVIEW','候选人评估'],
   settings:['RUNTIME CONFIGURATION','模型与搜索'], debug:['LOCAL OBSERVABILITY','Debug Console']
 };
 
@@ -80,6 +83,7 @@ function setView(view) {
   if (view === 'debug') refreshDebug();
   if (view === 'settings') loadSettings();
   if (view === 'mock') renderMock();
+  if (view === 'live') renderLive();
 }
 
 async function checkHealth() {
@@ -136,7 +140,31 @@ function renderState() {
     const score = Math.round((s?.evaluated_competencies?.[name] || 0) * 100);
     return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.max(score, 5)}%"></i></div><b>${score || '—'}</b></div>`;
   }).join('') || '<div class="empty-state">完成岗位分析后显示。</div>';
-  renderStrategy(); renderBlueprint(); renderSources(); renderMock(); renderReports();
+  renderStrategy(); renderBlueprint(); renderSources(); renderMock(); renderReports(); renderLive();
+}
+
+function renderLive() {
+  const live = state.session?.live_interview;
+  if (!$('live-transcript')) return;
+  const statusLabels = {idle:'尚未开始',active:'监听中',paused:'已暂停',completed:'已结束'};
+  const status = live?.status || 'idle';
+  $('live-status-label').textContent = statusLabels[status] || status;
+  $('live-status-dot').className = status === 'active' ? 'active' : status;
+  $('live-consent-panel').classList.toggle('hidden', status !== 'idle' && status !== 'completed');
+  $('live-pause').textContent = status === 'paused' ? '恢复' : '暂停';
+  $('live-pause').disabled = !['active','paused'].includes(status);
+  $('live-finish').disabled = !['active','paused'].includes(status);
+  $('live-record').disabled = status !== 'active' || !!liveRecorder;
+  $('live-plan').disabled = status !== 'active';
+  const segments = live?.segments || [];
+  $('live-transcript').className = segments.length ? 'transcript-stream' : 'transcript-stream empty-state';
+  $('live-transcript').innerHTML = segments.length ? segments.map(segment => `<div class="transcript-segment ${esc(segment.speaker)}"><span>${segment.speaker==='candidate'?'候选人':segment.speaker==='interviewer'?'面试官':'待确认'} · ${esc(segment.source)}</span><p>${esc(segment.text)}</p></div>`).join('') : '尚无转写片段。';
+  const suggestion = [...(live?.suggestions || [])].reverse().find(item => item.status === 'pending') || [...(live?.suggestions || [])].reverse()[0];
+  $('live-suggestion').className = suggestion ? 'suggestion-card' : 'empty-state';
+  $('live-suggestion').innerHTML = suggestion ? `<div class="suggestion-meta"><span>${esc(suggestion.question_type)}</span><b>${esc(suggestion.competency)}</b><em>${Math.round((suggestion.confidence||0)*100)}%</em></div><h4>${esc(suggestion.final_question||suggestion.suggested_question)}</h4><p>${esc(suggestion.rationale)}</p>${suggestion.evidence_gap?`<div class="evidence-gap"><small>待补证据</small>${esc(suggestion.evidence_gap)}</div>`:''}${tags(suggestion.expected_signals||[])}${suggestion.status==='pending'?`<div class="suggestion-actions"><button class="btn primary compact" data-live-decision="adopted" data-suggestion-id="${esc(suggestion.id)}">采用</button><button class="btn compact" data-live-decision="edited" data-suggestion-id="${esc(suggestion.id)}">编辑后采用</button><button class="btn compact" data-live-decision="skipped" data-suggestion-id="${esc(suggestion.id)}">跳过</button></div>`:`<small>处理结果：${esc(suggestion.status)}</small>`}` : '录入候选人回答后，AI 会准备一个有证据目标的问题。';
+  const competencies = state.session?.job?.competencies || [];
+  $('live-competencies').className = competencies.length ? 'progress-list' : 'progress-list empty-state';
+  $('live-competencies').innerHTML = competencies.length ? competencies.map(name => {const evidence=(state.session?.evidence||[]).filter(item=>item.competency===name).length;return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.min(100,evidence*34)}%"></i></div><b>${evidence}</b></div>`;}).join('') : '先完成岗位分析或面试设计。';
 }
 
 function renderResumeReview() {
@@ -300,10 +328,24 @@ async function submitTranscript(){if(!await ensureSession())return;const form=$(
 $('transcript-form').onsubmit=e=>{e.preventDefault();submitTranscript();};
 $('import-transcript').onclick=submitTranscript;
 
-async function loadSettings(){try{const s=await api('/api/settings');$('setting-provider').value=s.search.selected;$('setting-base-url').value=s.llm.base_url||'';$('setting-model').value=s.llm.model||'';$('setting-input-cost').value=s.llm.input_cost_per_million||0;$('setting-output-cost').value=s.llm.output_cost_per_million||0;$('setting-search-cost').value=s.search.search_request_cost_usd||0;}catch(error){toast(error.message,true)}}
-$('settings-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;busy(form,true);try{await api('/api/settings',{method:'PUT',body:JSON.stringify({search:{provider:$('setting-provider').value,tavily_api_key:optional('setting-tavily'),searxng_base_url:optional('setting-searxng'),brave_api_key:optional('setting-brave'),search_request_cost_usd:Number($('setting-search-cost').value)||0},llm:{base_url:optional('setting-base-url'),model:optional('setting-model'),api_key:optional('setting-llm-key'),input_cost_per_million:Number($('setting-input-cost').value)||0,output_cost_per_million:Number($('setting-output-cost').value)||0}})});toast('设置已持久化并立即应用');await loadSettings();}catch(error){toast(error.message,true)}finally{busy(form,false)}};
+async function startLiveInterview(){if(!await ensureSession())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/start`,{method:'POST',body:JSON.stringify({consent_confirmed:$('live-consent').checked})});state.session=data.state;renderLive();toast('实时面试已开始');}catch(error){toast(error.message,true)}}
+$('live-start').onclick=startLiveInterview;
+$('live-pause').onclick=async()=>{const next=state.session?.live_interview?.status==='paused'?'active':'paused';try{const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:next})});state.session=data.state;renderLive();toast(next==='paused'?'实时会话已暂停':'实时会话已恢复');}catch(error){toast(error.message,true)}};
+$('live-finish').onclick=async()=>{try{if(liveRecorder&&liveRecorder.state==='recording')liveRecorder.stop();const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:'completed'})});state.session=data.state;renderLive();toast('实时面试已结束，请审阅转写');}catch(error){toast(error.message,true)}};
+$('live-text-form').onsubmit=async e=>{e.preventDefault();const text=$('live-text').value.trim();if(!text)return;const form=e.currentTarget;busy(form,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/segments`,{method:'POST',body:JSON.stringify({text,speaker:$('live-speaker').value})});state.session=data.state;$('live-text').value='';renderLive();toast('发言已加入实时对话');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 
-async function refreshDebug(){try{const [status,events,sessions]=await Promise.all([api('/api/debug/status'),api('/api/debug/events?limit=100'),api('/api/debug/sessions')]);const metrics=status.llm.metrics||{};const cache=status.search.cache||{};$('debug-status').innerHTML=[['应用',status.application.status],['模型',status.llm.model||'managed'],['模型地址',status.llm.base_url||'—'],['模型请求 / 失败',`${metrics.requests||0} / ${metrics.failures||0}`],['Token 输入 / 输出',`${metrics.prompt_tokens||0} / ${metrics.completion_tokens||0}`],['模型累计成本',`$${metrics.estimated_cost_usd||0}`],['平均耗时',`${metrics.average_latency_ms||0} ms`],['搜索',status.search.selected],['搜索请求 / 成本',`${status.search.provider_requests||0} / $${status.search.estimated_cost_usd||0}`],['缓存命中 / 未命中',`${cache.hits||0} / ${cache.misses||0}`],['持久缓存',cache.persistent?'已启用':'仅运行时'],['事件持久化',status.events_persistent?'已启用':'仅运行时'],['事件容量',status.event_capacity]].map(([k,v])=>`<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('');$('debug-sessions').innerHTML=sessions.sessions.map(s=>`<div class="session-row"><span>${esc(s.candidate_name||'未命名')}<small>${esc(s.job_title||'未指定岗位')}</small></span><code>${esc(s.id.slice(0,8))}</code></div>`).join('')||'<div class="empty-state">暂无会话</div>';renderEvents(events.events);}catch(error){toast(error.message,true)}}
+$('live-record').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type));liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveAudioChunks=[];liveRecorder.ondataavailable=event=>{if(event.data.size)liveAudioChunks.push(event.data)};liveRecorder.onstop=uploadLiveRecording;liveRecorder.start(1000);$('live-record').disabled=true;$('live-stop-record').disabled=false;$('live-recording-note').textContent=`正在录制${$('live-speaker').value==='candidate'?'候选人':'面试官'}发言…`;renderLive();}catch(error){toast(`无法使用麦克风：${error.message}`,true)}};
+$('live-stop-record').onclick=()=>{if(liveRecorder?.state==='recording'){liveRecorder.stop();$('live-stop-record').disabled=true;$('live-recording-note').textContent='录制结束，正在发送到 ASR…'}};
+
+async function uploadLiveRecording(){const recorder=liveRecorder;const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());const type=recorder?.mimeType||'audio/webm';const blob=new Blob(liveAudioChunks,{type});liveAudioChunks=[];if(!blob.size){toast('没有录到音频',true);renderLive();return;}const form=new FormData();form.append('file',blob,type.includes('mp4')?'speech.m4a':'speech.webm');form.append('speaker',$('live-speaker').value);form.append('language','zh');try{const data=await api(`/api/live-interviews/${state.sessionId}/audio`,{method:'POST',body:form});state.session=data.state;$('live-recording-note').textContent='转写完成；候选人回答结束后可生成下一问题。';renderLive();toast('音频已转为文字');}catch(error){$('live-recording-note').textContent='转写失败，可使用手动文本输入。';toast(error.message,true);renderLive();}}
+
+$('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
+document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-decision]');if(!button)return;let finalQuestion='';if(button.dataset.liveDecision==='edited'){const suggestion=state.session?.live_interview?.suggestions?.find(item=>item.id===button.dataset.suggestionId);finalQuestion=window.prompt('编辑面试问题',suggestion?.suggested_question||'')||'';if(!finalQuestion)return;}try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions/${button.dataset.suggestionId}`,{method:'PATCH',body:JSON.stringify({status:button.dataset.liveDecision,final_question:finalQuestion})});state.session=data.state;renderLive();toast(button.dataset.liveDecision==='skipped'?'已跳过建议':'已加入面试官问题');}catch(error){toast(error.message,true)}});
+
+async function loadSettings(){try{const s=await api('/api/settings');$('setting-provider').value=s.search.selected;$('setting-base-url').value=s.llm.base_url||'';$('setting-model').value=s.llm.model||'';$('setting-input-cost').value=s.llm.input_cost_per_million||0;$('setting-output-cost').value=s.llm.output_cost_per_million||0;$('setting-search-cost').value=s.search.search_request_cost_usd||0;$('setting-asr-url').value=s.asr?.base_url||'';$('setting-asr-path').value=s.asr?.transcription_path||'/v1/audio/transcriptions';$('setting-asr-model').value=s.asr?.model||'whisper-1';$('setting-asr-timeout').value=s.asr?.timeout_seconds||90;}catch(error){toast(error.message,true)}}
+$('settings-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;busy(form,true);try{await api('/api/settings',{method:'PUT',body:JSON.stringify({search:{provider:$('setting-provider').value,tavily_api_key:optional('setting-tavily'),searxng_base_url:optional('setting-searxng'),brave_api_key:optional('setting-brave'),search_request_cost_usd:Number($('setting-search-cost').value)||0},llm:{base_url:optional('setting-base-url'),model:optional('setting-model'),api_key:optional('setting-llm-key'),input_cost_per_million:Number($('setting-input-cost').value)||0,output_cost_per_million:Number($('setting-output-cost').value)||0},asr:{base_url:optional('setting-asr-url'),transcription_path:optional('setting-asr-path'),model:optional('setting-asr-model'),timeout_seconds:Number($('setting-asr-timeout').value)||90,api_key:optional('setting-asr-key')}})});toast('设置已持久化并立即应用');await loadSettings();}catch(error){toast(error.message,true)}finally{busy(form,false)}};
+
+async function refreshDebug(){try{const [status,events,sessions]=await Promise.all([api('/api/debug/status'),api('/api/debug/events?limit=100'),api('/api/debug/sessions')]);const metrics=status.llm.metrics||{};const cache=status.search.cache||{};$('debug-status').innerHTML=[['应用',status.application.status],['模型',status.llm.model||'managed'],['模型地址',status.llm.base_url||'—'],['ASR',status.asr?.model||'—'],['ASR 地址',status.asr?.base_url||'—'],['模型请求 / 失败',`${metrics.requests||0} / ${metrics.failures||0}`],['Token 输入 / 输出',`${metrics.prompt_tokens||0} / ${metrics.completion_tokens||0}`],['模型累计成本',`$${metrics.estimated_cost_usd||0}`],['平均耗时',`${metrics.average_latency_ms||0} ms`],['搜索',status.search.selected],['搜索请求 / 成本',`${status.search.provider_requests||0} / $${status.search.estimated_cost_usd||0}`],['缓存命中 / 未命中',`${cache.hits||0} / ${cache.misses||0}`],['持久缓存',cache.persistent?'已启用':'仅运行时'],['事件持久化',status.events_persistent?'已启用':'仅运行时'],['事件容量',status.event_capacity]].map(([k,v])=>`<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('');$('debug-sessions').innerHTML=sessions.sessions.map(s=>`<div class="session-row"><span>${esc(s.candidate_name||'未命名')}<small>${esc(s.job_title||'未指定岗位')}</small></span><code>${esc(s.id.slice(0,8))}</code></div>`).join('')||'<div class="empty-state">暂无会话</div>';renderEvents(events.events);}catch(error){toast(error.message,true)}}
 function renderEvents(events){$('event-list').innerHTML=events.map(e=>`<div class="event-row"><span>${new Date(e.timestamp).toLocaleTimeString()}</span><span class="${esc(e.level)}">${esc(e.level)}</span><span>${esc(e.agent||e.category)} · ${esc(e.action)}${e.detail?` · ${esc(e.detail)}`:''}</span><span>${e.duration_ms?`${e.duration_ms} ms`:'—'}</span></div>`).join('')||'<div class="empty-state">暂无运行事件</div>';}
 $('refresh-events').onclick=refreshDebug;$('probe-llm').onclick=async()=>{try{const d=await api('/api/debug/probes/llm',{method:'POST'});toast(`模型连接正常 · ${d.latency_ms||0} ms`);await refreshDebug();}catch(error){toast(error.message,true)}};
 

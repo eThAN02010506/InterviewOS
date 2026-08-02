@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="InterviewOS 本地面试智能工作台">
   <title>InterviewOS · 面试智能工作台</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=0.3.0">
 </head>
 <body>
   <div class="app-shell">
@@ -117,6 +117,30 @@
         </div>
       </section>
 
+      <section class="view" id="view-live">
+        <div class="live-toolbar panel">
+          <div><p class="eyebrow">LIVE INTERVIEW COPILOT</p><h2>实时面试辅助</h2><p>录制当前发言，由局域网 ASR 转写；候选人回答结束后，8001 模型准备下一问题。</p></div>
+          <div class="live-status"><span id="live-status-dot"></span><strong id="live-status-label">尚未开始</strong></div>
+        </div>
+        <div class="live-consent panel" id="live-consent-panel">
+          <label><input id="live-consent" type="checkbox"><span><strong>已确认候选人知情并同意转写</strong><small>监听状态会持续显示；默认不保存原始音频，只保存转写文字。</small></span></label>
+          <button class="btn primary" id="live-start" type="button">开始实时会话</button>
+        </div>
+        <div class="live-grid">
+          <section class="panel live-transcript-panel">
+            <div class="section-head"><div><p class="eyebrow">TRANSCRIPT</p><h3>当前对话</h3></div><div class="live-session-actions"><button class="btn compact" id="live-pause" type="button">暂停</button><button class="btn compact" id="live-finish" type="button">结束</button></div></div>
+            <div class="speaker-control"><label>当前说话人<select id="live-speaker"><option value="candidate">候选人</option><option value="interviewer">面试官</option><option value="unknown">待确认</option></select></label><button class="btn primary" id="live-record" type="button">录制当前发言</button><button class="btn" id="live-stop-record" type="button" disabled>停止并转写</button></div>
+            <p class="recording-note" id="live-recording-note">麦克风尚未启用。也可以使用下方文本输入测试。</p>
+            <form class="manual-transcript" id="live-text-form"><textarea id="live-text" rows="3" placeholder="手动输入或粘贴当前发言"></textarea><button class="btn" type="submit">加入对话</button></form>
+            <div id="live-transcript" class="transcript-stream empty-state">尚无转写片段。</div>
+          </section>
+          <aside class="live-side">
+            <article class="panel"><div class="section-head"><div><p class="eyebrow">NEXT QUESTION</p><h3>下一问题准备</h3></div><button class="btn primary compact" id="live-plan" type="button">根据回答生成</button></div><div id="live-suggestion" class="empty-state">录入候选人回答后，AI 会准备一个有证据目标的问题。</div></article>
+            <article class="panel"><p class="eyebrow">COMPETENCY MAP</p><h3>能力覆盖</h3><div id="live-competencies" class="progress-list empty-state">先完成岗位分析或面试设计。</div></article>
+          </aside>
+        </div>
+      </section>
+
       <section class="view" id="view-mock">
         <div class="mock-layout">
           <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
@@ -141,7 +165,9 @@
 
       <section class="view" id="view-settings">
         <form class="panel settings-grid" id="settings-form"><div><p class="eyebrow">MODEL RUNTIME</p><h2>本地模型</h2><label>OpenAI-compatible 地址<input id="setting-base-url"></label><label>模型名<input id="setting-model"></label><label>API Key<input id="setting-llm-key" type="password" placeholder="已配置时留空"></label><div class="form-row"><label>输入成本 / 百万 Token<input id="setting-input-cost" type="number" min="0" step="0.001" value="0"></label><label>输出成本 / 百万 Token<input id="setting-output-cost" type="number" min="0" step="0.001" value="0"></label></div><p class="security-note">配置会保存到仅当前系统用户可读的本地文件；密钥不会显示在 Debug Console。</p></div>
-          <div><p class="eyebrow">WEB RESEARCH</p><h2>联网搜索</h2><label>Provider<select id="setting-provider"><option value="tavily">Tavily</option><option value="searxng">SearXNG</option><option value="brave">Brave</option><option value="none">关闭</option></select></label><label>Tavily Key<input id="setting-tavily" type="password" placeholder="已配置时留空"></label><label>SearXNG 地址<input id="setting-searxng"></label><label>Brave Key<input id="setting-brave" type="password" placeholder="已配置时留空"></label><label>每次搜索成本（USD）<input id="setting-search-cost" type="number" min="0" step="0.0001" value="0"></label></div><button class="btn primary span-two" type="submit">保存并立即应用</button></form>
+          <div><p class="eyebrow">WEB RESEARCH</p><h2>联网搜索</h2><label>Provider<select id="setting-provider"><option value="tavily">Tavily</option><option value="searxng">SearXNG</option><option value="brave">Brave</option><option value="none">关闭</option></select></label><label>Tavily Key<input id="setting-tavily" type="password" placeholder="已配置时留空"></label><label>SearXNG 地址<input id="setting-searxng"></label><label>Brave Key<input id="setting-brave" type="password" placeholder="已配置时留空"></label><label>每次搜索成本（USD）<input id="setting-search-cost" type="number" min="0" step="0.0001" value="0"></label></div>
+          <div class="span-two"><p class="eyebrow">SPEECH TO TEXT</p><h2>局域网 ASR</h2><div class="form-row"><label>服务地址<input id="setting-asr-url" placeholder="http://192.168.1.97:8003"></label><label>转写路径<input id="setting-asr-path" placeholder="/v1/audio/transcriptions"></label></div><div class="form-row"><label>模型名<input id="setting-asr-model" placeholder="whisper-1"></label><label>超时（秒）<input id="setting-asr-timeout" type="number" min="1" max="600" value="90"></label></div><label>API Key<input id="setting-asr-key" type="password" placeholder="无需鉴权或已配置时留空"></label><p class="security-note">音频只发送到这里配置的服务；密钥不会显示在 Debug Console。</p></div>
+          <button class="btn primary span-two" type="submit">保存并立即应用</button></form>
       </section>
 
       <section class="view" id="view-debug">
@@ -156,6 +182,6 @@
   <dialog id="entity-dialog"><form method="dialog"><p class="eyebrow">ENTITY CONFIRMATION</p><h2>确认实体名称</h2><p id="entity-copy"></p><div class="dialog-actions"><button class="btn" id="reject-entity" type="button">保留原名称</button><button class="btn primary" id="accept-entity" type="button">确认更正</button></div></form></dialog>
   <dialog id="claim-dialog"><form method="dialog"><p class="eyebrow">EDIT RESUME FACT</p><h2>修改简历事实</h2><label>确认后的表述<textarea id="claim-statement" rows="5"></textarea></label><label>修改说明<input id="claim-note" placeholder="例如：原简历年份有误"></label><div class="dialog-actions"><button class="btn" id="cancel-claim" type="button">取消</button><button class="btn primary" id="save-claim" type="button">保存并确认</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=0.3.0" defer></script>
 </body>
 </html>

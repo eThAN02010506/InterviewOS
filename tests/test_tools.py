@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from interview_os.core.tool import Tool, ToolRegistry, ToolResult
+from interview_os.tools.asr import ASRClient
 from interview_os.tools.web_search import (
     SearchProvider,
     SearchResult,
@@ -23,6 +24,55 @@ class DummyTool(Tool):
 
     async def execute(self, **kwargs):
         return ToolResult(success=True, data={"echo": kwargs})
+
+
+@pytest.mark.asyncio
+async def test_asr_client_uses_openai_multipart_contract_and_extracts_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/audio/transcriptions"
+        assert request.headers["Authorization"] == "Bearer asr-secret"
+        assert "multipart/form-data" in request.headers["Content-Type"]
+        assert b'filename="answer.webm"' in request.content
+        assert b'form-data; name="model"' in request.content
+        return httpx.Response(200, json={"text": "这是候选人的回答"})
+
+    client = ASRClient(
+        base_url="http://asr.test:9001",
+        api_key="asr-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        transcript = await client.transcribe(
+            b"audio-bytes", filename="answer.webm", content_type="audio/webm"
+        )
+    finally:
+        await client.close()
+    assert transcript == "这是候选人的回答"
+
+
+@pytest.mark.asyncio
+async def test_asr_probe_skips_missing_health_endpoint():
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(404)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404)
+
+    client = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.probe()
+    finally:
+        await client.close()
+
+    assert result == {"ok": True, "path": "/v1/models", "status_code": 200}
+    assert requested_paths == ["/health", "/v1/models"]
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from io import BytesIO
 
+import httpx
 from docx import Document
 from fastapi.testclient import TestClient
 
@@ -7,6 +8,7 @@ from interview_os.api.app import create_app
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.settings_service import LocalSettingsStore
+from interview_os.tools.asr import ASRClient
 
 
 class MockLLM:
@@ -36,6 +38,8 @@ class WorkflowLLM:
             return '{"competencies":[{"competency":"System Design","score":0.8,"confidence":0.8,"supporting_evidence":["Clear design"],"gaps":[]}],"overall_score":0.8,"recommendation":"hire","summary":"Meets the bar","risks":[]}'
         if "generate evidence-based feedback" in prompt:
             return '{"overall":"Meets the bar","strengths":["Clear design"],"improvements":[],"action_plan":["Continue practice"],"interviewer_notes":[],"recommendation_reasoning":"Evidence supports hire."}'
+        if "return exactly one json object matching the questionsuggestion schema" in prompt:
+            return '{"suggested_question":"你如何验证这个架构权衡？","question_type":"follow_up","competency":"System Design","rationale":"需要补充验证方法","evidence_gap":"量化验证","expected_signals":["指标","压测"],"confidence":0.8,"alternatives":["失败时如何回滚？"]}'
         raise AssertionError(prompt)
 
     async def embed(self, text):
@@ -299,3 +303,61 @@ def test_interviewer_transcript_import_generates_hiring_report(tmp_path):
     assert result["evidence"][0]["source"] == "live_interview"
     assert result["evaluation"]["recommendation"] == "insufficient_evidence"
     assert "不能给出录用" in result["feedback"]["recommendation_reasoning"]
+
+
+def test_live_audio_transcription_and_next_question_flow(tmp_path):
+    def asr_handler(request):
+        assert request.url.path == "/v1/audio/transcriptions"
+        return httpx.Response(
+            200,
+            json={"text": "我使用压测比较两个方案，最终 P95 降低了 40%。"},
+        )
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-interview.db'}")
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(asr_handler),
+    )
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        asr_client=asr,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/analysis/job",
+            json={"session_id": session_id, "text": "System Design Engineer"},
+        )
+        denied = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": False},
+        )
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        transcribed = client.post(
+            f"/api/live-interviews/{session_id}/audio",
+            data={"speaker": "candidate", "language": "zh"},
+            files={"file": ("answer.webm", b"fake-audio", "audio/webm")},
+        )
+        planned = client.post(f"/api/live-interviews/{session_id}/suggestions")
+        suggestion = planned.json()["state"]["live_interview"]["suggestions"][0]
+        adopted = client.patch(
+            f"/api/live-interviews/{session_id}/suggestions/{suggestion['id']}",
+            json={"status": "adopted"},
+        )
+
+    assert denied.status_code == 409
+    assert started.status_code == 200
+    segment = transcribed.json()["state"]["live_interview"]["segments"][0]
+    assert segment["source"] == "asr"
+    assert "P95" in segment["text"]
+    assert planned.status_code == 200
+    assert suggestion["competency"] == "System Design"
+    assert suggestion["question_type"] == "follow_up"
+    final_live = adopted.json()["state"]["live_interview"]
+    assert final_live["suggestions"][0]["status"] == "adopted"
+    assert final_live["segments"][-1]["speaker"] == "interviewer"

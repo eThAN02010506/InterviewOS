@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.settings_service import LocalSettingsStore
+from interview_os.tools.asr import ASRClient
 from interview_os.tools.web_search import SearchProviderManager
 
 router = APIRouter()
@@ -32,9 +33,18 @@ class LLMSettingsUpdate(BaseModel):
     output_cost_per_million: float | None = Field(default=None, ge=0)
 
 
+class ASRSettingsUpdate(BaseModel):
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    transcription_path: str | None = None
+    timeout_seconds: float | None = Field(default=None, ge=1, le=600)
+
+
 class SettingsUpdate(BaseModel):
     search: SearchSettingsUpdate | None = None
     llm: LLMSettingsUpdate | None = None
+    asr: ASRSettingsUpdate | None = None
     persist: bool = True
 
 
@@ -42,9 +52,11 @@ class SettingsUpdate(BaseModel):
 async def get_settings(request: Request):
     search: SearchProviderManager = request.app.state.search_manager
     llm = request.app.state.llm_client
+    asr: ASRClient = request.app.state.asr_client
     return {
         "search": search.status(),
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
+        "asr": asr.status(),
         "persistence": "local_permission_restricted",
         "persisted_locally": request.app.state.settings_store.path.exists(),
     }
@@ -54,6 +66,7 @@ async def get_settings(request: Request):
 async def update_settings(payload: SettingsUpdate, request: Request):
     search: SearchProviderManager = request.app.state.search_manager
     llm = request.app.state.llm_client
+    asr: ASRClient = request.app.state.asr_client
     store: LocalSettingsStore = request.app.state.settings_store
     try:
         if payload.search:
@@ -62,10 +75,13 @@ async def update_settings(payload: SettingsUpdate, request: Request):
             if not isinstance(llm, LocalLLMClient):
                 raise ValueError("The injected LLM client cannot be configured from the UI")
             await llm.reconfigure(**payload.llm.model_dump())
+        if payload.asr:
+            asr.configure(**payload.asr.model_dump())
         if payload.persist:
             saved = {"search": search.secret_snapshot()}
             if isinstance(llm, LocalLLMClient):
                 saved["llm"] = llm.secret_snapshot()
+            saved["asr"] = asr.secret_snapshot()
             store.save(saved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

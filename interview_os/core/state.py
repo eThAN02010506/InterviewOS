@@ -342,6 +342,78 @@ class LiveInterviewRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class LiveInterviewStatus(str, Enum):
+    IDLE = "idle"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+
+
+class TranscriptSpeaker(str, Enum):
+    INTERVIEWER = "interviewer"
+    CANDIDATE = "candidate"
+    UNKNOWN = "unknown"
+
+
+class TranscriptSegment(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    sequence: int = Field(ge=1)
+    speaker: TranscriptSpeaker = TranscriptSpeaker.UNKNOWN
+    text: str = Field(min_length=1, max_length=12000)
+    stable: bool = True
+    confirmed: bool = True
+    source: str = "manual"
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class QuestionSuggestionStatus(str, Enum):
+    PENDING = "pending"
+    ADOPTED = "adopted"
+    EDITED = "edited"
+    SKIPPED = "skipped"
+
+
+class QuestionSuggestionType(str, Enum):
+    FOLLOW_UP = "follow_up"
+    NEXT_MAIN = "next_main"
+    CLARIFY = "clarify"
+    WRAP_UP = "wrap_up"
+
+
+class QuestionSuggestion(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    suggested_question: str = Field(min_length=1, max_length=4000)
+    question_type: QuestionSuggestionType = QuestionSuggestionType.FOLLOW_UP
+    competency: str = Field(default="综合能力", min_length=1, max_length=200)
+    rationale: str = Field(default="", max_length=2000)
+    evidence_gap: str = Field(default="", max_length=2000)
+    expected_signals: list[str] = Field(default_factory=list, max_length=8)
+    source_question_id: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    alternatives: list[str] = Field(default_factory=list, max_length=2)
+    status: QuestionSuggestionStatus = QuestionSuggestionStatus.PENDING
+    final_question: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("question_type", mode="before")
+    @classmethod
+    def normalize_legacy_question_type(cls, value: Any) -> Any:
+        return QuestionSuggestionType.NEXT_MAIN if value == "main" else value
+
+
+class LiveInterviewSession(BaseModel):
+    status: LiveInterviewStatus = LiveInterviewStatus.IDLE
+    consent_confirmed: bool = False
+    current_speaker: TranscriptSpeaker = TranscriptSpeaker.UNKNOWN
+    segments: list[TranscriptSegment] = Field(default_factory=list)
+    suggestions: list[QuestionSuggestion] = Field(default_factory=list)
+    used_question_ids: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 class InterviewState(BaseModel):
     candidate: CandidateProfile = Field(default_factory=CandidateProfile)
     resume_review: ResumeReview = Field(default_factory=ResumeReview)
@@ -358,6 +430,7 @@ class InterviewState(BaseModel):
     evaluation: EvaluationReport = Field(default_factory=EvaluationReport)
     feedback: FeedbackReport = Field(default_factory=FeedbackReport)
     live_interview_records: list[LiveInterviewRecord] = Field(default_factory=list)
+    live_interview: LiveInterviewSession = Field(default_factory=LiveInterviewSession)
     workflow: WorkflowProgress = Field(default_factory=WorkflowProgress)
     autopilot: AutopilotState = Field(default_factory=AutopilotState)
     current_stage: InterviewStage = InterviewStage.NOT_STARTED
