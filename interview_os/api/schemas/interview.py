@@ -149,3 +149,7 @@ class LiveEvidenceConfirmationRequest(BaseModel):
     question_segment_id: UUID | None = None
     question: str = Field(default="", max_length=4000)
     competency: str = Field(default="", max_length=200)
+
+
+class LiveEvidenceBatchConfirmationRequest(BaseModel):
+    competency: str = Field(default="", max_length=200)

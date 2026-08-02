@@ -407,3 +407,45 @@ def test_live_audio_transcription_and_next_question_flow(tmp_path):
     assert confirmed_state["evidence"][0]["competency"] == "System Design"
     assert duplicate.status_code == 409
     assert edit_confirmed.status_code == 409
+
+
+def test_live_review_queue_batch_confirms_pending_candidate_answers(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-batch.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/analysis/job",
+            json={"session_id": session_id, "text": "System Design Engineer"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次架构权衡。"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我比较了缓存和数据库扩容。"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我用灰度发布验证并降低了延迟。"},
+        )
+        confirmed = client.post(
+            f"/api/live-interviews/{session_id}/evidence/batch",
+            json={"competency": "System Design"},
+        )
+        empty = client.post(
+            f"/api/live-interviews/{session_id}/evidence/batch",
+            json={"competency": "System Design"},
+        )
+
+    assert confirmed.status_code == 200
+    state = confirmed.json()["state"]
+    assert len(state["live_interview_records"]) == 2
+    assert len(state["evidence"]) == 2
+    assert {item["source"] for item in state["evidence"]} == {"live_interview"}
+    assert empty.status_code == 409

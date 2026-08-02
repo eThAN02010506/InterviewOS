@@ -403,6 +403,39 @@ class InterviewService:
         )
         return runtime.state
 
+    async def confirm_pending_live_answers(
+        self, session_id: str, *, competency: str = ""
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        recorded_segment_ids = {
+            segment_id
+            for record in runtime.state.live_interview_records
+            for segment_id in record.transcript_segment_ids
+        }
+        pending_ids = [
+            item.id
+            for item in runtime.state.live_interview.segments
+            if item.speaker == TranscriptSpeaker.CANDIDATE
+            and item.stable
+            and item.confirmed
+            and item.id not in recorded_segment_ids
+        ]
+        if not pending_ids:
+            raise LiveInterviewStateError("No pending candidate answers require evidence confirmation")
+        state = runtime.state
+        for segment_id in pending_ids:
+            state = await self.confirm_live_answer(
+                session_id,
+                segment_id,
+                competency=competency,
+            )
+        self._record_debug(
+            "live_answers_batch_confirmed",
+            session_id,
+            detail=f"count={len(pending_ids)}",
+        )
+        return state
+
     async def create_session(
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""
     ) -> tuple[str, InterviewState]:

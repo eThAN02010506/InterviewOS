@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
+    LiveEvidenceBatchConfirmationRequest,
     LiveEvidenceConfirmationRequest,
     LiveInterviewStartRequest,
     LiveInterviewStatusRequest,
@@ -95,6 +96,19 @@ async def confirm_segment_evidence(
         segment_id,
         question_segment_id=payload.question_segment_id,
         question=payload.question,
+        competency=payload.competency,
+    )
+    return response(session_id, state)
+
+
+@router.post("/{session_id}/evidence/batch", response_model=WorkflowResponse)
+async def confirm_pending_evidence(
+    session_id: str,
+    payload: LiveEvidenceBatchConfirmationRequest,
+    service: Service,
+):
+    state = await service.confirm_pending_live_answers(
+        session_id,
         competency=payload.competency,
     )
     return response(session_id, state)
