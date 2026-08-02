@@ -430,6 +430,10 @@ class LiveInterviewSession(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
     suggestions: list[QuestionSuggestion] = Field(default_factory=list)
     answer_boundary_suggestions: list[LiveAnswerBoundarySuggestion] = Field(default_factory=list)
+    rolling_summary: str = ""
+    summarized_until_sequence: int = 0
+    duplicate_segments_dropped: int = 0
+    last_duplicate_reason: str = ""
     used_question_ids: list[str] = Field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None

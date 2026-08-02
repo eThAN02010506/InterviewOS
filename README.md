@@ -190,6 +190,11 @@ early. The browser records short chunks, uploads them sequentially, shows queue 
 upload status, and marks each chunk as `unknown` speaker by default. This keeps the
 interviewer in control: the user must correct speaker/text and explicitly confirm
 candidate answers before any chunk can become hiring evidence.
+For longer interviews, the live state now maintains a bounded rolling transcript
+summary and drops exact repeated transcript chunks before they can grow the
+conversation context. The next-question planner receives the rolling summary,
+recent confirmed turns, the interview blueprint, and confirmed evidence instead of
+the full raw transcript.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
@@ -207,13 +212,16 @@ The remaining roadmap is deliberately separated:
    let the browser record short sequential audio chunks, mark uncertain chunks as
    `unknown` speaker by default, and require transcript review before evidence is
    created. This gives a practical bridge before true streaming.
-3. **Continuous streaming** — partial transcript events, stronger answer-boundary
-   detection, WebSocket reconnect and deduplication, and optional speaker diarization.
-4. **Evidence map hardening** — confirmed turns already become `live_interview`
+3. **Completed bounded context MVP** — exact duplicate transcript chunks are dropped,
+   older stable turns are summarized into bounded context, and next-question planning
+   uses summary + recent turns + evidence rather than the full transcript.
+4. **Continuous streaming** — partial transcript events, stronger answer-boundary
+   detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
+5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, and re-evaluated; next work is richer coverage
-   guidance, better boundary confidence, and long-interview summaries.
-5. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
-   rolling summaries, redacted observability, and cost measurement.
+   guidance and better boundary confidence.
+6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
+   redacted observability, and cost measurement.
 
 The live path must not invoke an LLM for every partial word. Stable transcript turns
 feed a bounded context made from recent dialogue, a rolling summary, the interview
@@ -235,9 +243,8 @@ is not the default evidence source until that truncation behavior is resolved.
 
 The next work should move in this order:
 
-1. **True streaming design** — add WebSocket transcript events, answer-boundary
-   detection, reconnect/deduplication, and rolling summaries so long interviews do
-   not resend the whole transcript to the LLM.
+1. **True streaming design** — add WebSocket transcript events, stronger answer-boundary
+   detection, reconnect handling, and protocol-level deduplication.
 2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
    with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
    retries.

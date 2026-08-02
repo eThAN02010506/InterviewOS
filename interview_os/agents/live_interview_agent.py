@@ -30,7 +30,11 @@ class LiveInterviewAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        recent_segments = state.live_interview.segments[-12:]
+        recent_segments = [
+            item
+            for item in state.live_interview.segments
+            if item.sequence > state.live_interview.summarized_until_sequence
+        ][-12:]
         transcript = "\n".join(
             f"[{segment.speaker.value}] {segment.text}"
             for segment in recent_segments
@@ -64,6 +68,8 @@ class LiveInterviewAgent(Agent):
             f"Used question IDs: {state.live_interview.used_question_ids}\n"
             f"Prepared question map:\n{question_map}\n"
             f"Recorded evidence:\n{evidence_map}\n"
+            f"Rolling transcript summary:\n"
+            f"{state.live_interview.rolling_summary or 'No older transcript summary yet.'}\n"
             f"Recent confirmed transcript:\n{transcript}"
         )
         try:

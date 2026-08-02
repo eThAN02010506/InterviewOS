@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -156,21 +157,41 @@ class InterviewService:
         clean_text = text.strip()
         if not clean_text:
             raise LiveInterviewStateError("Transcript text cannot be empty")
+        duplicate_detail = ""
+        duplicate_detected = False
         async with self._lock_for(session_id):
             live = runtime.state.live_interview
             if live.status != LiveInterviewStatus.ACTIVE:
                 raise LiveInterviewStateError("Live interview must be active before adding transcript")
-            live.current_speaker = speaker
-            live.segments.append(
-                TranscriptSegment(
-                    sequence=len(live.segments) + 1,
-                    speaker=speaker,
-                    text=clean_text,
-                    source=source,
+            duplicate = self._find_duplicate_live_segment(live.segments, clean_text, speaker)
+            if duplicate is not None:
+                live.duplicate_segments_dropped += 1
+                live.last_duplicate_reason = (
+                    f"重复片段已忽略：与 #{duplicate.sequence} "
+                    f"{duplicate.speaker.value} 发言高度一致"
                 )
-            )
-            self._refresh_live_answer_boundaries(runtime.state)
-            await self._persist(session_id, runtime.state)
+                duplicate_detail = (
+                    f"speaker={speaker.value}; source={source}; "
+                    f"duplicate_of={duplicate.sequence}; chars={len(clean_text)}"
+                )
+                duplicate_detected = True
+                await self._persist(session_id, runtime.state)
+            else:
+                live.current_speaker = speaker
+                live.segments.append(
+                    TranscriptSegment(
+                        sequence=len(live.segments) + 1,
+                        speaker=speaker,
+                        text=clean_text,
+                        source=source,
+                    )
+                )
+                self._refresh_live_answer_boundaries(runtime.state)
+                self._refresh_live_rolling_summary(runtime.state)
+                await self._persist(session_id, runtime.state)
+        if duplicate_detected:
+            self._record_debug("live_transcript_duplicate_dropped", session_id, detail=duplicate_detail)
+            return runtime.state
         self._record_debug(
             "live_transcript_added",
             session_id,
@@ -207,6 +228,7 @@ class InterviewService:
             segment.stable = True
             segment.confirmed = True
             self._refresh_live_answer_boundaries(runtime.state)
+            self._refresh_live_rolling_summary(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_transcript_updated",
@@ -281,7 +303,15 @@ class InterviewService:
             )
             runtime.state.next_action = "Interviewer reviews the suggested next question"
             await self._persist(session_id, runtime.state)
-        self._record_debug("live_question_planned", session_id)
+        self._record_debug(
+            "live_question_planned",
+            session_id,
+            detail=(
+                f"summary_until={runtime.state.live_interview.summarized_until_sequence}; "
+                f"recent_segments={min(12, len(runtime.state.live_interview.segments))}; "
+                f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}"
+            ),
+        )
         return runtime.state
 
     async def decide_live_suggestion(
@@ -413,6 +443,7 @@ class InterviewService:
             record.evaluation = evaluation
             runtime.state.live_interview_records.append(record)
             self._refresh_live_answer_boundaries(runtime.state)
+            self._refresh_live_rolling_summary(runtime.state)
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -478,6 +509,7 @@ class InterviewService:
                 item for item in runtime.state.evidence if item.source_record_id != record_id
             ]
             self._refresh_live_answer_boundaries(runtime.state)
+            self._refresh_live_rolling_summary(runtime.state)
             runtime.state.next_action = "Review corrected live evidence before evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -1255,6 +1287,53 @@ class InterviewService:
             candidate_run = []
         flush_run()
         live.answer_boundary_suggestions = suggestions[-5:]
+
+    def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
+        live = state.live_interview
+        stable_segments = [
+            item for item in live.segments if item.stable and item.confirmed
+        ]
+        if len(stable_segments) <= 12:
+            live.rolling_summary = ""
+            live.summarized_until_sequence = 0
+            return
+        cutoff = stable_segments[-12].sequence - 1
+        summarized = [item for item in stable_segments if item.sequence <= cutoff]
+        speaker_labels = {
+            TranscriptSpeaker.INTERVIEWER: "面试官",
+            TranscriptSpeaker.CANDIDATE: "候选人",
+            TranscriptSpeaker.UNKNOWN: "待确认",
+        }
+        lines = [
+            f"#{item.sequence} {speaker_labels[item.speaker]}: {item.text[:180]}"
+            for item in summarized
+        ]
+        summary = "\n".join(lines)
+        if len(summary) > 2800:
+            summary = "…\n" + summary[-2800:]
+        live.rolling_summary = summary
+        live.summarized_until_sequence = cutoff
+
+    def _find_duplicate_live_segment(
+        self,
+        segments: list[TranscriptSegment],
+        text: str,
+        speaker: TranscriptSpeaker,
+    ) -> TranscriptSegment | None:
+        normalized = self._normalize_live_segment_text(text)
+        if len(normalized) < 8:
+            return None
+        for segment in reversed(segments[-12:]):
+            if segment.speaker != speaker or not segment.stable or not segment.confirmed:
+                continue
+            prior = self._normalize_live_segment_text(segment.text)
+            if normalized == prior:
+                return segment
+        return None
+
+    @staticmethod
+    def _normalize_live_segment_text(value: str) -> str:
+        return re.sub(r"[\W_]+", "", value.lower(), flags=re.UNICODE)
 
     @staticmethod
     def _infer_live_competency(state: InterviewState, question: str) -> str:

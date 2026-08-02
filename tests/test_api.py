@@ -594,6 +594,50 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     assert duplicate.status_code == 409
 
 
+def test_live_transcript_dedupes_and_rolls_context_for_question_planning(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-context.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次系统设计经历。"},
+        )
+        first = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我先梳理瓶颈并设计分层缓存。"},
+        ).json()["state"]["live_interview"]
+        duplicate = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我先梳理瓶颈并设计分层缓存。"},
+        ).json()["state"]["live_interview"]
+        for index in range(12):
+            client.post(
+                f"/api/live-interviews/{session_id}/segments",
+                json={
+                    "speaker": "candidate",
+                    "text": f"补充第 {index} 点：我用指标验证方案并记录风险。",
+                },
+            )
+        planned = client.post(f"/api/live-interviews/{session_id}/suggestions")
+        events = client.get("/api/debug/events").json()["events"]
+
+    assert len(first["segments"]) == 2
+    assert len(duplicate["segments"]) == 2
+    assert duplicate["duplicate_segments_dropped"] == 1
+    live = planned.json()["state"]["live_interview"]
+    assert live["summarized_until_sequence"] > 0
+    assert "请讲一次系统设计经历" in live["rolling_summary"]
+    planned_events = [item for item in events if item["action"] == "live_question_planned"]
+    assert planned_events
+    assert "summary_until=" in planned_events[0]["detail"]
+    assert "duplicates_dropped=1" in planned_events[0]["detail"]
+
+
 def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-reevaluate.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
