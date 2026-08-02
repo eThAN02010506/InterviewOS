@@ -123,6 +123,8 @@ def build_fact_cards(state: InterviewState) -> None:
             if not claim:
                 continue
             quality = _source_quality(source)
+            fetched_at = _source_fetched_at(source)
+            filter_reason = str(source.get("filter_reason", "")).strip()
             verified = quality in {"official", "high"}
             existing = indexed.get(key)
             if existing:
@@ -132,6 +134,16 @@ def build_fact_cards(state: InterviewState) -> None:
                 existing.source_quality = _merge_source_quality(
                     existing.source_quality, quality
                 )
+                if fetched_at and (
+                    existing.source_fetched_at is None
+                    or fetched_at > existing.source_fetched_at
+                ):
+                    existing.source_fetched_at = fetched_at
+                if filter_reason and filter_reason not in existing.source_filter_reason:
+                    existing.source_filter_reason = _append_reason(
+                        existing.source_filter_reason, filter_reason
+                    )
+                existing.cache_hit = existing.cache_hit or bool(source.get("cache_hit"))
                 if verified:
                     existing.status = FactStatus.VERIFIED
                 existing.confidence = min(0.95, existing.confidence + 0.08)
@@ -149,6 +161,9 @@ def build_fact_cards(state: InterviewState) -> None:
                 source_urls=[url] if url else [],
                 source_quality=quality,
                 source_count=1,
+                source_fetched_at=fetched_at,
+                source_filter_reason=filter_reason,
+                cache_hit=bool(source.get("cache_hit")),
                 note=(
                     "来自公开来源摘要，建议打开原文复核"
                     if not verified
@@ -271,6 +286,26 @@ def _source_quality_label(quality: str) -> str:
     }.get(quality, "未评级")
 
 
+def _source_fetched_at(source: dict[str, Any]) -> datetime | None:
+    raw_value = source.get("fetched_at")
+    if isinstance(raw_value, datetime):
+        return raw_value if raw_value.tzinfo else raw_value.replace(tzinfo=timezone.utc)
+    if not raw_value:
+        return None
+    try:
+        value = str(raw_value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _append_reason(current: str, reason: str) -> str:
+    if not current:
+        return reason
+    return f"{current}; {reason}"[:500]
+
+
 def _category_for(default: str, claim: str) -> str:
     if re.search(r"技术|芯片|光谱|AI|人工智能|engineering|technology", claim, re.IGNORECASE):
         return "technology"
@@ -299,6 +334,11 @@ def _position_conflict(state: InterviewState) -> FactCard | None:
     urls = [
         str(item.get("url")) for item in state.interviewer.public_expressions if item.get("url")
     ]
+    fetched_times = [
+        fetched
+        for item in state.interviewer.public_expressions
+        if (fetched := _source_fetched_at(item)) is not None
+    ]
     return FactCard(
         category="interviewer",
         subject=state.interviewer.name,
@@ -308,5 +348,8 @@ def _position_conflict(state: InterviewState) -> FactCard | None:
         source_urls=list(dict.fromkeys(urls))[:5],
         source_quality="secondary",
         source_count=len(state.interviewer.public_expressions),
+        source_fetched_at=max(fetched_times) if fetched_times else None,
+        source_filter_reason="conflict: user supplied role differs from public-source role terms",
+        cache_hit=any(bool(item.get("cache_hit")) for item in state.interviewer.public_expressions),
         note="职位信息存在冲突，不能自动覆盖，请人工确认。",
     )

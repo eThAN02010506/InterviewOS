@@ -6,6 +6,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from time import time
 from typing import Any, ClassVar
@@ -25,6 +26,10 @@ class SearchResult(BaseModel):
     snippet: str = ""
     source: str = ""
     source_quality: str = "unrated"
+    source_quality_reason: str = ""
+    filter_reason: str = ""
+    fetched_at: datetime | None = None
+    cache_hit: bool = False
     is_official: bool = False
     corroboration_count: int = 1
 
@@ -41,10 +46,15 @@ def assess_source_quality(results: list[SearchResult], query: str) -> list[Searc
         item.is_official = bool(entity and entity in compact_domain)
         if item.is_official:
             item.source_quality = "official"
+            item.source_quality_reason = "URL domain appears to match the quoted entity"
         elif domain.endswith(reputable_domains):
             item.source_quality = "high"
+            item.source_quality_reason = "URL domain is in the reputable news allowlist"
         else:
             item.source_quality = "secondary"
+            item.source_quality_reason = (
+                "Public search result; not an official domain or allowlisted news source"
+            )
         item.corroboration_count = independent_domains
     return results
 
@@ -97,8 +107,12 @@ def filter_entity_results(
             accepted["identity_match"] = "corroborated_alias"
             accepted["input_identity"] = entity if entity_alias else required_context
             accepted["matched_identity"] = entity_alias or context_alias
+            accepted["filter_reason"] = (
+                "accepted: one-character Chinese alias corroborated by the required entity"
+            )
         else:
             accepted["identity_match"] = "exact"
+            accepted["filter_reason"] = "accepted: exact entity/context match"
         filtered.append(accepted)
     return filtered
 
@@ -317,6 +331,7 @@ class SearchProviderManager(SearchProvider):
             "estimated_cost_usd": round(
                 self._provider_requests * self.search_request_cost_usd, 6
             ),
+            "source_filter_policy": "exact entity/context match, or one-character Chinese alias with corroboration",
         }
 
     async def search(
@@ -329,7 +344,10 @@ class SearchProviderManager(SearchProvider):
             self._cache.move_to_end(key)
             self._persist_metrics()
             self._record_search(query, len(cached[1]), cache_hit=True)
-            return [item.model_copy(deep=True) for item in cached[1]]
+            return [
+                item.model_copy(deep=True, update={"cache_hit": True})
+                for item in cached[1]
+            ]
         if cached:
             self._cache.pop(key, None)
         self._cache_misses += 1
@@ -341,9 +359,14 @@ class SearchProviderManager(SearchProvider):
         }
         if self.selected == "none":
             raise ValueError("Web search provider is disabled")
+        fetched_at = datetime.now(timezone.utc)
         results = assess_source_quality(
             await providers[self.selected].search(query, limit, search_depth=search_depth), query
         )
+        results = [
+            item.model_copy(update={"fetched_at": fetched_at, "cache_hit": False})
+            for item in results
+        ]
         self._provider_requests += 1
         self._cache[key] = (time(), [item.model_copy(deep=True) for item in results])
         self._cache.move_to_end(key)
@@ -367,6 +390,7 @@ class SearchProviderManager(SearchProvider):
                     "provider": self.selected,
                     "result_count": count,
                     "source_filter": "exact entity or one-character alias with corroboration",
+                    "cache": "hit" if cache_hit else "miss",
                 },
             )
         )
@@ -463,7 +487,10 @@ class WebSearchTool(Tool):
             results = await self.provider.search(query, limit, search_depth=search_depth)
             return ToolResult(
                 success=True,
-                data={"query": query, "results": [item.model_dump() for item in results]},
+                data={
+                    "query": query,
+                    "results": [item.model_dump(mode="json") for item in results],
+                },
             )
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             return ToolResult(success=False, error=f"Web search failed: {exc}")
@@ -475,8 +502,11 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
         f"[{index}] {item.get('title', '')}\n"
         f"URL: {item.get('url', '')}\n"
         f"Quality: {item.get('source_quality', 'unrated')} | "
+        f"Reason: {item.get('source_quality_reason', '')} | "
         f"Official: {item.get('is_official', False)} | "
-        f"Independent domains: {item.get('corroboration_count', 1)}\n"
+        f"Independent domains: {item.get('corroboration_count', 1)} | "
+        f"Fetched: {item.get('fetched_at', '')} | "
+        f"Cache: {item.get('cache_hit', False)}\n"
         f"Snippet: {item.get('snippet', '')}"
         for index, item in enumerate(results, start=1)
     )

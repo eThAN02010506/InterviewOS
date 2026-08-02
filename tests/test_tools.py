@@ -157,6 +157,7 @@ def test_source_quality_marks_entity_domain_as_official():
     )
     assert results[0].is_official is True
     assert results[0].source_quality == "official"
+    assert results[0].source_quality_reason
     assert results[1].source_quality == "secondary"
     assert results[0].corroboration_count == 2
 
@@ -198,6 +199,7 @@ def test_entity_filter_accepts_corroborated_one_character_company_alias():
     )
     assert results[0]["identity_match"] == "corroborated_alias"
     assert results[0]["matched_identity"] == "芯视界"
+    assert results[0]["filter_reason"].startswith("accepted:")
 
 
 def test_context_alias_requires_exact_person_identity():

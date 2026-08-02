@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 
 import httpx
 
@@ -95,12 +96,17 @@ def test_fact_cards_merge_duplicate_sources_with_quality_metadata():
             "url": "https://media.example.com/story",
             "snippet": claim,
             "source_quality": "secondary",
+            "fetched_at": "2026-08-02T01:00:00+00:00",
+            "filter_reason": "accepted: exact entity/context match",
         },
         {
             "url": "https://example.com/news",
             "snippet": claim,
             "source_quality": "official",
             "is_official": True,
+            "fetched_at": "2026-08-02T02:00:00+00:00",
+            "filter_reason": "accepted: exact entity/context match",
+            "cache_hit": True,
         },
     ]
     build_fact_cards(state)
@@ -108,6 +114,9 @@ def test_fact_cards_merge_duplicate_sources_with_quality_metadata():
     assert card.status.value == "verified"
     assert card.source_quality == "official"
     assert card.source_count == 2
+    assert card.source_fetched_at == datetime(2026, 8, 2, 2, tzinfo=timezone.utc)
+    assert card.source_filter_reason == "accepted: exact entity/context match"
+    assert card.cache_hit is True
     assert card.source_urls == ["https://media.example.com/story", "https://example.com/news"]
     assert "2 个公开来源交叉支持" in card.note
 
@@ -184,9 +193,12 @@ def test_search_manager_uses_bounded_cache(monkeypatch):
     manager = SearchProviderManager(cache_capacity=2)
     manager.configure(provider="tavily", tavily_api_key="secret")
     asyncio.run(manager.search("Example"))
-    asyncio.run(manager.search("Example"))
+    cached = asyncio.run(manager.search("Example"))
     assert calls == 1
+    assert cached[0].cache_hit is True
+    assert cached[0].fetched_at is not None
     assert manager.status()["cache"]["hits"] == 1
+    assert "source_filter_policy" in manager.status()
 
 
 def test_search_cache_and_metrics_survive_restart(monkeypatch, tmp_path):

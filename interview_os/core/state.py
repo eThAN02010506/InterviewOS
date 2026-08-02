@@ -183,6 +183,9 @@ class FactCard(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
     source_quality: str = "unrated"
     source_count: int = 0
+    source_fetched_at: datetime | None = None
+    source_filter_reason: str = ""
+    cache_hit: bool = False
     note: str = ""
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: datetime | None = None
