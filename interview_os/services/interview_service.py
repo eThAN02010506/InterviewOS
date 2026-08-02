@@ -47,6 +47,7 @@ from interview_os.core.state import (
 from interview_os.database.storage import Storage
 from interview_os.services.intelligence_service import (
     build_fact_cards,
+    decide_fact_card,
     resolve_entity,
     review_job_description,
     sync_entity_resolutions,
@@ -1149,6 +1150,24 @@ class InterviewService:
                 "entity_resolution_updated",
                 session_id,
                 detail=f"{resolution.input_name} -> {resolution.proposed_name}: {resolution.status.value}",
+            )
+            return runtime.state
+
+    async def decide_fact_card(
+        self, session_id: str, card_id: UUID, *, action: str, note: str = ""
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            try:
+                card = decide_fact_card(runtime.state, card_id, action=action, note=note)
+            except (LookupError, ValueError) as exc:
+                raise ResumeReviewStateError(str(exc)) from exc
+            runtime.state.next_action = "Use confirmed fact cards or continue public research review"
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "fact_card_decided",
+                session_id,
+                detail=f"{card.category}: {card.status.value}",
             )
             return runtime.state
 

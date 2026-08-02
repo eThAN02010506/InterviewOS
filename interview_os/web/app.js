@@ -240,12 +240,12 @@ function renderJDReview() {
 function renderFacts(){
   const node=$('fact-result'); const cards=state.session?.fact_cards||[];
   if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
-  const labels={verified:'已验证',inferred:'推测',conflict:'冲突'};
+  const labels={verified:'已验证',inferred:'推测',conflict:'冲突',accepted:'已确认',rejected:'已排除'};
   const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点'};
-  const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'?'conflict':card.category;(acc[key] ||= []).push(card);return acc;},{});
-  const order=['conflict','company','interviewer','technology','public_opinion'];
+  const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'||card.status==='rejected'?card.status:card.category;(acc[key] ||= []).push(card);return acc;},{});
+  const order=['conflict','company','interviewer','technology','public_opinion','rejected'];
   const groups=[...order.filter(key=>grouped[key]),...Object.keys(grouped).filter(key=>!order.includes(key))];
-  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${(card.source_urls||[]).length} 个来源</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}</article>`).join('')}</section>`).join('');
+  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':key==='rejected'?'已排除信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${(card.source_urls||[]).length} 个来源</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}<div class="claim-actions fact-actions"><button type="button" data-fact-action="accept" data-fact-id="${esc(card.id)}">确认使用</button><button type="button" data-fact-action="reject" data-fact-id="${esc(card.id)}">排除</button><button type="button" data-fact-action="reset" data-fact-id="${esc(card.id)}">恢复待审</button></div></article>`).join('')}</section>`).join('');
 }
 
 function maybePromptEntityResolution(){
@@ -371,6 +371,24 @@ document.addEventListener('click', async event => {
     state.session = data.state;
     renderState();
     toast({confirm:'已确认为明确要求',edit:'已编辑并确认',delete:'已删除该推测要求'}[button.dataset.jdAction] || 'JD 要求已更新');
+  } catch (error) { toast(error.message, true); }
+});
+
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-fact-action]');
+  if (!button || !state.sessionId) return;
+  const action = button.dataset.factAction;
+  const note = action === 'reset'
+    ? ''
+    : (window.prompt(action === 'accept' ? '确认说明（可选）' : '排除原因（可选）', '') || '');
+  try {
+    const data = await api(`/api/intelligence/${state.sessionId}/facts/${button.dataset.factId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({action, note})
+    });
+    state.session = data.state;
+    renderState();
+    toast({accept:'事实卡已确认',reject:'事实卡已排除',reset:'事实卡已恢复待审'}[action] || '事实卡已更新');
   } catch (error) { toast(error.message, true); }
 });
 

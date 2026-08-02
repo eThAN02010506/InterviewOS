@@ -270,11 +270,14 @@ textarea { resize: vertical; line-height: 1.55; }
 .fact-card { padding: 13px; background: #f8faf8; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 8px; }
 .fact-card.inferred { border-left-color: var(--amber); }
 .fact-card.conflict { background: #fff7f5; border-left-color: var(--red); }
+.fact-card.accepted { background: #f1faf5; border-left-color: var(--green); }
+.fact-card.rejected { opacity: 0.68; border-left-color: #9aa29e; }
 .fact-card div { display: flex; justify-content: space-between; color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .fact-card > strong, .fact-card > small { display: block; }
 .fact-card p { margin: 6px 0; }
 .fact-card > small { color: var(--muted); }
 .fact-card a { display: inline-block; margin: 7px 8px 0 0; color: var(--green); font-size: 10px; }
+.fact-actions { margin-top: 9px; }
 .round-card { margin: 22px 0; padding: 4px 0 4px 16px; border-left: 3px solid #75b99b; }
 .round-card h4 { margin: 0 0 4px; }
 .round-card p { color: var(--muted); }

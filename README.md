@@ -72,7 +72,8 @@ The system is built around a few product rules:
   use them.
 - Search conclusions are organized into fact cards with source URLs and status:
   verified, inferred, conflicting, or needs review. The UI groups cards by conflict,
-  company, interviewer, technology, and public-opinion categories.
+  company, interviewer, technology, and public-opinion categories. Users can confirm
+  a card for later context, reject it, or reset it to inferred review state.
 - Secrets and sensitive resume/transcript content must not appear in logs, SQLite
   exports, settings responses, or the Debug Console.
 
@@ -236,8 +237,8 @@ The next work should move in this order:
 2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
    with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
    retries.
-3. **Search and fact-card hardening** — improve source ranking, Tavily result
-   caching, public-claim traceability, and conflict resolution decisions.
+3. **Search and fact-card hardening** — improve source ranking, richer conflict
+   explanations, material source timestamps, and Tavily result caching.
 4. **Operational hardening** — expand Debug Console timings, retry paths, redacted
    cost/token metrics, local secret persistence tests, and 60-90 minute live
    interview load tests.

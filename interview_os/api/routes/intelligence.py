@@ -8,7 +8,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from interview_os.api.dependencies import get_interview_service
-from interview_os.api.schemas.interview import EntityResolutionRequest, WorkflowResponse
+from interview_os.api.schemas.interview import (
+    EntityResolutionRequest,
+    FactCardDecisionRequest,
+    WorkflowResponse,
+)
 from interview_os.services.interview_service import InterviewService
 
 router = APIRouter()
@@ -27,5 +31,21 @@ async def resolve_entity(
         resolution_id,
         accept=payload.accept,
         proposed_name=payload.proposed_name,
+    )
+    return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))
+
+
+@router.patch("/{session_id}/facts/{card_id}", response_model=WorkflowResponse)
+async def decide_fact_card(
+    session_id: str,
+    card_id: UUID,
+    payload: FactCardDecisionRequest,
+    service: Service,
+):
+    state = await service.decide_fact_card(
+        session_id,
+        card_id,
+        action=payload.action,
+        note=payload.note,
     )
     return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))

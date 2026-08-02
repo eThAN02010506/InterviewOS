@@ -106,6 +106,11 @@ class EntityResolutionRequest(BaseModel):
     proposed_name: str = Field(default="", max_length=200)
 
 
+class FactCardDecisionRequest(BaseModel):
+    action: Literal["accept", "reject", "reset"]
+    note: str = Field(default="", max_length=500)
+
+
 class TranscriptEntryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     answer: str = Field(min_length=1, max_length=12000)

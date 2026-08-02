@@ -169,6 +169,8 @@ class FactStatus(str, Enum):
     VERIFIED = "verified"
     INFERRED = "inferred"
     CONFLICT = "conflict"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
 
 
 class FactCard(BaseModel):
@@ -180,6 +182,7 @@ class FactCard(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source_urls: list[str] = Field(default_factory=list)
     note: str = ""
+    resolved_at: datetime | None = None
 
 
 class CompanyInfo(BaseModel):

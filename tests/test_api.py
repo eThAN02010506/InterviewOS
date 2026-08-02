@@ -9,6 +9,7 @@ from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.asr import ASRClient
+from interview_os.tools.web_search import SearchResult
 
 
 class MockLLM:
@@ -54,6 +55,20 @@ class FollowupWorkflowLLM(WorkflowLLM):
         if "analyze this interview answer" in prompt:
             return '{"content":0.6,"technical_depth":0.6,"structure":0.6,"impact":0.5,"feedback":["Add evidence"],"improved_answer":"Better","observed_signals":["Design thinking"],"missing_signals":["Measured impact"]}'
         return await super().chat(messages, **kwargs)
+
+
+class FactSearchProvider:
+    async def search(self, query, limit=5, *, search_depth="basic"):
+        return [
+            SearchResult(
+                title="Example AI platform",
+                url="https://example.com/about",
+                snippet="Example develops AI systems for enterprise interview workflows.",
+                source="test",
+                source_quality="official",
+                is_official=True,
+            )
+        ][:limit]
 
 
 def make_resume_docx() -> bytes:
@@ -612,6 +627,44 @@ def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
     assert evidence["competency"] == "Cross-team Collaboration"
     assert evidence["source_record_id"] == record_id
     assert record["transcript_segment_ids"] == [question["id"], answer["id"]]
+
+
+def test_fact_card_decision_api_updates_session_state(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'facts.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        search_provider=FactSearchProvider(),
+        configure_llm=False,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        analyzed = client.post(
+            "/api/analysis/company",
+            json={"session_id": session_id, "name": "Example", "context": "Example develops AI systems."},
+        ).json()["state"]
+        card_id = analyzed["fact_cards"][0]["id"]
+
+        accepted = client.patch(
+            f"/api/intelligence/{session_id}/facts/{card_id}",
+            json={"action": "accept", "note": "用户确认"},
+        )
+        rejected = client.patch(
+            f"/api/intelligence/{session_id}/facts/{card_id}",
+            json={"action": "reject", "note": "来源冲突"},
+        )
+        reset = client.patch(
+            f"/api/intelligence/{session_id}/facts/{card_id}",
+            json={"action": "reset"},
+        )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["state"]["fact_cards"][0]["status"] == "accepted"
+    assert accepted.json()["state"]["fact_cards"][0]["note"] == "用户确认"
+    assert rejected.status_code == 200
+    assert rejected.json()["state"]["fact_cards"][0]["status"] == "rejected"
+    assert reset.status_code == 200
+    assert reset.json()["state"]["fact_cards"][0]["status"] == "inferred"
 
 
 def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_path):

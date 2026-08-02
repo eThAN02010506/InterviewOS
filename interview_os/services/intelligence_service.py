@@ -169,6 +169,33 @@ def resolve_entity(
     return resolution
 
 
+def decide_fact_card(
+    state: InterviewState, card_id, *, action: str, note: str = ""
+) -> FactCard:
+    card = next((item for item in state.fact_cards if item.id == card_id), None)
+    if card is None:
+        raise LookupError("Fact card not found")
+    clean_note = note.strip()
+    if action == "accept":
+        card.status = FactStatus.ACCEPTED
+        card.confidence = max(card.confidence, 0.85)
+        card.note = clean_note or "用户确认可作为上下文使用"
+        card.resolved_at = datetime.now(timezone.utc)
+    elif action == "reject":
+        card.status = FactStatus.REJECTED
+        card.confidence = min(card.confidence, 0.2)
+        card.note = clean_note or "用户已排除，不作为后续上下文依据"
+        card.resolved_at = datetime.now(timezone.utc)
+    elif action == "reset":
+        card.status = FactStatus.INFERRED
+        card.confidence = 0.65
+        card.note = clean_note or "已恢复为待复核推测"
+        card.resolved_at = None
+    else:
+        raise ValueError("Unsupported fact card decision")
+    return card
+
+
 def _fact_claim(source: dict[str, Any], subject: str) -> str:
     text = _clean_public_text(str(source.get("snippet") or source.get("text") or ""))
     title = _clean_public_text(str(source.get("title", "")))

@@ -7,6 +7,7 @@ from interview_os.core.state import InterviewState, ResumeClaim, ResumeClaimStat
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.intelligence_service import (
     build_fact_cards,
+    decide_fact_card,
     resolve_entity,
     review_job_description,
     sync_entity_resolutions,
@@ -80,6 +81,34 @@ def test_fact_cards_preserve_source_and_status():
     build_fact_cards(state)
     assert state.fact_cards[0].status.value == "verified"
     assert state.fact_cards[0].source_urls == ["https://example.com/about"]
+
+
+def test_fact_card_decision_flow_marks_accept_reject_and_reset():
+    state = InterviewState()
+    state.company.name = "Example"
+    state.company.public_sources = [
+        {
+            "url": "https://example.com/news",
+            "snippet": "Example announced an AI platform direction in a public article.",
+            "source_quality": "secondary",
+        }
+    ]
+    build_fact_cards(state)
+    card = state.fact_cards[0]
+
+    decide_fact_card(state, card.id, action="accept", note="官网外来源但与面试官说法一致")
+    assert card.status.value == "accepted"
+    assert card.confidence >= 0.85
+    assert card.resolved_at is not None
+
+    decide_fact_card(state, card.id, action="reject", note="来源过旧")
+    assert card.status.value == "rejected"
+    assert card.confidence <= 0.2
+    assert card.note == "来源过旧"
+
+    decide_fact_card(state, card.id, action="reset")
+    assert card.status.value == "inferred"
+    assert card.resolved_at is None
 
 
 def test_only_confirmed_or_modified_resume_claims_reach_agents():
