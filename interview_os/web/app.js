@@ -211,6 +211,13 @@ function renderLive() {
   const priorityLabels = {high:'高优先级',medium:'继续补证',low:'基本覆盖'};
   const guidanceHtml = guidance.length ? `<div class="coverage-guidance">${guidance.map(item=>`<div class="coverage-card ${esc(item.priority)}"><small>${esc(priorityLabels[item.priority]||item.priority)} · ${esc(item.suggested_question_type)}</small><strong>${esc(item.competency)}</strong><span>${esc(item.evidence_count)} 条证据 · 最强信号 ${Math.round((item.strongest_confidence||0)*100)}%</span><p>${esc(item.reason)}</p><em>${esc(item.sample_question)}</em></div>`).join('')}</div>` : '';
   $('live-competencies').innerHTML = competencies.length ? competencies.map(name => {const evidence=(state.session?.evidence||[]).filter(item=>item.competency===name).length;return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.min(100,evidence*34)}%"></i></div><b>${evidence}</b></div>`;}).join('') + guidanceHtml : '先完成岗位分析或面试设计。';
+  if ($('live-question-usage')) {
+    const usage = live?.question_usage || [];
+    const usageLabels = {pending:'待问',suggested:'已建议',used:'已采用'};
+    const counts = usage.reduce((acc,item)=>{acc[item.status]=(acc[item.status]||0)+1;return acc;},{});
+    $('live-question-usage').className = usage.length ? 'usage-list' : 'usage-list empty-state';
+    $('live-question-usage').innerHTML = usage.length ? `<div class="review-summary"><strong>${counts.pending||0} 道待问</strong><span>${counts.suggested||0} 道已建议 · ${counts.used||0} 道已采用</span></div>${usage.slice(0,12).map(item=>`<div class="usage-item ${esc(item.status)}"><small>${esc(usageLabels[item.status]||item.status)} · ${esc(item.round_name||'未分轮')}</small><strong>${esc(item.question)}</strong><span>${esc(item.competency)} · 建议 ${esc(item.suggested_count||0)} 次${item.last_suggestion_status?` · 最近 ${esc(item.last_suggestion_status)}`:''}</span></div>`).join('')}` : '生成面试蓝图后显示问题使用情况。';
+  }
 }
 
 function nearestLiveQuestionSegmentId(answerSegmentId) {

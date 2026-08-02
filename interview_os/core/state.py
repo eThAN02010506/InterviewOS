@@ -433,6 +433,17 @@ class LiveCoverageGuidance(BaseModel):
     sample_question: str = ""
 
 
+class LiveQuestionUsage(BaseModel):
+    question_id: str
+    round_name: str = ""
+    question: str = ""
+    competency: str = ""
+    status: str = "pending"
+    suggested_count: int = 0
+    last_suggestion_status: str = ""
+    last_decided_at: datetime | None = None
+
+
 class LiveInterviewSession(BaseModel):
     status: LiveInterviewStatus = LiveInterviewStatus.IDLE
     consent_confirmed: bool = False
@@ -441,6 +452,7 @@ class LiveInterviewSession(BaseModel):
     suggestions: list[QuestionSuggestion] = Field(default_factory=list)
     answer_boundary_suggestions: list[LiveAnswerBoundarySuggestion] = Field(default_factory=list)
     coverage_guidance: list[LiveCoverageGuidance] = Field(default_factory=list)
+    question_usage: list[LiveQuestionUsage] = Field(default_factory=list)
     rolling_summary: str = ""
     summarized_until_sequence: int = 0
     duplicate_segments_dropped: int = 0

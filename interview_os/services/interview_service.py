@@ -25,6 +25,7 @@ from interview_os.core.state import (
     FeedbackReport,
     InterviewBlueprint,
     InterviewerProfile,
+    InterviewQuestion,
     InterviewStage,
     InterviewState,
     InterviewStrategy,
@@ -35,10 +36,12 @@ from interview_os.core.state import (
     LiveInterviewRecord,
     LiveInterviewSession,
     LiveInterviewStatus,
+    LiveQuestionUsage,
     MockAnswerRecord,
     MockInterviewPlan,
     MockInterviewSession,
     MockSessionStatus,
+    QuestionSuggestion,
     QuestionSuggestionStatus,
     RequirementOrigin,
     ResumeClaimStatus,
@@ -120,6 +123,7 @@ class InterviewService:
             live.started_at = live.started_at or datetime.now(timezone.utc)
             live.completed_at = None
             self._refresh_live_coverage_guidance(runtime.state)
+            self._refresh_live_question_usage(runtime.state)
             runtime.state.next_action = "Listen to the interview and prepare the next question"
             await self._persist(session_id, runtime.state)
         self._record_debug("live_interview_started", session_id)
@@ -302,10 +306,12 @@ class InterviewService:
             if not candidate_segments:
                 raise LiveInterviewStateError("需要至少一段候选人回答后才能准备下一问题")
             self._refresh_live_coverage_guidance(runtime.state)
+            self._refresh_live_question_usage(runtime.state)
             await runtime.run(
                 "live_interview_agent",
                 "根据最新候选人回答准备一个问题；优先补齐关键证据，然后推进未覆盖能力。",
             )
+            self._refresh_live_question_usage(runtime.state)
             runtime.state.next_action = "Interviewer reviews the suggested next question"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -315,7 +321,8 @@ class InterviewService:
                 f"summary_until={runtime.state.live_interview.summarized_until_sequence}; "
                 f"recent_segments={min(12, len(runtime.state.live_interview.segments))}; "
                 f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}; "
-                f"top_gap={runtime.state.live_interview.coverage_guidance[0].competency if runtime.state.live_interview.coverage_guidance else 'none'}"
+                f"top_gap={runtime.state.live_interview.coverage_guidance[0].competency if runtime.state.live_interview.coverage_guidance else 'none'}; "
+                f"pending_blueprint={sum(1 for item in runtime.state.live_interview.question_usage if item.status == 'pending')}"
             ),
         )
         return runtime.state
@@ -360,6 +367,7 @@ class InterviewService:
                         source="copilot",
                     )
                 )
+            self._refresh_live_question_usage(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_question_decided", session_id, detail=f"status={status.value}"
@@ -1130,6 +1138,7 @@ class InterviewService:
                     start_index = len(initial)
                     runtime.state.workflow.completed_steps = start_index
                     self._sync_intelligence(runtime.state)
+                    self._refresh_live_question_usage(runtime.state)
                     await self._persist(session_id, runtime.state)
                 for index, (agent_name, instruction) in enumerate(
                     steps[start_index:], start=start_index + 1
@@ -1139,6 +1148,7 @@ class InterviewService:
                     await runtime.run(agent_name, instruction)
                     runtime.state.workflow.completed_steps = index
                     self._sync_intelligence(runtime.state)
+                    self._refresh_live_question_usage(runtime.state)
                     await self._persist(session_id, runtime.state)
                 self._validate_workflow_result(name, runtime.state)
             except Exception as exc:
@@ -1402,6 +1412,49 @@ class InterviewService:
         )
         state.live_interview.coverage_guidance = guidance[:8]
 
+    def _refresh_live_question_usage(self, state: InterviewState) -> None:
+        questions = self._live_blueprint_questions(state)
+        if not questions:
+            state.live_interview.question_usage = []
+            return
+        by_question_id: dict[str, list[QuestionSuggestion]] = {item[0]: [] for item in questions}
+        for suggestion in state.live_interview.suggestions:
+            source_id = suggestion.source_question_id.strip()
+            if source_id in by_question_id:
+                by_question_id[source_id].append(suggestion)
+        usage: list[LiveQuestionUsage] = []
+        used_ids = set(state.live_interview.used_question_ids)
+        for question_id, round_name, question in questions:
+            related = by_question_id.get(question_id, [])
+            latest = related[-1] if related else None
+            status = "used" if question_id in used_ids else "suggested" if related else "pending"
+            usage.append(
+                LiveQuestionUsage(
+                    question_id=question_id,
+                    round_name=round_name,
+                    question=question.question,
+                    competency=question.competency,
+                    status=status,
+                    suggested_count=len(related),
+                    last_suggestion_status=latest.status.value if latest else "",
+                    last_decided_at=latest.created_at if latest and status == "used" else None,
+                )
+            )
+        status_order = {"pending": 0, "suggested": 1, "used": 2}
+        usage.sort(key=lambda item: (status_order.get(item.status, 3), item.round_name, item.question))
+        state.live_interview.question_usage = usage[:40]
+
+    @staticmethod
+    def _live_blueprint_questions(
+        state: InterviewState,
+    ) -> list[tuple[str, str, InterviewQuestion]]:
+        return [
+            (str(question.id), interview_round.name, question)
+            for interview_round in state.blueprint.rounds
+            for question in interview_round.questions
+            if question.question.strip()
+        ]
+
     @staticmethod
     def _live_target_competencies(state: InterviewState) -> list[str]:
         values = [
@@ -1489,6 +1542,7 @@ class InterviewService:
             )
         self._sync_intelligence(runtime.state)
         self._refresh_live_coverage_guidance(runtime.state)
+        self._refresh_live_question_usage(runtime.state)
         if runtime.state.evaluation.finalized_at:
             runtime.state.enforce_evaluation_evidence_floor()
         self._runtimes[session_id] = runtime

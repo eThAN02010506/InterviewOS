@@ -341,6 +341,12 @@ textarea { resize: vertical; line-height: 1.55; }
 .coverage-card small, .coverage-card span, .coverage-card em { display: block; color: var(--muted); font-size: 9px; font-style: normal; }
 .coverage-card strong { display: block; margin: 3px 0; }
 .coverage-card p { margin: 6px 0; font-size: 10px; }
+.usage-list { display: grid; gap: 8px; }
+.usage-item { padding: 10px; background: #f8faf8; border: 1px solid var(--line); border-left: 3px solid #9aa29e; border-radius: 8px; }
+.usage-item.suggested { border-left-color: var(--amber); }
+.usage-item.used { border-left-color: var(--green); opacity: 0.78; }
+.usage-item small, .usage-item span { display: block; color: var(--muted); font-size: 9px; }
+.usage-item strong { display: block; margin: 4px 0; font-size: 10px; }
 
 dialog { width: min(440px, calc(100% - 30px)); padding: 0; border: 0; border-radius: 14px; box-shadow: 0 24px 90px rgba(10, 30, 24, 0.25); }
 dialog::backdrop { background: rgba(10, 25, 20, 0.48); backdrop-filter: blur(3px); }

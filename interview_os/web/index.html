@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="InterviewOS 本地面试智能工作台">
   <title>InterviewOS · 面试智能工作台</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.4.6">
+  <link rel="stylesheet" href="/static/styles.css?v=0.4.7">
 </head>
 <body>
   <div class="app-shell">
@@ -138,6 +138,7 @@
             <article class="panel"><div class="section-head"><div><p class="eyebrow">NEXT QUESTION</p><h3>下一问题准备</h3></div><button class="btn primary compact" id="live-plan" type="button">根据回答生成</button></div><div id="live-suggestion" class="empty-state">录入候选人回答后，AI 会准备一个有证据目标的问题。</div></article>
             <article class="panel"><div class="section-head"><div><p class="eyebrow">REVIEW QUEUE</p><h3>证据审阅</h3></div><div class="live-session-actions"><button class="btn compact" id="live-confirm-merged" type="button">合并确认</button><button class="btn compact" id="live-confirm-all" type="button">批量确认</button></div></div><div id="live-review" class="empty-state">候选人回答会在这里等待确认。</div></article>
             <article class="panel"><p class="eyebrow">COMPETENCY MAP</p><h3>能力覆盖</h3><div id="live-competencies" class="progress-list empty-state">先完成岗位分析或面试设计。</div></article>
+            <article class="panel"><p class="eyebrow">QUESTION USAGE</p><h3>蓝图问题使用</h3><div id="live-question-usage" class="usage-list empty-state">生成面试蓝图后显示问题使用情况。</div></article>
           </aside>
         </div>
       </section>
@@ -183,6 +184,6 @@
   <dialog id="entity-dialog"><form method="dialog"><p class="eyebrow">ENTITY CONFIRMATION</p><h2>确认实体名称</h2><p id="entity-copy"></p><label>确认后的名称<input id="entity-name" maxlength="200"></label><div class="dialog-actions"><button class="btn" id="reject-entity" type="button">保留原名称</button><button class="btn primary" id="accept-entity" type="button">确认使用此名称</button></div></form></dialog>
   <dialog id="claim-dialog"><form method="dialog"><p class="eyebrow">EDIT RESUME FACT</p><h2>修改简历事实</h2><label>确认后的表述<textarea id="claim-statement" rows="5"></textarea></label><label>修改说明<input id="claim-note" placeholder="例如：原简历年份有误"></label><div class="dialog-actions"><button class="btn" id="cancel-claim" type="button">取消</button><button class="btn primary" id="save-claim" type="button">保存并确认</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=0.4.6" defer></script>
+  <script src="/static/app.js?v=0.4.7" defer></script>
 </body>
 </html>

@@ -57,6 +57,26 @@ class FollowupWorkflowLLM(WorkflowLLM):
         return await super().chat(messages, **kwargs)
 
 
+class BlueprintFallbackQuestionLLM(WorkflowLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "interview blueprint" in prompt:
+            return (
+                '{"position":"Engineer","rounds":[{"name":"技术面","goal":"验证核心能力",'
+                '"evaluation_criteria":["证据完整"],"questions":['
+                '{"question":"请讲一次系统设计权衡。","competency":"System Design",'
+                '"rationale":"核心能力","strong_signals":["权衡","指标"],"follow_ups":[]},'
+                '{"question":"请讲一次事故复盘。","competency":"Incident Review",'
+                '"rationale":"稳定性能力","strong_signals":["复盘","改进"],"follow_ups":[]}]}]}'
+            )
+        if (
+            "return exactly one json object matching the questionsuggestion schema" in prompt
+            or "repair the previous response into valid json only" in prompt
+        ):
+            return "not json"
+        return await super().chat(messages, **kwargs)
+
+
 class FactSearchProvider:
     async def search(self, query, limit=5, *, search_depth="basic"):
         return [
@@ -685,6 +705,55 @@ def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
     planned_events = [item for item in events if item["action"] == "live_question_planned"]
     assert planned_events
     assert "top_gap=System Design" in planned_events[0]["detail"]
+
+
+def test_live_question_usage_tracks_blueprint_progress(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-question-usage.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=BlueprintFallbackQuestionLLM(),
+        configure_llm=False,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        designed = client.post(
+            "/api/workflows/enterprise-design",
+            json={
+                "session_id": session_id,
+                "resume_text": "Platform engineer with reliability experience.",
+                "job_description": "平台工程师\n岗位职责：系统设计、稳定性治理。\n任职要求：事故复盘。",
+                "company_name": "Example",
+            },
+        ).json()["state"]
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        ).json()["state"]["live_interview"]
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我做过一次缓存架构演进。"},
+        )
+        planned = client.post(f"/api/live-interviews/{session_id}/suggestions").json()["state"]
+        suggestion = planned["live_interview"]["suggestions"][0]
+        adopted = client.patch(
+            f"/api/live-interviews/{session_id}/suggestions/{suggestion['id']}",
+            json={"status": "adopted"},
+        ).json()["state"]["live_interview"]
+        events = client.get("/api/debug/events").json()["events"]
+
+    assert len(designed["blueprint"]["rounds"][0]["questions"]) == 2
+    assert {item["status"] for item in started["question_usage"]} == {"pending"}
+    assert [item["status"] for item in planned["live_interview"]["question_usage"]].count(
+        "suggested"
+    ) == 1
+    assert suggestion["source_question_id"]
+    assert adopted["used_question_ids"] == [suggestion["source_question_id"]]
+    assert adopted["question_usage"][0]["status"] == "pending"
+    assert adopted["question_usage"][-1]["status"] == "used"
+    assert adopted["question_usage"][-1]["suggested_count"] == 1
+    planned_events = [item for item in events if item["action"] == "live_question_planned"]
+    assert planned_events
+    assert "pending_blueprint=1" in planned_events[0]["detail"]
 
 
 def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):

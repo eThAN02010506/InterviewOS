@@ -50,6 +50,12 @@ class LiveInterviewAgent(Agent):
             f"signals={question.strong_signals}"
             for question in blueprint_questions
         ) or "No prepared blueprint questions."
+        question_usage = "\n".join(
+            f"- status={item.status}; id={item.question_id}; round={item.round_name}; "
+            f"competency={item.competency}; suggested={item.suggested_count}; "
+            f"last={item.last_suggestion_status}; question={item.question}"
+            for item in state.live_interview.question_usage[:20]
+        ) or "No blueprint question usage yet."
         evidence_map = "\n".join(
             f"- {item.competency}: {item.signal}" for item in state.evidence[-20:]
         ) or "No confirmed evidence yet."
@@ -73,6 +79,7 @@ class LiveInterviewAgent(Agent):
             f"Missing signals: {state.missing_signals}\n"
             f"Used question IDs: {state.live_interview.used_question_ids}\n"
             f"Prepared question map:\n{question_map}\n"
+            f"Blueprint question usage:\n{question_usage}\n"
             f"Recorded evidence:\n{evidence_map}\n"
             f"Coverage guidance:\n{coverage_guidance}\n"
             f"Rolling transcript summary:\n"

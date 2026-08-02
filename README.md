@@ -198,6 +198,9 @@ the full raw transcript.
 The competency map also provides deterministic coverage guidance: for each target
 competency it shows evidence count, strongest confidence, priority, why the signal
 is still weak or sufficient, and a sample question the interviewer can ask next.
+The live workspace also tracks blueprint question usage, separating pending,
+suggested, and adopted questions so the interviewer can avoid repeating planned
+questions and see which parts of the interview design remain unused.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
@@ -222,7 +225,7 @@ The remaining roadmap is deliberately separated:
    detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
-   guidance; next work is better boundary confidence.
+   guidance and question-usage tracking; next work is better boundary confidence.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    redacted observability, and cost measurement.
 
