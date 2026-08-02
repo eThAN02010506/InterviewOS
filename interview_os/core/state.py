@@ -413,12 +413,23 @@ class QuestionSuggestion(BaseModel):
         return QuestionSuggestionType.NEXT_MAIN if value == "main" else value
 
 
+class LiveAnswerBoundarySuggestion(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    question_segment_id: UUID | None = None
+    answer_segment_ids: list[UUID] = Field(default_factory=list, min_length=2, max_length=20)
+    suggested_competency: str = Field(default="综合能力", min_length=1, max_length=200)
+    reason: str = Field(default="", max_length=1000)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class LiveInterviewSession(BaseModel):
     status: LiveInterviewStatus = LiveInterviewStatus.IDLE
     consent_confirmed: bool = False
     current_speaker: TranscriptSpeaker = TranscriptSpeaker.UNKNOWN
     segments: list[TranscriptSegment] = Field(default_factory=list)
     suggestions: list[QuestionSuggestion] = Field(default_factory=list)
+    answer_boundary_suggestions: list[LiveAnswerBoundarySuggestion] = Field(default_factory=list)
     used_question_ids: list[str] = Field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None

@@ -29,6 +29,7 @@ from interview_os.core.state import (
     InterviewStrategy,
     JobDescription,
     JobDescriptionReview,
+    LiveAnswerBoundarySuggestion,
     LiveInterviewRecord,
     LiveInterviewSession,
     LiveInterviewStatus,
@@ -168,6 +169,7 @@ class InterviewService:
                     source=source,
                 )
             )
+            self._refresh_live_answer_boundaries(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_transcript_added",
@@ -204,6 +206,7 @@ class InterviewService:
                 live.current_speaker = speaker
             segment.stable = True
             segment.confirmed = True
+            self._refresh_live_answer_boundaries(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_transcript_updated",
@@ -409,6 +412,7 @@ class InterviewService:
             evaluation = await self._score_live_record(runtime, record)
             record.evaluation = evaluation
             runtime.state.live_interview_records.append(record)
+            self._refresh_live_answer_boundaries(runtime.state)
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -473,6 +477,7 @@ class InterviewService:
             runtime.state.evidence = [
                 item for item in runtime.state.evidence if item.source_record_id != record_id
             ]
+            self._refresh_live_answer_boundaries(runtime.state)
             runtime.state.next_action = "Review corrected live evidence before evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -1198,6 +1203,58 @@ class InterviewService:
             and item.confirmed
         ]
         return prior_questions[-1] if prior_questions else None
+
+    def _refresh_live_answer_boundaries(self, state: InterviewState) -> None:
+        live = state.live_interview
+        recorded_segment_ids = {
+            segment_id
+            for record in state.live_interview_records
+            for segment_id in record.transcript_segment_ids
+        }
+        suggestions: list[LiveAnswerBoundarySuggestion] = []
+        current_question: TranscriptSegment | None = None
+        candidate_run: list[TranscriptSegment] = []
+
+        def flush_run() -> None:
+            if len(candidate_run) < 2:
+                return
+            question_text = current_question.text if current_question else ""
+            suggested_competency = (
+                self._infer_live_competency(state, question_text)
+                or (state.job.competencies[0] if state.job.competencies else "")
+                or "综合能力"
+            )
+            suggestions.append(
+                LiveAnswerBoundarySuggestion(
+                    question_segment_id=current_question.id if current_question else None,
+                    answer_segment_ids=[item.id for item in candidate_run],
+                    suggested_competency=suggested_competency,
+                    confidence=min(0.9, 0.55 + 0.1 * len(candidate_run)),
+                    reason=(
+                        "连续候选人片段之间没有新的面试官问题，"
+                        "建议作为同一回答合并复核后再归档证据。"
+                    ),
+                )
+            )
+
+        for segment in live.segments:
+            if segment.speaker == TranscriptSpeaker.INTERVIEWER:
+                flush_run()
+                current_question = segment if segment.stable and segment.confirmed else None
+                candidate_run = []
+                continue
+            if (
+                segment.speaker == TranscriptSpeaker.CANDIDATE
+                and segment.stable
+                and segment.confirmed
+                and segment.id not in recorded_segment_ids
+            ):
+                candidate_run.append(segment)
+                continue
+            flush_run()
+            candidate_run = []
+        flush_run()
+        live.answer_boundary_suggestions = suggestions[-5:]
 
     @staticmethod
     def _infer_live_competency(state: InterviewState, question: str) -> str:

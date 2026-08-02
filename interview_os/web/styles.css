@@ -233,6 +233,7 @@ textarea { resize: vertical; line-height: 1.55; }
 .review-issue b { flex: 0 0 auto; color: var(--green); }
 .review-issue.warning b { color: var(--amber); }
 .review-claim { justify-content: space-between; }
+.review-claim.boundary { background: #fffaf0; border-left: 3px solid var(--amber); }
 .review-claim div, .review-claim span { display: block; min-width: 0; }
 .review-claim small { color: var(--green); text-transform: uppercase; }
 .review-claim span { margin-top: 2px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

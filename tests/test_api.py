@@ -563,6 +563,11 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
             f"/api/live-interviews/{session_id}/segments",
             json={"speaker": "candidate", "text": "第二阶段我补了监控和灰度发布。"},
         ).json()["state"]["live_interview"]["segments"][2]
+        live = client.get(f"/api/live-interviews/{session_id}").json()["state"]["live_interview"]
+        boundary = live["answer_boundary_suggestions"][0]
+        assert boundary["question_segment_id"] == question["id"]
+        assert boundary["answer_segment_ids"] == [first["id"], second["id"]]
+        assert boundary["confidence"] > 0.5
 
         merged = client.post(
             f"/api/live-interviews/{session_id}/evidence/merge",
@@ -584,6 +589,7 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     record = state["live_interview_records"][0]
     assert record["answer"] == "第一阶段我先拆分核心服务。\n第二阶段我补了监控和灰度发布。"
     assert record["transcript_segment_ids"] == [question["id"], first["id"], second["id"]]
+    assert state["live_interview"]["answer_boundary_suggestions"] == []
     assert state["evidence"][0]["source_record_id"] == record["id"]
     assert duplicate.status_code == 409
 
