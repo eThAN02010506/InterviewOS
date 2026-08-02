@@ -261,7 +261,11 @@ textarea { resize: vertical; line-height: 1.55; }
 .source-list a:first-child { border: 0; }
 .source-list strong, .source-list small { display: block; }
 .source-list small { margin-top: 4px; color: var(--muted); }
-.fact-list { display: grid; gap: 8px; margin-bottom: 14px; }
+.fact-list { display: grid; gap: 12px; margin-bottom: 14px; }
+.fact-group { display: grid; gap: 8px; }
+.fact-group-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 4px; border-bottom: 1px solid var(--line); }
+.fact-group-head strong { font-size: 13px; }
+.fact-group-head span { color: var(--muted); font-size: 10px; }
 .fact-card { padding: 13px; background: #f8faf8; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 8px; }
 .fact-card.inferred { border-left-color: var(--amber); }
 .fact-card.conflict { background: #fff7f5; border-left-color: var(--red); }

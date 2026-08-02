@@ -219,7 +219,11 @@ function renderFacts(){
   const node=$('fact-result'); const cards=state.session?.fact_cards||[];
   if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
   const labels={verified:'已验证',inferred:'推测',conflict:'冲突'};
-  node.className='fact-list';node.innerHTML=cards.map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')}</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}</article>`).join('');
+  const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点'};
+  const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'?'conflict':card.category;(acc[key] ||= []).push(card);return acc;},{});
+  const order=['conflict','company','interviewer','technology','public_opinion'];
+  const groups=[...order.filter(key=>grouped[key]),...Object.keys(grouped).filter(key=>!order.includes(key))];
+  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${(card.source_urls||[]).length} 个来源</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}</article>`).join('')}</section>`).join('');
 }
 
 function maybePromptEntityResolution(){
