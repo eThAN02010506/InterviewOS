@@ -484,6 +484,49 @@ def test_live_review_queue_batch_confirms_pending_candidate_answers(tmp_path):
     assert empty.status_code == 409
 
 
+def test_live_evidence_can_be_revoked_and_reconfirmed(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-revoke.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        question = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次线上故障处理。"},
+        ).json()["state"]["live_interview"]["segments"][0]
+        answer = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我先止血，再复盘根因并补监控。"},
+        ).json()["state"]["live_interview"]["segments"][1]
+        confirmed = client.post(
+            f"/api/live-interviews/{session_id}/segments/{answer['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "Incident Response"},
+        )
+        confirmed_state = confirmed.json()["state"]
+        record_id = confirmed_state["live_interview_records"][0]["id"]
+
+        revoked = client.delete(f"/api/live-interviews/{session_id}/evidence/{record_id}")
+        reconfirmed = client.post(
+            f"/api/live-interviews/{session_id}/segments/{answer['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "Incident Response"},
+        )
+
+    assert confirmed.status_code == 200
+    assert confirmed_state["evidence"][0]["source_record_id"] == record_id
+    assert revoked.status_code == 200
+    revoked_state = revoked.json()["state"]
+    assert revoked_state["live_interview_records"] == []
+    assert revoked_state["evidence"] == []
+    assert reconfirmed.status_code == 200
+    reconfirmed_state = reconfirmed.json()["state"]
+    assert len(reconfirmed_state["live_interview_records"]) == 1
+    assert len(reconfirmed_state["evidence"]) == 1
+    assert reconfirmed_state["live_interview_records"][0]["id"] != record_id
+
+
 def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-sufficient.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

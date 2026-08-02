@@ -114,6 +114,11 @@ async def confirm_pending_evidence(
     return response(session_id, state)
 
 
+@router.delete("/{session_id}/evidence/{record_id}", response_model=WorkflowResponse)
+async def revoke_evidence(session_id: str, record_id: UUID, service: Service):
+    return response(session_id, await service.revoke_live_evidence(session_id, record_id))
+
+
 @router.post("/{session_id}/audio", response_model=WorkflowResponse)
 async def transcribe_audio(
     session_id: str,

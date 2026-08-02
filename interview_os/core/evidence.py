@@ -24,6 +24,7 @@ class Evidence(BaseModel):
     signal: str
     confidence: float = 0.0
     source: EvidenceSource = EvidenceSource.TECHNICAL_ROUND
+    source_record_id: UUID | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     notes: str = ""
 
