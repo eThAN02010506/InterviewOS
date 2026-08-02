@@ -13,6 +13,7 @@ let liveContinuousUploading = false;
 let liveContinuousChunkIndex = 0;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const cssEscape = value => globalThis.CSS?.escape ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, '\\$&');
 const optional = id => $(id).value.trim() || null;
 const safeUrl = value => { try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) ? url.href : '#'; } catch { return '#'; } };
 const formatDateTime = value => {
@@ -182,7 +183,7 @@ function renderLive() {
   if ($('live-action-card')) {
     const refs = actionCard?.source_refs || [];
     $('live-action-card').className = actionCard ? `action-card ${esc(actionCard.priority || 'medium')}` : 'action-card empty-state';
-    $('live-action-card').innerHTML = actionCard ? `<div class="action-top"><span>${esc(actionCard.action_type)}</span><b>${esc(actionCard.priority)}</b></div><h3>${esc(actionCard.title)}</h3><p>${esc(actionCard.detail)}</p><div class="action-evidence">${esc(actionCard.evidence_status || '尚无证据')}</div><div class="action-ctas"><strong>${esc(actionCard.primary_cta)}</strong>${actionCard.secondary_cta?`<em>${esc(actionCard.secondary_cta)}</em>`:''}</div>${refs.length?`<div class="action-refs">${refs.map(ref=>`<small>${esc(ref)}</small>`).join('')}</div>`:''}` : '开始实时会话后显示下一步动作。';
+    $('live-action-card').innerHTML = actionCard ? `<div class="action-top"><span>${esc(actionCard.action_type)}</span><b>${esc(actionCard.priority)}</b></div><h3>${esc(actionCard.title)}</h3><p>${esc(actionCard.detail)}</p><div class="action-evidence">${esc(actionCard.evidence_status || '尚无证据')}</div><div class="action-ctas"><button type="button" class="action-primary" data-live-action="primary">${esc(actionCard.primary_cta)}</button>${actionCard.secondary_cta?`<button type="button" class="action-secondary" data-live-action="secondary">${esc(actionCard.secondary_cta)}</button>`:''}</div>${refs.length?`<div class="action-refs">${refs.map(ref=>`<small>${esc(ref)}</small>`).join('')}</div>`:''}` : '开始实时会话后显示下一步动作。';
   }
   $('live-transcript').className = segments.length ? 'transcript-stream' : 'transcript-stream empty-state';
   $('live-transcript').innerHTML = segments.length ? segments.map(segment => {
@@ -191,7 +192,7 @@ function renderLive() {
     const record = recordBySegmentId.get(segment.id);
     const evidenceAction = isCandidate ? (recorded ? `<small class="evidence-confirmed">已归档为证据</small><button class="btn compact" data-live-revoke="${esc(record?.id || '')}">撤销证据</button>` : `<button class="btn compact" data-live-confirm="${esc(segment.id)}">确认为证据</button>`) : '';
     const editAction = recorded ? '' : `<button class="btn compact" data-live-edit="${esc(segment.id)}">修改</button>`;
-    return `<div class="transcript-segment ${esc(segment.speaker)}"><span>${segment.speaker==='candidate'?'候选人':segment.speaker==='interviewer'?'面试官':'待确认'} · ${esc(segment.source)}</span><p>${esc(segment.text)}</p><div class="transcript-actions">${editAction}${evidenceAction}</div></div>`;
+    return `<div class="transcript-segment ${esc(segment.speaker)}" data-segment-id="${esc(segment.id)}"><span>${segment.speaker==='candidate'?'候选人':segment.speaker==='interviewer'?'面试官':'待确认'} · ${esc(segment.source)}</span><p>${esc(segment.text)}</p><div class="transcript-actions">${editAction}${evidenceAction}</div></div>`;
   }).join('') : '尚无转写片段。';
   const suggestion = [...(live?.suggestions || [])].reverse().find(item => item.status === 'pending') || [...(live?.suggestions || [])].reverse()[0];
   $('live-suggestion').className = suggestion ? 'suggestion-card' : 'empty-state';
@@ -234,6 +235,24 @@ function nearestLiveQuestionSegmentId(answerSegmentId) {
     if (segments[i].speaker === 'interviewer') return segments[i].id;
   }
   return null;
+}
+
+function spotlight(node, message = '') {
+  if (!node) return false;
+  node.scrollIntoView({behavior:'smooth', block:'center'});
+  node.classList.add('spotlight');
+  setTimeout(() => node.classList.remove('spotlight'), 1800);
+  if (message) toast(message);
+  return true;
+}
+
+function firstPendingCandidateSegment() {
+  const recordedSegmentIds = new Set((state.session?.live_interview_records || []).flatMap(record => record.transcript_segment_ids || []));
+  return (state.session?.live_interview?.segments || []).find(segment => segment.speaker === 'candidate' && !recordedSegmentIds.has(segment.id));
+}
+
+function strongestBoundarySuggestion() {
+  return [...(state.session?.live_interview?.answer_boundary_suggestions || [])].sort((a,b)=>(b.confidence||0)-(a.confidence||0))[0];
 }
 
 function renderResumeReview() {
@@ -428,17 +447,18 @@ $('enterprise-form').onsubmit=async e=>{e.preventDefault();const form=e.currentT
 
 $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/start`,{method:'POST'});await loadSession();toast('模拟面试已开始');}catch(error){toast(error.message,true)}};
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value})});$('mock-answer').value='';await loadSession();toast(state.session?.mock_session?.pending_follow_up?'回答已评分，AI 正在追问缺失证据':'回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
-document.querySelectorAll('.evaluation-trigger').forEach(button => button.onclick = async () => {
+async function generateEvaluation(button = null) {
   if (!await ensureSession()) return;
-  busy(button, true);
+  if (button) busy(button, true);
   try {
     const data = await api(`/api/evaluations/${state.sessionId}`, {method:'POST'});
     state.session = data.state;
     renderState();
     toast('最终评价已生成');
   } catch (error) { toast(error.message, true); }
-  finally { busy(button, false); }
-});
+  finally { if (button) busy(button, false); }
+}
+document.querySelectorAll('.evaluation-trigger').forEach(button => button.onclick = () => generateEvaluation(button));
 
 async function submitTranscript(){if(!await ensureSession())return;const form=$('transcript-form');const lines=$('transcript-input').value.split('\n').map(x=>x.trim()).filter(Boolean);const entries=lines.map(line=>{const parts=line.split('|').map(x=>x.trim());return {competency:parts[0]||'综合能力',question:parts[1]||'',answer:parts.slice(2).join(' | ')};});if(!entries.length||entries.some(x=>!x.question||!x.answer)){toast('每行必须包含“能力 | 问题 | 回答”三部分',true);return;}busy(form,true);try{const data=await api(`/api/evaluations/${state.sessionId}/transcript`,{method:'POST',body:JSON.stringify({entries,auto_evaluate:true})});state.session=data.state;renderState();toast(`已导入 ${entries.length} 条真实回答并生成评价`);}catch(error){toast(error.message,true)}finally{busy(form,false)}}
 $('transcript-form').onsubmit=e=>{e.preventDefault();submitTranscript();};
@@ -467,10 +487,51 @@ async function processLiveContinuousQueue(){if(liveContinuousUploading)return;li
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 $('live-confirm-all').onclick=async()=>{const competency=window.prompt('批量确认使用的能力维度；留空则由系统按问题推断','')||'';const button=$('live-confirm-all');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/batch`,{method:'POST',body:JSON.stringify({competency})});state.session=data.state;renderAll();toast('待确认候选人回答已批量归档');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 $('live-confirm-merged').onclick=async()=>{const recordedSegmentIds=new Set((state.session?.live_interview_records||[]).flatMap(record=>record.transcript_segment_ids||[]));const pending=(state.session?.live_interview?.segments||[]).filter(segment=>segment.speaker==='candidate'&&!recordedSegmentIds.has(segment.id));if(pending.length<2){toast('至少需要两段候选人发言才能合并确认',true);return;}const defaultSequences=pending.map(segment=>segment.sequence).join(',');const selected=window.prompt('输入要合并的候选人片段序号，用逗号分隔',defaultSequences)||'';const wanted=new Set(selected.split(',').map(value=>Number(value.trim())).filter(Number.isFinite));const segmentIds=pending.filter(segment=>wanted.has(segment.sequence)).map(segment=>segment.id);if(segmentIds.length<2){toast('请选择至少两段候选人发言',true);return;}const defaultCompetency=state.session?.job?.competencies?.[0]||'综合能力';const competency=window.prompt('合并后的回答对应哪个能力维度？',defaultCompetency)||'';if(!competency.trim())return;const questionSegmentId=nearestLiveQuestionSegmentId(segmentIds[0]);const button=$('live-confirm-merged');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/merge`,{method:'POST',body:JSON.stringify({segment_ids:segmentIds,question_segment_id:questionSegmentId,competency})});state.session=data.state;renderAll();toast(`已合并 ${segmentIds.length} 段候选人回答为一条证据`);}catch(error){toast(error.message,true)}finally{busy(button,false)}};
-document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-boundary-index]');if(!button)return;const suggestion=state.session?.live_interview?.answer_boundary_suggestions?.[Number(button.dataset.liveBoundaryIndex)];if(!suggestion)return;const competency=window.prompt('合并后的回答对应哪个能力维度？',suggestion.suggested_competency||'综合能力')||'';if(!competency.trim())return;busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/merge`,{method:'POST',body:JSON.stringify({segment_ids:suggestion.answer_segment_ids||[],question_segment_id:suggestion.question_segment_id||null,competency})});state.session=data.state;renderAll();toast(`已按边界建议合并 ${(suggestion.answer_segment_ids||[]).length} 段回答`);}catch(error){toast(error.message,true)}finally{busy(button,false)}});
+async function confirmBoundarySuggestion(suggestion, button = null) {if(!suggestion)return;const competency=window.prompt('合并后的回答对应哪个能力维度？',suggestion.suggested_competency||'综合能力')||'';if(!competency.trim())return;if(button)busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/merge`,{method:'POST',body:JSON.stringify({segment_ids:suggestion.answer_segment_ids||[],question_segment_id:suggestion.question_segment_id||null,competency})});state.session=data.state;renderAll();toast(`已按边界建议合并 ${(suggestion.answer_segment_ids||[]).length} 段回答`);}catch(error){toast(error.message,true)}finally{if(button)busy(button,false)}}
+document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-boundary-index]');if(!button)return;const suggestion=state.session?.live_interview?.answer_boundary_suggestions?.[Number(button.dataset.liveBoundaryIndex)];await confirmBoundarySuggestion(suggestion,button);});
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-decision]');if(!button)return;let finalQuestion='';if(button.dataset.liveDecision==='edited'){const suggestion=state.session?.live_interview?.suggestions?.find(item=>item.id===button.dataset.suggestionId);finalQuestion=window.prompt('编辑面试问题',suggestion?.suggested_question||'')||'';if(!finalQuestion)return;}try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions/${button.dataset.suggestionId}`,{method:'PATCH',body:JSON.stringify({status:button.dataset.liveDecision,final_question:finalQuestion})});state.session=data.state;renderLive();toast(button.dataset.liveDecision==='skipped'?'已跳过建议':'已加入面试官问题');}catch(error){toast(error.message,true)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-edit]');if(!button)return;const segment=state.session?.live_interview?.segments?.find(item=>item.id===button.dataset.liveEdit);if(!segment)return;const text=window.prompt('修改转写文本',segment.text)||'';if(!text.trim())return;const speaker=window.prompt('说话人：candidate / interviewer / unknown',segment.speaker)||segment.speaker;if(!['candidate','interviewer','unknown'].includes(speaker)){toast('说话人只能是 candidate、interviewer 或 unknown',true);return;}try{const data=await api(`/api/live-interviews/${state.sessionId}/segments/${button.dataset.liveEdit}`,{method:'PATCH',body:JSON.stringify({text,speaker})});state.session=data.state;renderLive();toast('转写片段已更新');}catch(error){toast(error.message,true)}});
-document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-confirm]');if(!button)return;const defaultCompetency=state.session?.job?.competencies?.[0]||state.session?.mock_interview?.questions?.[0]?.competency||'综合能力';const competency=window.prompt('这条回答对应哪个能力维度？',defaultCompetency)||'';if(!competency.trim())return;const questionSegmentId=nearestLiveQuestionSegmentId(button.dataset.liveConfirm);try{const data=await api(`/api/live-interviews/${state.sessionId}/segments/${button.dataset.liveConfirm}/evidence`,{method:'POST',body:JSON.stringify({question_segment_id:questionSegmentId,competency})});state.session=data.state;renderAll();toast('候选人回答已确认为证据');}catch(error){toast(error.message,true)}});
+async function confirmLiveSegment(segmentId, button = null) {const defaultCompetency=state.session?.job?.competencies?.[0]||state.session?.mock_interview?.questions?.[0]?.competency||'综合能力';const competency=window.prompt('这条回答对应哪个能力维度？',defaultCompetency)||'';if(!competency.trim())return;const questionSegmentId=nearestLiveQuestionSegmentId(segmentId);if(button)busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/segments/${segmentId}/evidence`,{method:'POST',body:JSON.stringify({question_segment_id:questionSegmentId,competency})});state.session=data.state;renderAll();toast('候选人回答已确认为证据');}catch(error){toast(error.message,true)}finally{if(button)busy(button,false)}}
+document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-confirm]');if(!button)return;await confirmLiveSegment(button.dataset.liveConfirm,button);});
+async function runLiveAction(kind, button) {
+  const action = state.session?.live_interview?.action_card?.action_type || 'start';
+  const primary = kind === 'primary';
+  if (action === 'start') { $('live-start')?.click(); return; }
+  if (action === 'resume') { primary ? $('live-pause')?.click() : spotlight($('live-review'), '先审阅已产生的转写和证据'); return; }
+  if (action === 'review_speaker') {
+    const unknown = (state.session?.live_interview?.segments || []).find(segment => segment.speaker === 'unknown');
+    spotlight(unknown ? document.querySelector(`[data-segment-id="${cssEscape(unknown.id)}"]`) : $('live-transcript'), '请先修改待确认说话人与文本');
+    return;
+  }
+  if (action === 'merge_boundary') {
+    if (primary) { await confirmBoundarySuggestion(strongestBoundarySuggestion(), button); return; }
+    spotlight($('live-review'), '也可以逐条确认候选人回答');
+    return;
+  }
+  if (action === 'confirm_evidence') {
+    if (primary) { const segment = firstPendingCandidateSegment(); segment ? await confirmLiveSegment(segment.id, button) : toast('暂无待确认候选人回答', true); return; }
+    $('live-plan')?.click();
+    return;
+  }
+  if (action === 'decide_question') {
+    spotlight($('live-suggestion'), '请采用、编辑或跳过这条问题建议');
+    return;
+  }
+  if (action === 'plan_gap_question') {
+    if (primary) { $('live-plan')?.click(); return; }
+    if ((state.session?.live_interview?.action_card?.secondary_cta || '').includes('JD')) { setView('enterprise'); return; }
+    spotlight($('live-competencies'), '根据能力缺口继续追问');
+    return;
+  }
+  if (action === 'evaluate' || action === 'ready_to_evaluate') {
+    if (primary) { setView('evaluation'); await generateEvaluation(button); return; }
+    $('live-plan')?.click();
+    return;
+  }
+  if (action === 'review_evidence') { spotlight($('live-review'), '请先补齐可用于评价的证据'); return; }
+  spotlight($('live-action-card'), '当前动作需要人工确认');
+}
+document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-action]');if(!button)return;await runLiveAction(button.dataset.liveAction,button);});
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-reevaluate]');if(!button)return;const record=state.session?.live_interview_records?.find(item=>item.id===button.dataset.liveReevaluate);if(!record)return;const question=window.prompt('重评使用的问题文本',record.question)||'';if(!question.trim())return;const competency=window.prompt('重评使用的能力维度',record.competency)||'';if(!competency.trim())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/${record.id}/reevaluate`,{method:'PATCH',body:JSON.stringify({question,competency})});state.session=data.state;renderAll();toast('live 证据已重新评分');}catch(error){toast(error.message,true)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-revoke]');if(!button)return;const recordId=button.dataset.liveRevoke;if(!recordId)return;if(!window.confirm('撤销这条已归档证据？转写片段会保留，可修改后重新确认。'))return;try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/${recordId}`,{method:'DELETE'});state.session=data.state;renderAll();toast('已撤销 live 证据，转写片段仍保留');}catch(error){toast(error.message,true)}});
 

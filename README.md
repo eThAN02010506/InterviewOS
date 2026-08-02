@@ -207,7 +207,12 @@ An interviewer-facing action card now sits above the live side rail. It chooses 
 next step from the same server-side state, prioritizing speaker review, answer
 boundary merge, evidence confirmation, question adoption, coverage-gap planning,
 and final evaluation readiness in that order. This keeps the UI from becoming a
-pile of independent widgets during a real interview.
+pile of independent widgets during a real interview. The card's CTAs are now
+actionable: safe operations such as starting/resuming, planning the next question,
+confirming the first pending evidence item, merging the highest-confidence boundary,
+and generating evaluation can be triggered directly, while judgment-heavy steps
+such as editing speakers or deciding between adopted/edited/skipped questions
+scroll and spotlight the exact review area.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
@@ -233,7 +238,7 @@ The remaining roadmap is deliberately separated:
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
    guidance, question-usage tracking, explainable boundary confidence, and a
-   server-driven next-action card.
+   server-driven next-action card with clickable interviewer CTAs.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    redacted observability, and cost measurement.
 
