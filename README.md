@@ -203,6 +203,11 @@ is still weak or sufficient, and a sample question the interviewer can ask next.
 The live workspace also tracks blueprint question usage, separating pending,
 suggested, and adopted questions so the interviewer can avoid repeating planned
 questions and see which parts of the interview design remain unused.
+An interviewer-facing action card now sits above the live side rail. It chooses one
+next step from the same server-side state, prioritizing speaker review, answer
+boundary merge, evidence confirmation, question adoption, coverage-gap planning,
+and final evaluation readiness in that order. This keeps the UI from becoming a
+pile of independent widgets during a real interview.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
@@ -227,7 +232,8 @@ The remaining roadmap is deliberately separated:
    detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
-   guidance, question-usage tracking, and explainable boundary confidence.
+   guidance, question-usage tracking, explainable boundary confidence, and a
+   server-driven next-action card.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    redacted observability, and cost measurement.
 

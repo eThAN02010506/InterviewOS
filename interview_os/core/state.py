@@ -445,6 +445,18 @@ class LiveQuestionUsage(BaseModel):
     last_decided_at: datetime | None = None
 
 
+class LiveActionCard(BaseModel):
+    action_type: str = "start"
+    priority: str = "medium"
+    title: str = "开始实时面试"
+    detail: str = "确认候选人知情同意后开始监听。"
+    primary_cta: str = "开始实时会话"
+    secondary_cta: str = ""
+    evidence_status: str = ""
+    source_refs: list[str] = Field(default_factory=list, max_length=8)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class LiveInterviewSession(BaseModel):
     status: LiveInterviewStatus = LiveInterviewStatus.IDLE
     consent_confirmed: bool = False
@@ -454,6 +466,7 @@ class LiveInterviewSession(BaseModel):
     answer_boundary_suggestions: list[LiveAnswerBoundarySuggestion] = Field(default_factory=list)
     coverage_guidance: list[LiveCoverageGuidance] = Field(default_factory=list)
     question_usage: list[LiveQuestionUsage] = Field(default_factory=list)
+    action_card: LiveActionCard = Field(default_factory=LiveActionCard)
     rolling_summary: str = ""
     summarized_until_sequence: int = 0
     duplicate_segments_dropped: int = 0

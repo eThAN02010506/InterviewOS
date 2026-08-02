@@ -178,6 +178,12 @@ function renderLive() {
   const confirmedRecords = (state.session?.live_interview_records || []).filter(record => record.source === 'live_interview');
   const boundarySuggestions = live?.answer_boundary_suggestions || [];
   const confirmedCount = confirmedRecords.length;
+  const actionCard = live?.action_card;
+  if ($('live-action-card')) {
+    const refs = actionCard?.source_refs || [];
+    $('live-action-card').className = actionCard ? `action-card ${esc(actionCard.priority || 'medium')}` : 'action-card empty-state';
+    $('live-action-card').innerHTML = actionCard ? `<div class="action-top"><span>${esc(actionCard.action_type)}</span><b>${esc(actionCard.priority)}</b></div><h3>${esc(actionCard.title)}</h3><p>${esc(actionCard.detail)}</p><div class="action-evidence">${esc(actionCard.evidence_status || '尚无证据')}</div><div class="action-ctas"><strong>${esc(actionCard.primary_cta)}</strong>${actionCard.secondary_cta?`<em>${esc(actionCard.secondary_cta)}</em>`:''}</div>${refs.length?`<div class="action-refs">${refs.map(ref=>`<small>${esc(ref)}</small>`).join('')}</div>`:''}` : '开始实时会话后显示下一步动作。';
+  }
   $('live-transcript').className = segments.length ? 'transcript-stream' : 'transcript-stream empty-state';
   $('live-transcript').innerHTML = segments.length ? segments.map(segment => {
     const isCandidate = segment.speaker === 'candidate';

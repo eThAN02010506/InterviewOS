@@ -31,6 +31,7 @@ from interview_os.core.state import (
     InterviewStrategy,
     JobDescription,
     JobDescriptionReview,
+    LiveActionCard,
     LiveAnswerBoundarySuggestion,
     LiveCoverageGuidance,
     LiveInterviewRecord,
@@ -323,7 +324,8 @@ class InterviewService:
                 f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}; "
                 f"top_gap={runtime.state.live_interview.coverage_guidance[0].competency if runtime.state.live_interview.coverage_guidance else 'none'}; "
                 f"pending_blueprint={sum(1 for item in runtime.state.live_interview.question_usage if item.status == 'pending')}; "
-                f"top_boundary_confidence={runtime.state.live_interview.answer_boundary_suggestions[-1].confidence if runtime.state.live_interview.answer_boundary_suggestions else 0}"
+                f"top_boundary_confidence={runtime.state.live_interview.answer_boundary_suggestions[-1].confidence if runtime.state.live_interview.answer_boundary_suggestions else 0}; "
+                f"action={runtime.state.live_interview.action_card.action_type}"
             ),
         )
         return runtime.state
@@ -1481,6 +1483,196 @@ class InterviewService:
         usage.sort(key=lambda item: (status_order.get(item.status, 3), item.round_name, item.question))
         state.live_interview.question_usage = usage[:40]
 
+    def _refresh_live_action_card(self, state: InterviewState) -> None:
+        live = state.live_interview
+        live_evidence = [
+            item for item in state.live_interview_records if item.source == "live_interview"
+        ]
+        recorded_segment_ids = {
+            segment_id
+            for record in live_evidence
+            for segment_id in record.transcript_segment_ids
+        }
+        pending_candidate_segments = [
+            item
+            for item in live.segments
+            if item.speaker == TranscriptSpeaker.CANDIDATE
+            and item.stable
+            and item.confirmed
+            and item.id not in recorded_segment_ids
+        ]
+        unknown_segments = [
+            item
+            for item in live.segments
+            if item.speaker == TranscriptSpeaker.UNKNOWN and item.stable and item.confirmed
+        ]
+        pending_suggestion = next(
+            (
+                item
+                for item in reversed(live.suggestions)
+                if item.status == QuestionSuggestionStatus.PENDING
+            ),
+            None,
+        )
+        boundary = max(
+            live.answer_boundary_suggestions,
+            key=lambda item: item.confidence,
+            default=None,
+        )
+        total_evidence = len(state.evidence)
+        covered_competencies = {
+            item.competency for item in state.evidence if item.competency.strip()
+        }
+        evidence_status = (
+            f"{total_evidence} 条证据 · {len(covered_competencies)} 个能力覆盖"
+        )
+        top_gap = live.coverage_guidance[0] if live.coverage_guidance else None
+        source_refs = [
+            f"segments={len(live.segments)}",
+            f"pending_candidate={len(pending_candidate_segments)}",
+            f"live_evidence={len(live_evidence)}",
+        ]
+
+        def card(
+            action_type: str,
+            priority: str,
+            title: str,
+            detail: str,
+            primary_cta: str,
+            secondary_cta: str = "",
+            refs: list[str] | None = None,
+        ) -> LiveActionCard:
+            return LiveActionCard(
+                action_type=action_type,
+                priority=priority,
+                title=title,
+                detail=detail,
+                primary_cta=primary_cta,
+                secondary_cta=secondary_cta,
+                evidence_status=evidence_status,
+                source_refs=[*source_refs, *(refs or [])][:8],
+            )
+
+        if live.status == LiveInterviewStatus.IDLE:
+            live.action_card = card(
+                "start",
+                "medium",
+                "开始实时面试",
+                "确认候选人已知情并同意转写后，启动监听并记录第一轮问题。",
+                "开始实时会话",
+            )
+            return
+        if live.status == LiveInterviewStatus.PAUSED:
+            live.action_card = card(
+                "resume",
+                "medium",
+                "实时面试已暂停",
+                "恢复监听前，可以先审阅已产生的转写片段和证据归档状态。",
+                "恢复监听",
+                "审阅证据",
+            )
+            return
+        if live.status == LiveInterviewStatus.COMPLETED:
+            ready = total_evidence >= 3 and len(covered_competencies) >= 2
+            live.action_card = card(
+                "evaluate" if ready else "review_evidence",
+                "high" if not ready else "medium",
+                "生成最终评价" if ready else "先补齐证据再评价",
+                (
+                    "证据数量和能力覆盖已达到招聘评价门槛，可以聚合证据生成报告。"
+                    if ready
+                    else "实时会话已结束，但证据数量或能力覆盖不足；请先确认候选人回答或导入记录。"
+                ),
+                "聚合证据并评估" if ready else "审阅待确认回答",
+                refs=["completed=true"],
+            )
+            return
+        if unknown_segments:
+            live.action_card = card(
+                "review_speaker",
+                "high",
+                "先确认待识别说话人",
+                "连续监听产生了待确认片段；确认说话人与文本后，后续 Agent 才能安全使用这些事实。",
+                "审阅转写片段",
+                refs=[f"unknown={len(unknown_segments)}"],
+            )
+            return
+        if boundary is not None and boundary.confidence >= 0.65:
+            live.action_card = card(
+                "merge_boundary",
+                "high",
+                "合并连续候选人回答",
+                (
+                    f"检测到 {len(boundary.answer_segment_ids)} 段连续候选人发言，"
+                    f"边界置信度 {round(boundary.confidence * 100)}%；建议先合并确认成一条证据。"
+                ),
+                "按边界建议合并",
+                "逐条确认",
+                refs=[f"boundary={round(boundary.confidence, 2)}"],
+            )
+            return
+        if pending_candidate_segments:
+            live.action_card = card(
+                "confirm_evidence",
+                "high",
+                "归档候选人回答为证据",
+                (
+                    f"还有 {len(pending_candidate_segments)} 段候选人回答未进入证据链；"
+                    "先确认能力维度，再让下一问题建议基于已确认事实。"
+                ),
+                "确认为证据",
+                "生成下一问题",
+            )
+            return
+        if pending_suggestion is not None:
+            live.action_card = card(
+                "decide_question",
+                "medium",
+                "处理下一问题建议",
+                (
+                    f"AI 已准备一个聚焦“{pending_suggestion.competency}”的问题；"
+                    "采用、编辑或跳过后，蓝图问题使用图会同步更新。"
+                ),
+                "采用或编辑问题",
+                "跳过建议",
+                refs=[f"suggestion={str(pending_suggestion.id)[:8]}"],
+            )
+            return
+        if top_gap is not None and (
+            total_evidence < 3
+            or len(covered_competencies) < 2
+            or top_gap.priority in {"high", "medium"}
+        ):
+            live.action_card = card(
+                "plan_gap_question",
+                "medium" if total_evidence >= 2 else "high",
+                f"补齐“{top_gap.competency}”证据",
+                f"{top_gap.reason} 建议下一问：{top_gap.sample_question}",
+                "根据回答生成",
+                "继续提问",
+                refs=[f"gap={top_gap.competency}", f"priority={top_gap.priority}"],
+            )
+            return
+        if total_evidence < 3 or len(covered_competencies) < 2:
+            live.action_card = card(
+                "plan_gap_question",
+                "high",
+                "继续补齐招聘评价证据",
+                "当前证据数量或能力覆盖仍不足；如果 JD 能力维度尚未完善，请先补充岗位职责、任职要求和团队背景。",
+                "根据回答生成",
+                "补充 JD 信息",
+                refs=["gap=generic"],
+            )
+            return
+        live.action_card = card(
+            "ready_to_evaluate",
+            "low",
+            "证据链已基本可用",
+            "当前证据数量和能力覆盖达到基础招聘评价门槛；可以继续深挖，也可以结束后生成评价。",
+            "结束并生成评价",
+            "继续追问",
+        )
+
     @staticmethod
     def _live_blueprint_questions(
         state: InterviewState,
@@ -1591,6 +1783,7 @@ class InterviewService:
         return self._locks.setdefault(session_id, asyncio.Lock())
 
     async def _persist(self, session_id: str, state: InterviewState) -> None:
+        self._refresh_live_action_card(state)
         await self.storage.save_session(session_id, state.model_dump(mode="json"))
 
     def get_cached_runtime(self, session_id: str) -> AgentRuntime | None:

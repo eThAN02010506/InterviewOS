@@ -592,6 +592,8 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
         assert boundary["confidence"] >= 0.75
         assert "已关联最近面试官问题" in boundary["confidence_factors"]
         assert "末段出现回答结束信号" in boundary["confidence_factors"]
+        assert live["action_card"]["action_type"] == "merge_boundary"
+        assert live["action_card"]["primary_cta"] == "按边界建议合并"
 
         merged = client.post(
             f"/api/live-interviews/{session_id}/evidence/merge",
@@ -614,6 +616,7 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     assert record["answer"] == f"{first_text}\n{second_text}"
     assert record["transcript_segment_ids"] == [question["id"], first["id"], second["id"]]
     assert state["live_interview"]["answer_boundary_suggestions"] == []
+    assert state["live_interview"]["action_card"]["action_type"] == "plan_gap_question"
     assert state["evidence"][0]["source_record_id"] == record["id"]
     assert duplicate.status_code == 409
 
@@ -660,6 +663,7 @@ def test_live_transcript_dedupes_and_rolls_context_for_question_planning(tmp_pat
     assert planned_events
     assert "summary_until=" in planned_events[0]["detail"]
     assert "duplicates_dropped=1" in planned_events[0]["detail"]
+    assert "action=merge_boundary" in planned_events[0]["detail"]
 
 
 def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
@@ -756,9 +760,12 @@ def test_live_question_usage_tracks_blueprint_progress(tmp_path):
     assert adopted["question_usage"][0]["status"] == "pending"
     assert adopted["question_usage"][-1]["status"] == "used"
     assert adopted["question_usage"][-1]["suggested_count"] == 1
+    assert planned["live_interview"]["action_card"]["action_type"] == "confirm_evidence"
+    assert planned["live_interview"]["action_card"]["primary_cta"] == "确认为证据"
     planned_events = [item for item in events if item["action"] == "live_question_planned"]
     assert planned_events
     assert "pending_blueprint=1" in planned_events[0]["detail"]
+    assert "action=confirm_evidence" in planned_events[0]["detail"]
 
 
 def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
