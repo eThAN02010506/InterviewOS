@@ -482,3 +482,60 @@ def test_live_review_queue_batch_confirms_pending_candidate_answers(tmp_path):
     assert len(state["evidence"]) == 2
     assert {item["source"] for item in state["evidence"]} == {"live_interview"}
     assert empty.status_code == 409
+
+
+def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-sufficient.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/workflows/enterprise-design",
+            json={
+                "session_id": session_id,
+                "resume_text": "Platform engineer with stability and architecture experience.",
+                "job_description": "平台工程师\n岗位职责：架构设计、稳定性治理。\n任职要求：系统设计、故障复盘。\n团队背景：平台团队。",
+                "company_name": "Example",
+            },
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        entries = [
+            ("interviewer", "请讲一次架构权衡。"),
+            ("candidate", "我比较了缓存治理、数据库扩容和限流，最终选择先治理缓存。"),
+            ("candidate", "上线前通过压测验证 P95 延迟，并保留灰度回滚方案。"),
+            ("candidate", "事故后我组织复盘，补充告警、演练和 runbook。"),
+        ]
+        for speaker, text in entries:
+            client.post(
+                f"/api/live-interviews/{session_id}/segments",
+                json={"speaker": speaker, "text": text},
+            )
+        state = client.get(f"/api/live-interviews/{session_id}").json()["state"]
+        candidates = [
+            item for item in state["live_interview"]["segments"] if item["speaker"] == "candidate"
+        ]
+        client.post(
+            f"/api/live-interviews/{session_id}/segments/{candidates[0]['id']}/evidence",
+            json={"competency": "System Design"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments/{candidates[1]['id']}/evidence",
+            json={"competency": "System Design"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments/{candidates[2]['id']}/evidence",
+            json={"competency": "Incident Review"},
+        )
+        evaluated = client.post(f"/api/evaluations/{session_id}")
+
+    assert evaluated.status_code == 200
+    result = evaluated.json()["state"]
+    assert len(result["evidence"]) == 3
+    assert {item["competency"] for item in result["evidence"]} == {
+        "System Design",
+        "Incident Review",
+    }
+    assert result["evaluation"]["recommendation"] != "insufficient_evidence"
