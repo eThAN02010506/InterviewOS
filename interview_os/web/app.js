@@ -7,6 +7,10 @@ const state = {
 let liveRecorder = null;
 let liveAudioChunks = [];
 let liveMediaStream = null;
+let liveContinuousMode = false;
+let liveContinuousQueue = [];
+let liveContinuousUploading = false;
+let liveContinuousChunkIndex = 0;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const optional = id => $(id).value.trim() || null;
@@ -153,9 +157,15 @@ function renderLive() {
   $('live-consent-panel').classList.toggle('hidden', status !== 'idle' && status !== 'completed');
   $('live-pause').textContent = status === 'paused' ? '恢复' : '暂停';
   $('live-pause').disabled = !['active','paused'].includes(status);
-  $('live-finish').disabled = !['active','paused'].includes(status);
+  $('live-finish').disabled = !['active','paused'].includes(status) || liveContinuousMode || liveContinuousQueue.length > 0 || liveContinuousUploading;
   $('live-record').disabled = status !== 'active' || !!liveRecorder;
+  $('live-continuous').disabled = status !== 'active' || !!liveRecorder;
+  $('live-stop-continuous').disabled = !liveContinuousMode;
   $('live-plan').disabled = status !== 'active';
+  if (liveContinuousMode || liveContinuousQueue.length || liveContinuousUploading) {
+    const uploading = liveContinuousUploading ? '，正在转写 1 段' : '';
+    $('live-recording-note').textContent = `连续分段监听${liveContinuousMode ? '中' : '已停止'}：队列 ${liveContinuousQueue.length} 段${uploading}。分段会先标记为“待确认”，请审阅说话人与文本后再归档证据。`;
+  }
   const segments = live?.segments || [];
   const recordedSegmentIds = new Set((state.session?.live_interview_records || []).flatMap(record => record.transcript_segment_ids || []));
   const pendingCandidateSegments = segments.filter(segment => segment.speaker === 'candidate' && !recordedSegmentIds.has(segment.id));
@@ -388,13 +398,22 @@ $('import-transcript').onclick=submitTranscript;
 async function startLiveInterview(){if(!await ensureSession())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/start`,{method:'POST',body:JSON.stringify({consent_confirmed:$('live-consent').checked})});state.session=data.state;renderLive();toast('实时面试已开始');}catch(error){toast(error.message,true)}}
 $('live-start').onclick=startLiveInterview;
 $('live-pause').onclick=async()=>{const next=state.session?.live_interview?.status==='paused'?'active':'paused';try{const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:next})});state.session=data.state;renderLive();toast(next==='paused'?'实时会话已暂停':'实时会话已恢复');}catch(error){toast(error.message,true)}};
-$('live-finish').onclick=async()=>{try{if(liveRecorder&&liveRecorder.state==='recording')liveRecorder.stop();const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:'completed'})});state.session=data.state;renderLive();toast('实时面试已结束，请审阅转写');}catch(error){toast(error.message,true)}};
+$('live-finish').onclick=async()=>{try{if(liveContinuousMode||liveContinuousQueue.length||liveContinuousUploading){toast('请先停止连续监听并等待转写队列处理完成，再结束会话',true);renderLive();return;}if(liveRecorder&&liveRecorder.state==='recording')liveRecorder.stop();const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:'completed'})});state.session=data.state;renderLive();toast('实时面试已结束，请审阅转写');}catch(error){toast(error.message,true)}};
 $('live-text-form').onsubmit=async e=>{e.preventDefault();const text=$('live-text').value.trim();if(!text)return;const form=e.currentTarget;busy(form,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/segments`,{method:'POST',body:JSON.stringify({text,speaker:$('live-speaker').value})});state.session=data.state;$('live-text').value='';renderLive();toast('发言已加入实时对话');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 
-$('live-record').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type));liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveAudioChunks=[];liveRecorder.ondataavailable=event=>{if(event.data.size)liveAudioChunks.push(event.data)};liveRecorder.onstop=uploadLiveRecording;liveRecorder.start(1000);$('live-record').disabled=true;$('live-stop-record').disabled=false;$('live-recording-note').textContent=`正在录制${$('live-speaker').value==='candidate'?'候选人':'面试官'}发言…`;renderLive();}catch(error){toast(`无法使用麦克风：${error.message}`,true)}};
+function liveAudioType(){return ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type))||'';}
+function liveAudioFilename(type,prefix='speech'){return type.includes('mp4')?`${prefix}.m4a`:`${prefix}.webm`;}
+async function uploadLiveAudioBlob(blob,type,speaker,prefix='speech'){const form=new FormData();form.append('file',blob,liveAudioFilename(type,prefix));form.append('speaker',speaker);form.append('language','zh');const data=await api(`/api/live-interviews/${state.sessionId}/audio`,{method:'POST',body:form});state.session=data.state;return data;}
+
+$('live-record').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveAudioChunks=[];liveRecorder.ondataavailable=event=>{if(event.data.size)liveAudioChunks.push(event.data)};liveRecorder.onstop=uploadLiveRecording;liveRecorder.start(1000);$('live-record').disabled=true;$('live-stop-record').disabled=false;$('live-recording-note').textContent=`正在录制${$('live-speaker').value==='candidate'?'候选人':$('live-speaker').value==='interviewer'?'面试官':'待确认'}发言…`;renderLive();}catch(error){toast(`无法使用麦克风：${error.message}`,true)}};
 $('live-stop-record').onclick=()=>{if(liveRecorder?.state==='recording'){liveRecorder.stop();$('live-stop-record').disabled=true;$('live-recording-note').textContent='录制结束，正在发送到 ASR…'}};
 
-async function uploadLiveRecording(){const recorder=liveRecorder;const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());const type=recorder?.mimeType||'audio/webm';const blob=new Blob(liveAudioChunks,{type});liveAudioChunks=[];if(!blob.size){toast('没有录到音频',true);renderLive();return;}const form=new FormData();form.append('file',blob,type.includes('mp4')?'speech.m4a':'speech.webm');form.append('speaker',$('live-speaker').value);form.append('language','zh');try{const data=await api(`/api/live-interviews/${state.sessionId}/audio`,{method:'POST',body:form});state.session=data.state;$('live-recording-note').textContent='转写完成；候选人回答结束后可生成下一问题。';renderLive();toast('音频已转为文字');}catch(error){$('live-recording-note').textContent='转写失败，可使用手动文本输入。';toast(error.message,true);renderLive();}}
+async function uploadLiveRecording(){const recorder=liveRecorder;const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());const type=recorder?.mimeType||'audio/webm';const blob=new Blob(liveAudioChunks,{type});liveAudioChunks=[];if(!blob.size){toast('没有录到音频',true);renderLive();return;}try{await uploadLiveAudioBlob(blob,type,$('live-speaker').value);$('live-recording-note').textContent='转写完成；候选人回答结束后可生成下一问题。';renderLive();toast('音频已转为文字');}catch(error){$('live-recording-note').textContent='转写失败，可使用手动文本输入。';toast(error.message,true);renderLive();}}
+
+$('live-continuous').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风连续录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveContinuousMode=true;liveContinuousQueue=[];liveContinuousChunkIndex=0;liveRecorder.ondataavailable=event=>{if(event.data.size)enqueueLiveContinuousChunk(new Blob([event.data],{type:liveRecorder?.mimeType||'audio/webm'}));};liveRecorder.onstop=()=>{const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());liveContinuousMode=false;$('live-recording-note').textContent=liveContinuousQueue.length||liveContinuousUploading?'连续监听已停止；剩余音频正在转写。':'连续监听已停止。';renderLive();};liveRecorder.start(15000);$('live-recording-note').textContent='连续分段监听中：每 15 秒上传一段，默认标记为待确认说话人。';renderLive();toast('连续分段监听已开始');}catch(error){liveContinuousMode=false;toast(`无法启动连续监听：${error.message}`,true);renderLive();}};
+$('live-stop-continuous').onclick=()=>{liveContinuousMode=false;if(liveRecorder?.state==='recording'){liveRecorder.stop();$('live-recording-note').textContent='连续监听停止中；正在处理已录到的音频。'}renderLive();};
+function enqueueLiveContinuousChunk(blob){if(!blob.size)return;liveContinuousQueue.push({blob,type:blob.type||'audio/webm',index:++liveContinuousChunkIndex});processLiveContinuousQueue();renderLive();}
+async function processLiveContinuousQueue(){if(liveContinuousUploading)return;liveContinuousUploading=true;try{while(liveContinuousQueue.length){const chunk=liveContinuousQueue.shift();$('live-recording-note').textContent=`正在转写连续监听第 ${chunk.index} 段；剩余 ${liveContinuousQueue.length} 段。`;try{await uploadLiveAudioBlob(chunk.blob,chunk.type,'unknown',`continuous-${chunk.index}`);renderLive();}catch(error){$('live-recording-note').textContent=`连续监听第 ${chunk.index} 段转写失败，可手动输入补录。`;toast(`连续监听第 ${chunk.index} 段转写失败：${error.message}`,true);}}}finally{liveContinuousUploading=false;if(!liveContinuousMode){$('live-recording-note').textContent='连续监听队列已处理完成；请审阅待确认片段。';}renderLive();}}
 
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 $('live-confirm-all').onclick=async()=>{const competency=window.prompt('批量确认使用的能力维度；留空则由系统按问题推断','')||'';const button=$('live-confirm-all');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/batch`,{method:'POST',body:JSON.stringify({competency})});state.session=data.state;renderAll();toast('待确认候选人回答已批量归档');}catch(error){toast(error.message,true)}finally{busy(button,false)}};

@@ -173,6 +173,13 @@ edited before confirmation, candidate answers can be converted into traceable
 `live_interview` evidence, and the review queue shows whether enough evidence and
 competency coverage exists to generate a hiring recommendation.
 
+A conservative **chunked continuous listening MVP** is also implemented. It reuses
+the existing HTTP ASR upload endpoint instead of introducing a second protocol too
+early. The browser records short chunks, uploads them sequentially, shows queue and
+upload status, and marks each chunk as `unknown` speaker by default. This keeps the
+interviewer in control: the user must correct speaker/text and explicitly confirm
+candidate answers before any chunk can become hiring evidence.
+
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
 question. It should help the interviewer stay structured without taking over the
@@ -185,7 +192,7 @@ The remaining roadmap is deliberately separated:
 1. **Completed turn-based MVP** — live state, typed or recorded turns, structured
    planning, visible consent controls, deterministic fallbacks, interviewer
    decisions, transcript review, evidence confirmation, and final evaluation gates.
-2. **Chunked continuous listening MVP** — keep the existing HTTP ASR upload path,
+2. **Completed chunked continuous listening MVP** — keep the existing HTTP ASR upload path,
    let the browser record short sequential audio chunks, mark uncertain chunks as
    `unknown` speaker by default, and require transcript review before evidence is
    created. This gives a practical bridge before true streaming.
@@ -217,18 +224,14 @@ is not the default evidence source until that truncation behavior is resolved.
 
 The next work should move in this order:
 
-1. **Chunked continuous listening** — add a conservative browser-side continuous
-   recording mode that uploads short chunks sequentially to the existing ASR
-   endpoint, keeps manual typed input as fallback, and routes uncertain transcript
-   chunks through the same review queue before they can become evidence.
-2. **True streaming design** — add WebSocket transcript events, answer-boundary
+1. **True streaming design** — add WebSocket transcript events, answer-boundary
    detection, reconnect/deduplication, and rolling summaries so long interviews do
    not resend the whole transcript to the LLM.
-3. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
+2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
    with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
    retries.
-4. **Search and fact-card hardening** — improve source ranking, Tavily result
+3. **Search and fact-card hardening** — improve source ranking, Tavily result
    caching, public-claim traceability, and conflict resolution decisions.
-5. **Operational hardening** — expand Debug Console timings, retry paths, redacted
+4. **Operational hardening** — expand Debug Console timings, retry paths, redacted
    cost/token metrics, local secret persistence tests, and 60-90 minute live
    interview load tests.
