@@ -228,6 +228,7 @@ textarea { resize: vertical; line-height: 1.55; }
 .resume-review.visible { display: block; }
 .review-summary { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--soft); font-size: 10px; }
 .review-summary span { color: var(--muted); }
+.review-subtitle { padding: 10px 14px 0; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .review-issue, .review-claim { display: flex; align-items: flex-start; gap: 9px; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 10px; }
 .review-issue b { flex: 0 0 auto; color: var(--green); }
 .review-issue.warning b { color: var(--amber); }

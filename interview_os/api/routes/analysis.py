@@ -12,7 +12,9 @@ from interview_os.api.schemas.interview import (
     CompanyAnalysisRequest,
     InterviewerAnalysisRequest,
     JobAnalysisRequest,
+    JobRequirementUpdateRequest,
     ResumeAnalysisRequest,
+    WorkflowResponse,
 )
 from interview_os.services.interview_service import InterviewService
 
@@ -43,6 +45,22 @@ async def analyze_resume(req: ResumeAnalysisRequest, service: Service):
 async def analyze_job(req: JobAnalysisRequest, service: Service):
     message = await service.analyze_job(req.session_id, req.text)
     return await _response(req.session_id, message, service)
+
+
+@router.patch("/job/{session_id}/requirements/{index}", response_model=WorkflowResponse)
+async def update_job_requirement(
+    session_id: str,
+    index: int,
+    req: JobRequirementUpdateRequest,
+    service: Service,
+):
+    state = await service.update_job_requirement(
+        session_id,
+        index,
+        action=req.action,
+        text=req.text,
+    )
+    return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))
 
 
 @router.post("/company", response_model=AnalysisResponse)

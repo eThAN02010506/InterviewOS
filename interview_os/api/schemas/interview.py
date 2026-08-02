@@ -34,6 +34,11 @@ class JobAnalysisRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class JobRequirementUpdateRequest(BaseModel):
+    action: Literal["confirm", "edit", "delete"]
+    text: str = Field(default="", max_length=1000)
+
+
 class CompanyAnalysisRequest(BaseModel):
     session_id: str
     name: str = Field(min_length=1)

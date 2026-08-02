@@ -209,9 +209,10 @@ function renderJDReview() {
   const review=state.session?.job_review;
   [$('candidate-jd-review'),$('enterprise-jd-review')].forEach(node=>{
     if(!review?.requirements?.length && !review?.warnings?.length){node.innerHTML='';return;}
-    const explicit=(review.requirements||[]).filter(x=>x.origin==='explicit');
-    const inferred=(review.requirements||[]).filter(x=>x.origin==='inferred');
-    node.innerHTML=`<div class="review-summary"><strong>JD 完整度 ${Math.round((review.completeness_score||0)*100)}%</strong><span>${review.is_title_only?'仅职位名称，无法生成岗位专属问题':'已完成结构检查'}</span></div>${review.missing_sections?.length?`<p class="jd-warning">请补充：${esc(review.missing_sections.join('、'))}</p>`:''}${list('明确要求',explicit.map(x=>x.text))}${list('AI 推测（需确认）',inferred.map(x=>x.text))}`;
+    const requirements=review.requirements||[];
+    const explicit=requirements.filter(x=>x.origin==='explicit');
+    const inferred=requirements.map((item,index)=>({...item,index})).filter(x=>x.origin==='inferred');
+    node.innerHTML=`<div class="review-summary"><strong>JD 完整度 ${Math.round((review.completeness_score||0)*100)}%</strong><span>${review.is_title_only?'仅职位名称，无法生成岗位专属问题':'已完成结构检查'}</span></div>${review.missing_sections?.length?`<p class="jd-warning">请补充：${esc(review.missing_sections.join('、'))}</p>`:''}${list('明确要求',explicit.map(x=>x.text))}${inferred.length?`<div class="review-subtitle">AI 推测（需确认）</div>${inferred.map(item=>`<div class="review-claim"><div><small>推测要求 #${item.index+1}</small><span>${esc(item.text)}</span></div><div class="claim-actions"><button type="button" data-jd-action="confirm" data-jd-index="${item.index}">确认</button><button type="button" data-jd-action="edit" data-jd-index="${item.index}">编辑</button><button type="button" data-jd-action="delete" data-jd-index="${item.index}">删除</button></div></div>`).join('')}`:''}`;
   });
 }
 
@@ -327,6 +328,28 @@ document.addEventListener('click', async event => {
   try {
     const data = await api(`/api/resumes/${state.sessionId}/claims/${button.dataset.claimId}`, {method:'PATCH', body:JSON.stringify({status:button.dataset.claimAction})});
     state.session = data.state; renderState(); toast({confirmed:'已确认，后续 Agent 可使用',needs_documents:'已标记为需要材料',ignored:'已忽略，后续 Agent 不会使用'}[button.dataset.claimAction]||'已更新');
+  } catch (error) { toast(error.message, true); }
+});
+
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-jd-action]');
+  if (!button || !state.sessionId) return;
+  const index = Number(button.dataset.jdIndex);
+  const item = state.session?.job_review?.requirements?.[index];
+  if (!item) return;
+  let text = '';
+  if (button.dataset.jdAction === 'edit') {
+    text = window.prompt('编辑为明确岗位要求', item.text) || '';
+    if (!text.trim()) return;
+  }
+  try {
+    const data = await api(`/api/analysis/job/${state.sessionId}/requirements/${index}`, {
+      method: 'PATCH',
+      body: JSON.stringify({action: button.dataset.jdAction, text})
+    });
+    state.session = data.state;
+    renderState();
+    toast({confirm:'已确认为明确要求',edit:'已编辑并确认',delete:'已删除该推测要求'}[button.dataset.jdAction] || 'JD 要求已更新');
   } catch (error) { toast(error.message, true); }
 });
 

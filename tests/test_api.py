@@ -193,6 +193,39 @@ def test_candidate_prep_api_returns_structured_workflow(tmp_path):
     assert state["mock_interview"]["questions"][0]["question"] == "Design it"
 
 
+def test_job_requirement_review_confirms_edits_and_deletes_inferred_items(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'job-review.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        analyzed = client.post(
+            "/api/analysis/job",
+            json={"session_id": session_id, "text": "高级平台工程师"},
+        )
+        confirmed = client.patch(
+            f"/api/analysis/job/{session_id}/requirements/0",
+            json={"action": "confirm"},
+        )
+        edited = client.patch(
+            f"/api/analysis/job/{session_id}/requirements/0",
+            json={"action": "edit", "text": "需要设计高可用平台架构"},
+        )
+        deleted = client.patch(
+            f"/api/analysis/job/{session_id}/requirements/0",
+            json={"action": "delete"},
+        )
+
+    assert analyzed.status_code == 200
+    assert analyzed.json()["state"]["job_review"]["requirements"][0]["origin"] == "inferred"
+    assert confirmed.status_code == 200
+    assert confirmed.json()["state"]["job_review"]["requirements"][0]["origin"] == "explicit"
+    assert edited.status_code == 200
+    requirement = edited.json()["state"]["job_review"]["requirements"][0]
+    assert requirement == {"text": "需要设计高可用平台架构", "origin": "explicit"}
+    assert deleted.status_code == 200
+    assert deleted.json()["state"]["job_review"]["requirements"] == []
+
+
 def test_mock_interview_api_progresses_to_completion(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'mock-api.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

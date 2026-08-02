@@ -37,6 +37,7 @@ from interview_os.core.state import (
     MockInterviewSession,
     MockSessionStatus,
     QuestionSuggestionStatus,
+    RequirementOrigin,
     ResumeClaimStatus,
     TranscriptSegment,
     TranscriptSpeaker,
@@ -505,6 +506,47 @@ class InterviewService:
 
     async def analyze_job(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "job_agent", text)
+
+    async def update_job_requirement(
+        self,
+        session_id: str,
+        index: int,
+        *,
+        action: str,
+        text: str = "",
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        clean_text = text.strip()
+        async with self._lock_for(session_id):
+            requirements = runtime.state.job_review.requirements
+            if index < 0 or index >= len(requirements):
+                raise ResumeReviewStateError("Job requirement not found")
+            if action == "delete":
+                requirements.pop(index)
+            elif action == "confirm":
+                requirements[index].origin = RequirementOrigin.EXPLICIT
+            elif action == "edit":
+                if not clean_text:
+                    raise ResumeReviewStateError("Job requirement text cannot be empty")
+                requirements[index].text = clean_text
+                requirements[index].origin = RequirementOrigin.EXPLICIT
+            else:
+                raise ResumeReviewStateError("Unsupported job requirement action")
+            explicit_count = sum(
+                1 for item in requirements if item.origin == RequirementOrigin.EXPLICIT
+            )
+            if explicit_count:
+                runtime.state.job_review.is_title_only = False
+                runtime.state.job_review.completeness_score = max(
+                    runtime.state.job_review.completeness_score, min(1.0, 0.45 + explicit_count * 0.05)
+                )
+            await self._persist(session_id, runtime.state)
+            self._record_debug(
+                "job_requirement_updated",
+                session_id,
+                detail=f"index={index}; action={action}",
+            )
+            return runtime.state
 
     async def analyze_company(self, session_id: str, name: str, context: str = "") -> Message:
         runtime = await self._get_runtime(session_id)
