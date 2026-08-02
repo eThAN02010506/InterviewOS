@@ -12,6 +12,7 @@ from interview_os.api.schemas.interview import (
     LiveEvidenceBatchConfirmationRequest,
     LiveEvidenceConfirmationRequest,
     LiveEvidenceMergeConfirmationRequest,
+    LiveEvidenceReevaluationRequest,
     LiveInterviewStartRequest,
     LiveInterviewStatusRequest,
     LiveSuggestionDecisionRequest,
@@ -134,6 +135,22 @@ async def confirm_pending_evidence(
 @router.delete("/{session_id}/evidence/{record_id}", response_model=WorkflowResponse)
 async def revoke_evidence(session_id: str, record_id: UUID, service: Service):
     return response(session_id, await service.revoke_live_evidence(session_id, record_id))
+
+
+@router.patch("/{session_id}/evidence/{record_id}/reevaluate", response_model=WorkflowResponse)
+async def reevaluate_evidence(
+    session_id: str,
+    record_id: UUID,
+    payload: LiveEvidenceReevaluationRequest,
+    service: Service,
+):
+    state = await service.reevaluate_live_evidence(
+        session_id,
+        record_id,
+        question=payload.question,
+        competency=payload.competency,
+    )
+    return response(session_id, state)
 
 
 @router.post("/{session_id}/audio", response_model=WorkflowResponse)

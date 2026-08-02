@@ -392,23 +392,6 @@ class InterviewService:
                 or "综合能力"
             )
             answer_text = "\n".join(item.text for item in ordered_answer_segments)
-            evidence_count_before = len(runtime.state.evidence)
-            message = await runtime.run(
-                "coach_agent",
-                json.dumps(
-                    {
-                        "question": clean_question,
-                        "answer": answer_text,
-                        "competency": clean_competency,
-                        "evidence_source": "live_interview",
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            try:
-                evaluation = AnswerEvaluation.model_validate_json(message.content)
-            except (ValueError, TypeError) as exc:
-                raise EvaluationStateError("Live answer evaluation failed") from exc
             segment_ids = [item.id for item in ordered_answer_segments]
             if question_segment is not None:
                 segment_ids.insert(0, question_segment.id)
@@ -416,14 +399,15 @@ class InterviewService:
                 question=clean_question,
                 answer=answer_text,
                 competency=clean_competency,
-                evaluation=evaluation,
+                evaluation=AnswerEvaluation(
+                    content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
+                ),
                 source="live_interview",
                 transcript_segment_ids=segment_ids,
             )
+            evaluation = await self._score_live_record(runtime, record)
+            record.evaluation = evaluation
             runtime.state.live_interview_records.append(record)
-            for evidence in runtime.state.evidence[evidence_count_before:]:
-                if evidence.source.value == "live_interview":
-                    evidence.source_record_id = record.id
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -433,6 +417,41 @@ class InterviewService:
                 f"competency={clean_competency}; "
                 f"segments={len(ordered_answer_segments)}; chars={len(answer_text)}"
             ),
+        )
+        return runtime.state
+
+    async def reevaluate_live_evidence(
+        self,
+        session_id: str,
+        record_id: UUID,
+        *,
+        question: str = "",
+        competency: str = "",
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            record = next(
+                (item for item in runtime.state.live_interview_records if item.id == record_id),
+                None,
+            )
+            if record is None:
+                raise LiveInterviewStateError("Live evidence record was not found")
+            if record.source != "live_interview":
+                raise LiveInterviewStateError("Only live interview evidence can be re-evaluated here")
+            if question.strip():
+                record.question = question.strip()
+            if competency.strip():
+                record.competency = competency.strip()
+            runtime.state.evidence = [
+                item for item in runtime.state.evidence if item.source_record_id != record_id
+            ]
+            record.evaluation = await self._score_live_record(runtime, record)
+            runtime.state.next_action = "Review updated live evidence or generate evaluation"
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_evidence_reevaluated",
+            session_id,
+            detail=f"record={str(record_id)[:8]}; competency={record.competency}",
         )
         return runtime.state
 
@@ -461,6 +480,31 @@ class InterviewService:
             detail=f"record={str(record_id)[:8]}; competency={record.competency}",
         )
         return runtime.state
+
+    async def _score_live_record(
+        self, runtime: AgentRuntime, record: LiveInterviewRecord
+    ) -> AnswerEvaluation:
+        evidence_count_before = len(runtime.state.evidence)
+        message = await runtime.run(
+            "coach_agent",
+            json.dumps(
+                {
+                    "question": record.question,
+                    "answer": record.answer,
+                    "competency": record.competency,
+                    "evidence_source": "live_interview",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        try:
+            evaluation = AnswerEvaluation.model_validate_json(message.content)
+        except (ValueError, TypeError) as exc:
+            raise EvaluationStateError("Live answer evaluation failed") from exc
+        for evidence in runtime.state.evidence[evidence_count_before:]:
+            if evidence.source.value == "live_interview":
+                evidence.source_record_id = record.id
+        return evaluation
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""

@@ -573,6 +573,47 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     assert duplicate.status_code == 409
 
 
+def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-reevaluate.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        question = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次跨团队项目。"},
+        ).json()["state"]["live_interview"]["segments"][0]
+        answer = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我协调平台和业务团队完成迁移。"},
+        ).json()["state"]["live_interview"]["segments"][1]
+        confirmed = client.post(
+            f"/api/live-interviews/{session_id}/segments/{answer['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "System Design"},
+        ).json()["state"]
+        record_id = confirmed["live_interview_records"][0]["id"]
+
+        reevaluated = client.patch(
+            f"/api/live-interviews/{session_id}/evidence/{record_id}/reevaluate",
+            json={"competency": "Cross-team Collaboration"},
+        )
+
+    assert reevaluated.status_code == 200
+    state = reevaluated.json()["state"]
+    assert len(state["live_interview_records"]) == 1
+    assert len(state["evidence"]) == 1
+    record = state["live_interview_records"][0]
+    evidence = state["evidence"][0]
+    assert record["id"] == record_id
+    assert record["competency"] == "Cross-team Collaboration"
+    assert evidence["competency"] == "Cross-team Collaboration"
+    assert evidence["source_record_id"] == record_id
+    assert record["transcript_segment_ids"] == [question["id"], answer["id"]]
+
+
 def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-sufficient.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

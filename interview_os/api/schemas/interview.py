@@ -161,5 +161,10 @@ class LiveEvidenceMergeConfirmationRequest(LiveEvidenceConfirmationRequest):
     segment_ids: list[UUID] = Field(min_length=2, max_length=20)
 
 
+class LiveEvidenceReevaluationRequest(BaseModel):
+    question: str = Field(default="", max_length=4000)
+    competency: str = Field(default="", max_length=200)
+
+
 class LiveEvidenceBatchConfirmationRequest(BaseModel):
     competency: str = Field(default="", max_length=200)

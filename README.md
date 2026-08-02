@@ -175,7 +175,9 @@ competency coverage exists to generate a hiring recommendation. Confirmed live
 evidence can be revoked without deleting the transcript segment, so the interviewer
 can correct speaker/text and confirm the answer again. Multiple adjacent candidate
 segments can also be merged into one answer before scoring, which is important for
-chunked ASR output and longer responses.
+chunked ASR output and longer responses. Confirmed live records can also be
+re-evaluated with an updated question or competency while preserving the same
+transcript trace.
 
 A conservative **chunked continuous listening MVP** is also implemented. It reuses
 the existing HTTP ASR upload endpoint instead of introducing a second protocol too
@@ -203,8 +205,8 @@ The remaining roadmap is deliberately separated:
 3. **Continuous streaming** — partial transcript events, answer-boundary detection,
    WebSocket reconnect and deduplication, and optional speaker diarization.
 4. **Evidence map hardening** — confirmed turns already become `live_interview`
-   evidence and can be revoked; next work is richer coverage guidance,
-   re-evaluation, automatic answer-boundary detection, and long-interview summaries.
+   evidence, can be revoked, merged, and re-evaluated; next work is richer coverage
+   guidance, automatic answer-boundary detection, and long-interview summaries.
 5. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    rolling summaries, redacted observability, and cost measurement.
 
