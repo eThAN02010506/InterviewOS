@@ -258,6 +258,24 @@ retains typed/pasted transcript input as the safe fallback.
 OpenAI-compatible endpoint was faster, but returned only the first sentence, so it
 is not the default evidence source until that truncation behavior is resolved.
 
+### Real HTTP smoke tests
+
+Two release-oriented scripts exercise the configured local service with synthetic
+data:
+
+```bash
+.venv/bin/python scripts/e2e_real_workflow.py --base-url http://127.0.0.1:8000
+.venv/bin/python scripts/e2e_live_action_card.py --base-url http://127.0.0.1:8000
+```
+
+`e2e_live_action_card.py` verifies the interviewer-side Live Copilot loop: start
+with consent, detect a mergeable answer boundary, confirm live evidence, plan and
+adopt a next question, collect enough evidence, finish the live session, and
+generate a hiring evaluation. On the 2026-08-02 local run against the configured
+8001 text model, the script completed in 113.823 seconds; action-card planning took
+33.033 seconds and final evaluation took 51.191 seconds. That proves the functional
+loop is usable, but it also keeps performance hardening visible.
+
 ## Next Implementation Plan
 
 The next work should move in this order:
