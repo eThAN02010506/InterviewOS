@@ -33,6 +33,20 @@ chooses, edits, skips, or postpones every suggested question. See the
 [product requirements](docs/product_requirements.md) for scope, privacy rules,
 delivery phases, and acceptance criteria.
 
+## Development Working Agreement
+
+This project is being developed as a usable local product rather than a throwaway
+demo. For every meaningful implementation batch, update this README and
+`docs/product_requirements.md` together with the code change, run the relevant
+validation checks, and create a descriptive git commit. Commit messages should
+capture the user-facing capability, the major technical changes, and any important
+validation result or known limitation.
+
+When a requested change touches the UI or API, restart the local service after the
+commit so the browser reflects the committed state. Secrets, local API keys,
+resume content, and live transcript details must stay out of commit messages,
+debug logs, screenshots, and exported data.
+
 ## Current Product Shape
 
 InterviewOS currently has two primary UI modes:
@@ -159,17 +173,28 @@ edited before confirmation, candidate answers can be converted into traceable
 `live_interview` evidence, and the review queue shows whether enough evidence and
 competency coverage exists to generate a hiring recommendation.
 
+The product direction for live interviews is an interviewer-side copilot that can
+listen during the conversation, keep an evidence map, and quietly prepare the next
+question. It should help the interviewer stay structured without taking over the
+conversation. The AI may suggest, summarize, detect gaps, and prepare follow-ups;
+the interviewer remains responsible for choosing what is asked and for confirming
+what becomes evidence.
+
 The remaining roadmap is deliberately separated:
 
 1. **Completed turn-based MVP** — live state, typed or recorded turns, structured
    planning, visible consent controls, deterministic fallbacks, interviewer
    decisions, transcript review, evidence confirmation, and final evaluation gates.
-2. **Continuous streaming** — partial transcript events, answer-boundary detection,
+2. **Chunked continuous listening MVP** — keep the existing HTTP ASR upload path,
+   let the browser record short sequential audio chunks, mark uncertain chunks as
+   `unknown` speaker by default, and require transcript review before evidence is
+   created. This gives a practical bridge before true streaming.
+3. **Continuous streaming** — partial transcript events, answer-boundary detection,
    WebSocket reconnect and deduplication, and optional speaker diarization.
-3. **Evidence map hardening** — confirmed turns already become `live_interview`
+4. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence; next work is richer coverage guidance, rollback/re-evaluation, and
    long-interview summaries.
-4. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
+5. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    rolling summaries, redacted observability, and cost measurement.
 
 The live path must not invoke an LLM for every partial word. Stable transcript turns
@@ -192,14 +217,18 @@ is not the default evidence source until that truncation behavior is resolved.
 
 The next work should move in this order:
 
-1. **Continuous listening** — add streaming transcript events, answer-boundary
+1. **Chunked continuous listening** — add a conservative browser-side continuous
+   recording mode that uploads short chunks sequentially to the existing ASR
+   endpoint, keeps manual typed input as fallback, and routes uncertain transcript
+   chunks through the same review queue before they can become evidence.
+2. **True streaming design** — add WebSocket transcript events, answer-boundary
    detection, reconnect/deduplication, and rolling summaries so long interviews do
    not resend the whole transcript to the LLM.
-2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
+3. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
    with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
    retries.
-3. **Search and fact-card hardening** — improve source ranking, Tavily result
+4. **Search and fact-card hardening** — improve source ranking, Tavily result
    caching, public-claim traceability, and conflict resolution decisions.
-4. **Operational hardening** — expand Debug Console timings, retry paths, redacted
+5. **Operational hardening** — expand Debug Console timings, retry paths, redacted
    cost/token metrics, local secret persistence tests, and 60-90 minute live
    interview load tests.
