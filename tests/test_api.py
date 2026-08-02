@@ -638,6 +638,55 @@ def test_live_transcript_dedupes_and_rolls_context_for_question_planning(tmp_pat
     assert "duplicates_dropped=1" in planned_events[0]["detail"]
 
 
+def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-guidance.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/analysis/job",
+            json={"session_id": session_id, "text": "System Design Engineer"},
+        )
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        ).json()["state"]["live_interview"]
+        question = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次架构权衡。"},
+        ).json()["state"]["live_interview"]["segments"][0]
+        first = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我通过压测比较方案并灰度上线。"},
+        ).json()["state"]["live_interview"]["segments"][1]
+        one_evidence = client.post(
+            f"/api/live-interviews/{session_id}/segments/{first['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "System Design"},
+        ).json()["state"]["live_interview"]["coverage_guidance"][0]
+        second = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我补充了容量评估、回滚预案和故障复盘。"},
+        ).json()["state"]["live_interview"]["segments"][-1]
+        two_evidence = client.post(
+            f"/api/live-interviews/{session_id}/segments/{second['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "System Design"},
+        ).json()["state"]["live_interview"]["coverage_guidance"][0]
+        client.post(f"/api/live-interviews/{session_id}/suggestions")
+        events = client.get("/api/debug/events").json()["events"]
+
+    initial = started["coverage_guidance"][0]
+    assert initial["competency"] == "System Design"
+    assert initial["priority"] == "high"
+    assert initial["evidence_count"] == 0
+    assert one_evidence["priority"] == "medium"
+    assert one_evidence["evidence_count"] == 1
+    assert two_evidence["priority"] == "low"
+    assert two_evidence["evidence_count"] == 2
+    planned_events = [item for item in events if item["action"] == "live_question_planned"]
+    assert planned_events
+    assert "top_gap=System Design" in planned_events[0]["detail"]
+
+
 def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-reevaluate.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

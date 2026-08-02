@@ -53,6 +53,12 @@ class LiveInterviewAgent(Agent):
         evidence_map = "\n".join(
             f"- {item.competency}: {item.signal}" for item in state.evidence[-20:]
         ) or "No confirmed evidence yet."
+        coverage_guidance = "\n".join(
+            f"- priority={item.priority}; competency={item.competency}; "
+            f"evidence={item.evidence_count}; confidence={item.strongest_confidence:.2f}; "
+            f"reason={item.reason}; suggested={item.sample_question}"
+            for item in state.live_interview.coverage_guidance[:5]
+        ) or "No coverage guidance available."
         prompt = (
             "Return exactly one JSON object matching the QuestionSuggestion schema. "
             "Prepare a question for the interviewer; do not answer it and do not address the "
@@ -68,6 +74,7 @@ class LiveInterviewAgent(Agent):
             f"Used question IDs: {state.live_interview.used_question_ids}\n"
             f"Prepared question map:\n{question_map}\n"
             f"Recorded evidence:\n{evidence_map}\n"
+            f"Coverage guidance:\n{coverage_guidance}\n"
             f"Rolling transcript summary:\n"
             f"{state.live_interview.rolling_summary or 'No older transcript summary yet.'}\n"
             f"Recent confirmed transcript:\n{transcript}"

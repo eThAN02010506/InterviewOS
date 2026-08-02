@@ -195,6 +195,9 @@ summary and drops exact repeated transcript chunks before they can grow the
 conversation context. The next-question planner receives the rolling summary,
 recent confirmed turns, the interview blueprint, and confirmed evidence instead of
 the full raw transcript.
+The competency map also provides deterministic coverage guidance: for each target
+competency it shows evidence count, strongest confidence, priority, why the signal
+is still weak or sufficient, and a sample question the interviewer can ask next.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
@@ -218,8 +221,8 @@ The remaining roadmap is deliberately separated:
 4. **Continuous streaming** — partial transcript events, stronger answer-boundary
    detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
-   evidence, can be revoked, merged, and re-evaluated; next work is richer coverage
-   guidance and better boundary confidence.
+   evidence, can be revoked, merged, re-evaluated, and turned into coverage
+   guidance; next work is better boundary confidence.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
    redacted observability, and cost measurement.
 

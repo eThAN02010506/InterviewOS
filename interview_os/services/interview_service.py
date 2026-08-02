@@ -31,6 +31,7 @@ from interview_os.core.state import (
     JobDescription,
     JobDescriptionReview,
     LiveAnswerBoundarySuggestion,
+    LiveCoverageGuidance,
     LiveInterviewRecord,
     LiveInterviewSession,
     LiveInterviewStatus,
@@ -118,6 +119,7 @@ class InterviewService:
             live.consent_confirmed = True
             live.started_at = live.started_at or datetime.now(timezone.utc)
             live.completed_at = None
+            self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Listen to the interview and prepare the next question"
             await self._persist(session_id, runtime.state)
         self._record_debug("live_interview_started", session_id)
@@ -188,6 +190,7 @@ class InterviewService:
                 )
                 self._refresh_live_answer_boundaries(runtime.state)
                 self._refresh_live_rolling_summary(runtime.state)
+                self._refresh_live_coverage_guidance(runtime.state)
                 await self._persist(session_id, runtime.state)
         if duplicate_detected:
             self._record_debug("live_transcript_duplicate_dropped", session_id, detail=duplicate_detail)
@@ -229,6 +232,7 @@ class InterviewService:
             segment.confirmed = True
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
+            self._refresh_live_coverage_guidance(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_transcript_updated",
@@ -297,6 +301,7 @@ class InterviewService:
             ]
             if not candidate_segments:
                 raise LiveInterviewStateError("需要至少一段候选人回答后才能准备下一问题")
+            self._refresh_live_coverage_guidance(runtime.state)
             await runtime.run(
                 "live_interview_agent",
                 "根据最新候选人回答准备一个问题；优先补齐关键证据，然后推进未覆盖能力。",
@@ -309,7 +314,8 @@ class InterviewService:
             detail=(
                 f"summary_until={runtime.state.live_interview.summarized_until_sequence}; "
                 f"recent_segments={min(12, len(runtime.state.live_interview.segments))}; "
-                f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}"
+                f"duplicates_dropped={runtime.state.live_interview.duplicate_segments_dropped}; "
+                f"top_gap={runtime.state.live_interview.coverage_guidance[0].competency if runtime.state.live_interview.coverage_guidance else 'none'}"
             ),
         )
         return runtime.state
@@ -444,6 +450,7 @@ class InterviewService:
             runtime.state.live_interview_records.append(record)
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
+            self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -482,6 +489,7 @@ class InterviewService:
                 item for item in runtime.state.evidence if item.source_record_id != record_id
             ]
             record.evaluation = await self._score_live_record(runtime, record)
+            self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review updated live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -510,6 +518,7 @@ class InterviewService:
             ]
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
+            self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review corrected live evidence before evaluation"
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -1335,6 +1344,80 @@ class InterviewService:
     def _normalize_live_segment_text(value: str) -> str:
         return re.sub(r"[\W_]+", "", value.lower(), flags=re.UNICODE)
 
+    def _refresh_live_coverage_guidance(self, state: InterviewState) -> None:
+        competencies = self._live_target_competencies(state)
+        if not competencies:
+            state.live_interview.coverage_guidance = []
+            return
+        by_competency: dict[str, list[float]] = {name: [] for name in competencies}
+        for evidence in state.evidence:
+            competency = evidence.competency.strip()
+            if competency not in by_competency:
+                by_competency[competency] = []
+            by_competency[competency].append(evidence.confidence)
+        guidance: list[LiveCoverageGuidance] = []
+        for competency in competencies:
+            confidences = by_competency.get(competency, [])
+            count = len(confidences)
+            strongest = max(confidences, default=0.0)
+            if count == 0:
+                priority = "high"
+                reason = "尚无已确认 live 证据，最终评价无法覆盖该能力。"
+                question_type = "main"
+                sample = f"请讲一个最能体现你“{competency}”能力的真实项目。"
+            elif count < 2:
+                priority = "medium"
+                reason = "已有 1 条证据，但缺少交叉验证，建议再问一个独立场景。"
+                question_type = "follow_up"
+                sample = f"刚才关于“{competency}”的例子还有哪些量化结果或风险权衡？"
+            elif strongest < 0.65:
+                priority = "medium"
+                reason = "已有多条证据，但评分信号偏弱，需要更具体的行为和结果。"
+                question_type = "deep_dive"
+                sample = f"请把“{competency}”相关经历拆成目标、行动、指标和复盘。"
+            else:
+                priority = "low"
+                reason = "已有可用证据；除非该能力是关键门槛，否则可转向其他缺口。"
+                question_type = "optional"
+                sample = f"如果时间允许，可补一个“{competency}”失败或复盘案例。"
+            guidance.append(
+                LiveCoverageGuidance(
+                    competency=competency,
+                    evidence_count=count,
+                    strongest_confidence=strongest,
+                    priority=priority,
+                    reason=reason,
+                    suggested_question_type=question_type,
+                    sample_question=sample,
+                )
+            )
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        guidance.sort(
+            key=lambda item: (
+                priority_order.get(item.priority, 3),
+                item.evidence_count,
+                -item.strongest_confidence,
+                item.competency,
+            )
+        )
+        state.live_interview.coverage_guidance = guidance[:8]
+
+    @staticmethod
+    def _live_target_competencies(state: InterviewState) -> list[str]:
+        values = [
+            *state.job.competencies,
+            *[
+                question.competency
+                for interview_round in state.blueprint.rounds
+                for question in interview_round.questions
+            ],
+            *[
+                question.competency
+                for question in state.mock_interview.questions
+            ],
+        ]
+        return list(dict.fromkeys(item.strip() for item in values if item.strip()))
+
     @staticmethod
     def _infer_live_competency(state: InterviewState, question: str) -> str:
         for suggestion in reversed(state.live_interview.suggestions):
@@ -1405,6 +1488,7 @@ class InterviewService:
                 list(dict.fromkeys(inferred)),
             )
         self._sync_intelligence(runtime.state)
+        self._refresh_live_coverage_guidance(runtime.state)
         if runtime.state.evaluation.finalized_at:
             runtime.state.enforce_evaluation_evidence_floor()
         self._runtimes[session_id] = runtime

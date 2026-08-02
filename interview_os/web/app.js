@@ -207,7 +207,10 @@ function renderLive() {
     $('live-review').innerHTML = `<div class="review-summary"><strong>${pendingCandidateSegments.length} 条待确认</strong><span>${confirmedCount} 条已归档 · ${esc(readiness)}</span></div>${rollingHtml}${boundaryHtml}${pendingHtml || '<p class="review-more">暂无待确认候选人回答。</p>'}${confirmedHtml ? `<div class="review-subtitle">最近归档证据</div>${confirmedHtml}` : ''}`;
   }
   $('live-competencies').className = competencies.length ? 'progress-list' : 'progress-list empty-state';
-  $('live-competencies').innerHTML = competencies.length ? competencies.map(name => {const evidence=(state.session?.evidence||[]).filter(item=>item.competency===name).length;return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.min(100,evidence*34)}%"></i></div><b>${evidence}</b></div>`;}).join('') : '先完成岗位分析或面试设计。';
+  const guidance = live?.coverage_guidance || [];
+  const priorityLabels = {high:'高优先级',medium:'继续补证',low:'基本覆盖'};
+  const guidanceHtml = guidance.length ? `<div class="coverage-guidance">${guidance.map(item=>`<div class="coverage-card ${esc(item.priority)}"><small>${esc(priorityLabels[item.priority]||item.priority)} · ${esc(item.suggested_question_type)}</small><strong>${esc(item.competency)}</strong><span>${esc(item.evidence_count)} 条证据 · 最强信号 ${Math.round((item.strongest_confidence||0)*100)}%</span><p>${esc(item.reason)}</p><em>${esc(item.sample_question)}</em></div>`).join('')}</div>` : '';
+  $('live-competencies').innerHTML = competencies.length ? competencies.map(name => {const evidence=(state.session?.evidence||[]).filter(item=>item.competency===name).length;return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.min(100,evidence*34)}%"></i></div><b>${evidence}</b></div>`;}).join('') + guidanceHtml : '先完成岗位分析或面试设计。';
 }
 
 function nearestLiveQuestionSegmentId(answerSegmentId) {

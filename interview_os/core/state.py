@@ -423,6 +423,16 @@ class LiveAnswerBoundarySuggestion(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class LiveCoverageGuidance(BaseModel):
+    competency: str
+    evidence_count: int = Field(default=0, ge=0)
+    strongest_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    priority: str = "medium"
+    reason: str = ""
+    suggested_question_type: str = ""
+    sample_question: str = ""
+
+
 class LiveInterviewSession(BaseModel):
     status: LiveInterviewStatus = LiveInterviewStatus.IDLE
     consent_confirmed: bool = False
@@ -430,6 +440,7 @@ class LiveInterviewSession(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
     suggestions: list[QuestionSuggestion] = Field(default_factory=list)
     answer_boundary_suggestions: list[LiveAnswerBoundarySuggestion] = Field(default_factory=list)
+    coverage_guidance: list[LiveCoverageGuidance] = Field(default_factory=list)
     rolling_summary: str = ""
     summarized_until_sequence: int = 0
     duplicate_segments_dropped: int = 0
