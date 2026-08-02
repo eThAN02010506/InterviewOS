@@ -527,6 +527,52 @@ def test_live_evidence_can_be_revoked_and_reconfirmed(tmp_path):
     assert reconfirmed_state["live_interview_records"][0]["id"] != record_id
 
 
+def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-merge.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        question = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次架构演进。"},
+        ).json()["state"]["live_interview"]["segments"][0]
+        first = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "第一阶段我先拆分核心服务。"},
+        ).json()["state"]["live_interview"]["segments"][1]
+        second = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "第二阶段我补了监控和灰度发布。"},
+        ).json()["state"]["live_interview"]["segments"][2]
+
+        merged = client.post(
+            f"/api/live-interviews/{session_id}/evidence/merge",
+            json={
+                "segment_ids": [second["id"], first["id"]],
+                "question_segment_id": question["id"],
+                "competency": "Architecture Evolution",
+            },
+        )
+        duplicate = client.post(
+            f"/api/live-interviews/{session_id}/segments/{first['id']}/evidence",
+            json={"question_segment_id": question["id"], "competency": "Architecture Evolution"},
+        )
+
+    assert merged.status_code == 200
+    state = merged.json()["state"]
+    assert len(state["live_interview_records"]) == 1
+    assert len(state["evidence"]) == 1
+    record = state["live_interview_records"][0]
+    assert record["answer"] == "第一阶段我先拆分核心服务。\n第二阶段我补了监控和灰度发布。"
+    assert record["transcript_segment_ids"] == [question["id"], first["id"], second["id"]]
+    assert state["evidence"][0]["source_record_id"] == record["id"]
+    assert duplicate.status_code == 409
+
+
 def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-sufficient.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

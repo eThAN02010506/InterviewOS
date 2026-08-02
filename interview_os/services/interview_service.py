@@ -335,28 +335,53 @@ class InterviewService:
         question: str = "",
         competency: str = "",
     ) -> InterviewState:
+        return await self.confirm_live_answer_segments(
+            session_id,
+            [answer_segment_id],
+            question_segment_id=question_segment_id,
+            question=question,
+            competency=competency,
+        )
+
+    async def confirm_live_answer_segments(
+        self,
+        session_id: str,
+        answer_segment_ids: list[UUID],
+        *,
+        question_segment_id: UUID | None = None,
+        question: str = "",
+        competency: str = "",
+    ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             live = runtime.state.live_interview
             if not live.consent_confirmed:
                 raise LiveInterviewStateError("Live interview has not been started with consent")
-            answer_segment = next(
-                (item for item in live.segments if item.id == answer_segment_id), None
-            )
-            if answer_segment is None:
+            unique_answer_ids = list(dict.fromkeys(answer_segment_ids))
+            if not unique_answer_ids:
                 raise LiveInterviewStateError("Candidate answer segment was not found")
-            if answer_segment.speaker != TranscriptSpeaker.CANDIDATE:
+            segment_by_id = {item.id: item for item in live.segments}
+            answer_segments = [segment_by_id.get(segment_id) for segment_id in unique_answer_ids]
+            if any(item is None for item in answer_segments):
+                raise LiveInterviewStateError("Candidate answer segment was not found")
+            ordered_answer_segments = [
+                item for item in live.segments if item.id in set(unique_answer_ids)
+            ]
+            if len(ordered_answer_segments) != len(unique_answer_ids):
+                raise LiveInterviewStateError("Candidate answer segment was not found")
+            if any(item.speaker != TranscriptSpeaker.CANDIDATE for item in ordered_answer_segments):
                 raise LiveInterviewStateError("Only candidate transcript segments can become evidence")
-            if not answer_segment.stable or not answer_segment.confirmed:
+            if any(not item.stable or not item.confirmed for item in ordered_answer_segments):
                 raise LiveInterviewStateError("Transcript segment must be stable and confirmed")
             if any(
-                answer_segment_id in record.transcript_segment_ids
+                segment_id in record.transcript_segment_ids
                 for record in runtime.state.live_interview_records
+                for segment_id in unique_answer_ids
             ):
                 raise LiveInterviewStateError("This answer has already been confirmed as evidence")
 
             question_segment = self._resolve_live_question_segment(
-                live.segments, answer_segment, question_segment_id
+                live.segments, ordered_answer_segments[0], question_segment_id
             )
             clean_question = question.strip() or (question_segment.text if question_segment else "")
             if not clean_question:
@@ -366,13 +391,14 @@ class InterviewService:
                 or self._infer_live_competency(runtime.state, clean_question)
                 or "综合能力"
             )
+            answer_text = "\n".join(item.text for item in ordered_answer_segments)
             evidence_count_before = len(runtime.state.evidence)
             message = await runtime.run(
                 "coach_agent",
                 json.dumps(
                     {
                         "question": clean_question,
-                        "answer": answer_segment.text,
+                        "answer": answer_text,
                         "competency": clean_competency,
                         "evidence_source": "live_interview",
                     },
@@ -383,12 +409,12 @@ class InterviewService:
                 evaluation = AnswerEvaluation.model_validate_json(message.content)
             except (ValueError, TypeError) as exc:
                 raise EvaluationStateError("Live answer evaluation failed") from exc
-            segment_ids = [answer_segment.id]
+            segment_ids = [item.id for item in ordered_answer_segments]
             if question_segment is not None:
                 segment_ids.insert(0, question_segment.id)
             record = LiveInterviewRecord(
                 question=clean_question,
-                answer=answer_segment.text,
+                answer=answer_text,
                 competency=clean_competency,
                 evaluation=evaluation,
                 source="live_interview",
@@ -403,7 +429,10 @@ class InterviewService:
         self._record_debug(
             "live_answer_confirmed",
             session_id,
-            detail=f"competency={clean_competency}; chars={len(answer_segment.text)}",
+            detail=(
+                f"competency={clean_competency}; "
+                f"segments={len(ordered_answer_segments)}; chars={len(answer_text)}"
+            ),
         )
         return runtime.state
 

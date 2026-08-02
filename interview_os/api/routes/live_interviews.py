@@ -11,6 +11,7 @@ from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
     LiveEvidenceBatchConfirmationRequest,
     LiveEvidenceConfirmationRequest,
+    LiveEvidenceMergeConfirmationRequest,
     LiveInterviewStartRequest,
     LiveInterviewStatusRequest,
     LiveSuggestionDecisionRequest,
@@ -94,6 +95,22 @@ async def confirm_segment_evidence(
     state = await service.confirm_live_answer(
         session_id,
         segment_id,
+        question_segment_id=payload.question_segment_id,
+        question=payload.question,
+        competency=payload.competency,
+    )
+    return response(session_id, state)
+
+
+@router.post("/{session_id}/evidence/merge", response_model=WorkflowResponse)
+async def confirm_merged_evidence(
+    session_id: str,
+    payload: LiveEvidenceMergeConfirmationRequest,
+    service: Service,
+):
+    state = await service.confirm_live_answer_segments(
+        session_id,
+        payload.segment_ids,
         question_segment_id=payload.question_segment_id,
         question=payload.question,
         competency=payload.competency,
