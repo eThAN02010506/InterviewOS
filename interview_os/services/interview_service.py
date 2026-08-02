@@ -174,6 +174,44 @@ class InterviewService:
         )
         return runtime.state
 
+    async def update_live_transcript_segment(
+        self,
+        session_id: str,
+        segment_id: UUID,
+        *,
+        text: str | None = None,
+        speaker: TranscriptSpeaker | None = None,
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        clean_text = text.strip() if text is not None else None
+        if text is not None and not clean_text:
+            raise LiveInterviewStateError("Transcript text cannot be empty")
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if not live.consent_confirmed:
+                raise LiveInterviewStateError("Live interview has not been started with consent")
+            segment = next((item for item in live.segments if item.id == segment_id), None)
+            if segment is None:
+                raise LiveInterviewStateError("Transcript segment was not found")
+            if any(segment_id in record.transcript_segment_ids for record in runtime.state.live_interview_records):
+                raise LiveInterviewStateError("Confirmed evidence segments cannot be edited")
+            if clean_text is not None:
+                segment.text = clean_text
+            if speaker is not None:
+                segment.speaker = speaker
+                live.current_speaker = speaker
+            segment.stable = True
+            segment.confirmed = True
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_transcript_updated",
+            session_id,
+            detail=(
+                f"speaker={segment.speaker.value}; chars={len(segment.text)}"
+            ),
+        )
+        return runtime.state
+
     async def transcribe_live_audio(
         self,
         session_id: str,
@@ -284,6 +322,84 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
         self._record_debug(
             "live_question_decided", session_id, detail=f"status={status.value}"
+        )
+        return runtime.state
+
+    async def confirm_live_answer(
+        self,
+        session_id: str,
+        answer_segment_id: UUID,
+        *,
+        question_segment_id: UUID | None = None,
+        question: str = "",
+        competency: str = "",
+    ) -> InterviewState:
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if not live.consent_confirmed:
+                raise LiveInterviewStateError("Live interview has not been started with consent")
+            answer_segment = next(
+                (item for item in live.segments if item.id == answer_segment_id), None
+            )
+            if answer_segment is None:
+                raise LiveInterviewStateError("Candidate answer segment was not found")
+            if answer_segment.speaker != TranscriptSpeaker.CANDIDATE:
+                raise LiveInterviewStateError("Only candidate transcript segments can become evidence")
+            if not answer_segment.stable or not answer_segment.confirmed:
+                raise LiveInterviewStateError("Transcript segment must be stable and confirmed")
+            if any(
+                answer_segment_id in record.transcript_segment_ids
+                for record in runtime.state.live_interview_records
+            ):
+                raise LiveInterviewStateError("This answer has already been confirmed as evidence")
+
+            question_segment = self._resolve_live_question_segment(
+                live.segments, answer_segment, question_segment_id
+            )
+            clean_question = question.strip() or (question_segment.text if question_segment else "")
+            if not clean_question:
+                clean_question = "现场面试问题"
+            clean_competency = (
+                competency.strip()
+                or self._infer_live_competency(runtime.state, clean_question)
+                or "综合能力"
+            )
+            message = await runtime.run(
+                "coach_agent",
+                json.dumps(
+                    {
+                        "question": clean_question,
+                        "answer": answer_segment.text,
+                        "competency": clean_competency,
+                        "evidence_source": "live_interview",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            try:
+                evaluation = AnswerEvaluation.model_validate_json(message.content)
+            except (ValueError, TypeError) as exc:
+                raise EvaluationStateError("Live answer evaluation failed") from exc
+            segment_ids = [answer_segment.id]
+            if question_segment is not None:
+                segment_ids.insert(0, question_segment.id)
+            runtime.state.live_interview_records.append(
+                LiveInterviewRecord(
+                    question=clean_question,
+                    answer=answer_segment.text,
+                    competency=clean_competency,
+                    evaluation=evaluation,
+                    source="live_interview",
+                    transcript_segment_ids=segment_ids,
+                )
+            )
+            runtime.state.next_action = "Review more live evidence or generate evaluation"
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_answer_confirmed",
+            session_id,
+            detail=f"competency={clean_competency}; chars={len(answer_segment.text)}",
         )
         return runtime.state
 
@@ -729,6 +845,7 @@ class InterviewService:
                         answer=answer,
                         competency=competency,
                         evaluation=evaluation,
+                        source="live_interview",
                     )
                 )
             runtime.state.next_action = "Generate evidence-based hiring evaluation"
@@ -851,6 +968,53 @@ class InterviewService:
     def _sync_intelligence(state: InterviewState) -> None:
         sync_entity_resolutions(state)
         build_fact_cards(state)
+
+    @staticmethod
+    def _resolve_live_question_segment(
+        segments: list[TranscriptSegment],
+        answer_segment: TranscriptSegment,
+        question_segment_id: UUID | None,
+    ) -> TranscriptSegment | None:
+        if question_segment_id is not None:
+            explicit = next((item for item in segments if item.id == question_segment_id), None)
+            if explicit is None:
+                raise LiveInterviewStateError("Question segment was not found")
+            if explicit.speaker != TranscriptSpeaker.INTERVIEWER:
+                raise LiveInterviewStateError("Question segment must belong to the interviewer")
+            return explicit
+        prior_questions = [
+            item
+            for item in segments
+            if item.sequence < answer_segment.sequence
+            and item.speaker == TranscriptSpeaker.INTERVIEWER
+            and item.stable
+            and item.confirmed
+        ]
+        return prior_questions[-1] if prior_questions else None
+
+    @staticmethod
+    def _infer_live_competency(state: InterviewState, question: str) -> str:
+        for suggestion in reversed(state.live_interview.suggestions):
+            final_question = suggestion.final_question or suggestion.suggested_question
+            if final_question and (
+                final_question == question
+                or final_question[:80] in question
+                or question[:80] in final_question
+            ):
+                return suggestion.competency
+        for round_item in state.blueprint.rounds:
+            for item in round_item.questions:
+                if item.question and (
+                    item.question == question
+                    or item.question[:80] in question
+                    or question[:80] in item.question
+                ):
+                    return item.competency
+        if state.job.competencies:
+            return state.job.competencies[0]
+        if state.mock_interview.questions:
+            return state.mock_interview.questions[0].competency
+        return ""
 
     @staticmethod
     def _validate_workflow_result(name: str, state: InterviewState) -> None:

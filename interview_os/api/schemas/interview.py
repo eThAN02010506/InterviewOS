@@ -135,6 +135,17 @@ class LiveTranscriptRequest(BaseModel):
     speaker: Literal["interviewer", "candidate", "unknown"] = "unknown"
 
 
+class LiveTranscriptUpdateRequest(BaseModel):
+    text: str | None = Field(default=None, min_length=1, max_length=12000)
+    speaker: Literal["interviewer", "candidate", "unknown"] | None = None
+
+
 class LiveSuggestionDecisionRequest(BaseModel):
     status: Literal["adopted", "edited", "skipped"]
     final_question: str = Field(default="", max_length=4000)
+
+
+class LiveEvidenceConfirmationRequest(BaseModel):
+    question_segment_id: UUID | None = None
+    question: str = Field(default="", max_length=4000)
+    competency: str = Field(default="", max_length=200)

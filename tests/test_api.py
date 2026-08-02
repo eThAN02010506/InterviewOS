@@ -349,6 +349,37 @@ def test_live_audio_transcription_and_next_question_flow(tmp_path):
             f"/api/live-interviews/{session_id}/suggestions/{suggestion['id']}",
             json={"status": "adopted"},
         )
+        answered = client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={
+                "speaker": "candidate",
+                "text": "我用压测和灰度验证方案，P95 延迟下降 30%，异常时可以按灰度批次回滚。",
+            },
+        )
+        answer_segment = answered.json()["state"]["live_interview"]["segments"][-1]
+        question_segment = adopted.json()["state"]["live_interview"]["segments"][-1]
+        corrected = client.patch(
+            f"/api/live-interviews/{session_id}/segments/{answer_segment['id']}",
+            json={
+                "speaker": "candidate",
+                "text": "我用压测和灰度验证方案，P95 延迟下降 40%，异常时可以按灰度批次回滚。",
+            },
+        )
+        confirmed = client.post(
+            f"/api/live-interviews/{session_id}/segments/{answer_segment['id']}/evidence",
+            json={
+                "question_segment_id": question_segment["id"],
+                "competency": "System Design",
+            },
+        )
+        duplicate = client.post(
+            f"/api/live-interviews/{session_id}/segments/{answer_segment['id']}/evidence",
+            json={"competency": "System Design"},
+        )
+        edit_confirmed = client.patch(
+            f"/api/live-interviews/{session_id}/segments/{answer_segment['id']}",
+            json={"text": "确认后不应该直接改写"},
+        )
 
     assert denied.status_code == 409
     assert started.status_code == 200
@@ -361,3 +392,18 @@ def test_live_audio_transcription_and_next_question_flow(tmp_path):
     final_live = adopted.json()["state"]["live_interview"]
     assert final_live["suggestions"][0]["status"] == "adopted"
     assert final_live["segments"][-1]["speaker"] == "interviewer"
+    assert corrected.status_code == 200
+    corrected_segment = corrected.json()["state"]["live_interview"]["segments"][-1]
+    assert "40%" in corrected_segment["text"]
+    assert confirmed.status_code == 200
+    confirmed_state = confirmed.json()["state"]
+    assert confirmed_state["live_interview_records"][0]["source"] == "live_interview"
+    assert "40%" in confirmed_state["live_interview_records"][0]["answer"]
+    assert confirmed_state["live_interview_records"][0]["transcript_segment_ids"] == [
+        question_segment["id"],
+        answer_segment["id"],
+    ]
+    assert confirmed_state["evidence"][0]["source"] == "live_interview"
+    assert confirmed_state["evidence"][0]["competency"] == "System Design"
+    assert duplicate.status_code == 409
+    assert edit_confirmed.status_code == 409

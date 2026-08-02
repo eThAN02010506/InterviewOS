@@ -339,6 +339,7 @@ class LiveInterviewRecord(BaseModel):
     competency: str
     evaluation: AnswerEvaluation
     source: str = "interview_transcript"
+    transcript_segment_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

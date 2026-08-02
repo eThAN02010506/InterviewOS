@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
+    LiveEvidenceConfirmationRequest,
     LiveInterviewStartRequest,
     LiveInterviewStatusRequest,
     LiveSuggestionDecisionRequest,
     LiveTranscriptRequest,
+    LiveTranscriptUpdateRequest,
     WorkflowResponse,
 )
 from interview_os.core.state import (
@@ -61,6 +63,39 @@ async def append_segment(session_id: str, payload: LiveTranscriptRequest, servic
         session_id,
         text=payload.text,
         speaker=TranscriptSpeaker(payload.speaker),
+    )
+    return response(session_id, state)
+
+
+@router.patch("/{session_id}/segments/{segment_id}", response_model=WorkflowResponse)
+async def update_segment(
+    session_id: str,
+    segment_id: UUID,
+    payload: LiveTranscriptUpdateRequest,
+    service: Service,
+):
+    state = await service.update_live_transcript_segment(
+        session_id,
+        segment_id,
+        text=payload.text,
+        speaker=TranscriptSpeaker(payload.speaker) if payload.speaker is not None else None,
+    )
+    return response(session_id, state)
+
+
+@router.post("/{session_id}/segments/{segment_id}/evidence", response_model=WorkflowResponse)
+async def confirm_segment_evidence(
+    session_id: str,
+    segment_id: UUID,
+    payload: LiveEvidenceConfirmationRequest,
+    service: Service,
+):
+    state = await service.confirm_live_answer(
+        session_id,
+        segment_id,
+        question_segment_id=payload.question_segment_id,
+        question=payload.question,
+        competency=payload.competency,
     )
     return response(session_id, state)
 
