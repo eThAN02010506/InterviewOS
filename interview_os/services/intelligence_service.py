@@ -122,16 +122,23 @@ def build_fact_cards(state: InterviewState) -> None:
             key = (category, normalized_claim)
             if not claim:
                 continue
-            quality = str(source.get("source_quality", "unrated"))
-            verified = bool(source.get("is_official")) or quality in {"official", "high"}
+            quality = _source_quality(source)
+            verified = quality in {"official", "high"}
             existing = indexed.get(key)
             if existing:
+                existing.source_count += 1
                 if url and url not in existing.source_urls:
                     existing.source_urls.append(url)
+                existing.source_quality = _merge_source_quality(
+                    existing.source_quality, quality
+                )
                 if verified:
                     existing.status = FactStatus.VERIFIED
                 existing.confidence = min(0.95, existing.confidence + 0.08)
-                existing.note = f"{len(existing.source_urls)} 个公开来源交叉支持"
+                existing.note = (
+                    f"{existing.source_count} 个公开来源交叉支持，"
+                    f"最高来源质量：{_source_quality_label(existing.source_quality)}"
+                )
                 continue
             card = FactCard(
                 category=_category_for(category, claim),
@@ -140,7 +147,13 @@ def build_fact_cards(state: InterviewState) -> None:
                 status=FactStatus.VERIFIED if verified else FactStatus.INFERRED,
                 confidence=0.9 if verified else 0.65,
                 source_urls=[url] if url else [],
-                note="来自公开来源摘要，建议打开原文复核" if not verified else "高可信来源",
+                source_quality=quality,
+                source_count=1,
+                note=(
+                    "来自公开来源摘要，建议打开原文复核"
+                    if not verified
+                    else f"{_source_quality_label(quality)}来源"
+                ),
             )
             indexed[key] = card
             cards.append(card)
@@ -231,6 +244,33 @@ def _clean_public_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _source_quality(source: dict[str, Any]) -> str:
+    if bool(source.get("is_official")):
+        return "official"
+    quality = str(source.get("source_quality") or "unrated").strip().lower()
+    return quality if quality in {"official", "high", "secondary", "unrated"} else "unrated"
+
+
+def _merge_source_quality(current: str, incoming: str) -> str:
+    order = {"official": 4, "high": 3, "secondary": 2, "unrated": 1}
+    normalized_current = current if current in order else "unrated"
+    normalized_incoming = incoming if incoming in order else "unrated"
+    if normalized_current == normalized_incoming:
+        return normalized_current
+    if "official" in {normalized_current, normalized_incoming}:
+        return "official"
+    return max((normalized_current, normalized_incoming), key=lambda item: order[item])
+
+
+def _source_quality_label(quality: str) -> str:
+    return {
+        "official": "官方",
+        "high": "高可信",
+        "secondary": "二级",
+        "unrated": "未评级",
+    }.get(quality, "未评级")
+
+
 def _category_for(default: str, claim: str) -> str:
     if re.search(r"技术|芯片|光谱|AI|人工智能|engineering|technology", claim, re.IGNORECASE):
         return "technology"
@@ -266,5 +306,7 @@ def _position_conflict(state: InterviewState) -> FactCard | None:
         status=FactStatus.CONFLICT,
         confidence=0.85,
         source_urls=list(dict.fromkeys(urls))[:5],
+        source_quality="secondary",
+        source_count=len(state.interviewer.public_expressions),
         note="职位信息存在冲突，不能自动覆盖，请人工确认。",
     )

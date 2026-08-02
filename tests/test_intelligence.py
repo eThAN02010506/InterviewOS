@@ -81,6 +81,35 @@ def test_fact_cards_preserve_source_and_status():
     build_fact_cards(state)
     assert state.fact_cards[0].status.value == "verified"
     assert state.fact_cards[0].source_urls == ["https://example.com/about"]
+    assert state.fact_cards[0].source_quality == "official"
+    assert state.fact_cards[0].source_count == 1
+    assert state.fact_cards[0].generated_at is not None
+
+
+def test_fact_cards_merge_duplicate_sources_with_quality_metadata():
+    state = InterviewState()
+    state.company.name = "Example"
+    claim = "Example announced an AI platform direction for enterprise hiring."
+    state.company.public_sources = [
+        {
+            "url": "https://media.example.com/story",
+            "snippet": claim,
+            "source_quality": "secondary",
+        },
+        {
+            "url": "https://example.com/news",
+            "snippet": claim,
+            "source_quality": "official",
+            "is_official": True,
+        },
+    ]
+    build_fact_cards(state)
+    card = state.fact_cards[0]
+    assert card.status.value == "verified"
+    assert card.source_quality == "official"
+    assert card.source_count == 2
+    assert card.source_urls == ["https://media.example.com/story", "https://example.com/news"]
+    assert "2 个公开来源交叉支持" in card.note
 
 
 def test_fact_card_decision_flow_marks_accept_reject_and_reset():

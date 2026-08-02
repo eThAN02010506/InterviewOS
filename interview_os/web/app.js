@@ -15,6 +15,11 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const optional = id => $(id).value.trim() || null;
 const safeUrl = value => { try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) ? url.href : '#'; } catch { return '#'; } };
+const formatDateTime = value => {
+  if (!value) return '未知时间';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString();
+};
 
 async function api(path, options = {}) {
   const headers = options.body instanceof FormData ? {...(options.headers || {})} : {'Content-Type':'application/json', ...(options.headers || {})};
@@ -242,10 +247,11 @@ function renderFacts(){
   if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
   const labels={verified:'已验证',inferred:'推测',conflict:'冲突',accepted:'已确认',rejected:'已排除'};
   const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点'};
+  const qualityLabels={official:'官方来源',high:'高可信来源',secondary:'二级来源',unrated:'未评级来源'};
   const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'||card.status==='rejected'?card.status:card.category;(acc[key] ||= []).push(card);return acc;},{});
   const order=['conflict','company','interviewer','technology','public_opinion','rejected'];
   const groups=[...order.filter(key=>grouped[key]),...Object.keys(grouped).filter(key=>!order.includes(key))];
-  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':key==='rejected'?'已排除信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${(card.source_urls||[]).length} 个来源</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}<div class="claim-actions fact-actions"><button type="button" data-fact-action="accept" data-fact-id="${esc(card.id)}">确认使用</button><button type="button" data-fact-action="reject" data-fact-id="${esc(card.id)}">排除</button><button type="button" data-fact-action="reset" data-fact-id="${esc(card.id)}">恢复待审</button></div></article>`).join('')}</section>`).join('');
+  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':key==='rejected'?'已排除信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${card.source_count||((card.source_urls||[]).length)} 个来源 · ${esc(qualityLabels[card.source_quality]||card.source_quality||'未评级来源')} · 生成 ${esc(formatDateTime(card.generated_at))}</small>${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}<div class="claim-actions fact-actions"><button type="button" data-fact-action="accept" data-fact-id="${esc(card.id)}">确认使用</button><button type="button" data-fact-action="reject" data-fact-id="${esc(card.id)}">排除</button><button type="button" data-fact-action="reset" data-fact-id="${esc(card.id)}">恢复待审</button></div></article>`).join('')}</section>`).join('');
 }
 
 function maybePromptEntityResolution(){

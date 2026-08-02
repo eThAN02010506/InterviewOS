@@ -181,7 +181,10 @@ class FactCard(BaseModel):
     status: FactStatus
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source_urls: list[str] = Field(default_factory=list)
+    source_quality: str = "unrated"
+    source_count: int = 0
     note: str = ""
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: datetime | None = None
 
 
