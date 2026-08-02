@@ -23,6 +23,9 @@ async def resolve_entity(
     service: Service,
 ):
     state = await service.resolve_entity_candidate(
-        session_id, resolution_id, accept=payload.accept
+        session_id,
+        resolution_id,
+        accept=payload.accept,
+        proposed_name=payload.proposed_name,
     )
     return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))

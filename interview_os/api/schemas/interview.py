@@ -98,6 +98,7 @@ class ResumeClaimUpdateRequest(BaseModel):
 
 class EntityResolutionRequest(BaseModel):
     accept: bool
+    proposed_name: str = Field(default="", max_length=200)
 
 
 class TranscriptEntryRequest(BaseModel):

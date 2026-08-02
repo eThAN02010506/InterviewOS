@@ -44,6 +44,28 @@ def test_entity_resolution_requires_acceptance_before_renaming():
     assert state.company.name == "芯视界"
 
 
+def test_entity_resolution_accepts_user_corrected_name():
+    state = InterviewState()
+    state.company.name = "芯世界"
+    state.company.public_sources = [
+        {
+            "identity_match": "corroborated_alias",
+            "input_identity": "芯世界",
+            "matched_identity": "芯视界",
+            "url": "https://example.com/company",
+            "snippet": "芯视界公开资料",
+        }
+    ]
+    sync_entity_resolutions(state)
+    resolution = state.entity_resolutions[0]
+
+    resolve_entity(state, resolution.id, accept=True, proposed_name="芯视界科技")
+
+    assert state.company.name == "芯视界科技"
+    assert resolution.proposed_name == "芯视界科技"
+    assert resolution.status.value == "accepted"
+
+
 def test_fact_cards_preserve_source_and_status():
     state = InterviewState()
     state.company.name = "Example"

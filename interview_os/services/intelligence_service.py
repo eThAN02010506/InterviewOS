@@ -150,10 +150,15 @@ def build_fact_cards(state: InterviewState) -> None:
     state.fact_cards = cards[:30]
 
 
-def resolve_entity(state: InterviewState, resolution_id, *, accept: bool) -> EntityResolution:
+def resolve_entity(
+    state: InterviewState, resolution_id, *, accept: bool, proposed_name: str = ""
+) -> EntityResolution:
     resolution = next((item for item in state.entity_resolutions if item.id == resolution_id), None)
     if resolution is None:
         raise LookupError("Entity resolution not found")
+    clean_name = proposed_name.strip()
+    if accept and clean_name:
+        resolution.proposed_name = clean_name
     resolution.status = ResolutionStatus.ACCEPTED if accept else ResolutionStatus.REJECTED
     resolution.resolved_at = datetime.now(timezone.utc)
     if accept and resolution.entity_type == "company":

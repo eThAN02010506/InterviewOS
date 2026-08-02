@@ -226,6 +226,7 @@ function maybePromptEntityResolution(){
   const dialog=$('entity-dialog'); if(dialog.open)return;
   const item=(state.session?.entity_resolutions||[]).find(x=>x.status==='pending'); if(!item)return;
   dialog.dataset.resolutionId=item.id;$('entity-copy').textContent=`搜索结果显示“${item.proposed_name}”可能是“${item.input_name}”的正确实体。是否将“${item.input_name}”更正为“${item.proposed_name}”？`;
+  $('entity-name').value=item.proposed_name||item.input_name||'';
   dialog.showModal();
 }
 
@@ -328,7 +329,7 @@ document.addEventListener('click', async event => {
 $('cancel-claim').onclick=()=>$('claim-dialog').close();
 $('save-claim').onclick=async()=>{const dialog=$('claim-dialog');try{const data=await api(`/api/resumes/${state.sessionId}/claims/${dialog.dataset.claimId}`,{method:'PATCH',body:JSON.stringify({status:'modified',statement:$('claim-statement').value,note:$('claim-note').value})});state.session=data.state;dialog.close();renderState();toast('修改后的事实已确认，后续 Agent 将使用新表述');}catch(error){toast(error.message,true)}};
 
-async function resolveEntity(accept){const dialog=$('entity-dialog');try{const data=await api(`/api/intelligence/${state.sessionId}/entities/${dialog.dataset.resolutionId}`,{method:'PATCH',body:JSON.stringify({accept})});state.session=data.state;dialog.close();hydrateSessionForms();renderState();toast(accept?'实体名称已更正':'已保留原名称');}catch(error){toast(error.message,true)}}
+async function resolveEntity(accept){const dialog=$('entity-dialog');const proposedName=accept?$('entity-name').value.trim():'';if(accept&&!proposedName){toast('请填写确认后的实体名称',true);return;}try{const data=await api(`/api/intelligence/${state.sessionId}/entities/${dialog.dataset.resolutionId}`,{method:'PATCH',body:JSON.stringify({accept,proposed_name:proposedName})});state.session=data.state;dialog.close();hydrateSessionForms();renderState();toast(accept?'实体名称已确认':'已保留原名称');}catch(error){toast(error.message,true)}}
 $('accept-entity').onclick=()=>resolveEntity(true);$('reject-entity').onclick=()=>resolveEntity(false);
 
 $('candidate-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;if(!await ensureSession())return;busy(form,true);showWorkflowStarting();try{const payload={role:'candidate',resume_text:$('candidate-resume').value,job_description:$('candidate-jd').value,company_name:$('candidate-company').value,company_context:$('candidate-company-context').value,interviewer_name:$('interviewer-name').value,interviewer_position:$('interviewer-position').value,authorized_public_research:$('candidate-research-consent').checked};const endpoint=$('candidate-autopilot').checked?`/api/autopilot/${state.sessionId}/run`:'/api/workflows/candidate-prep';if(!$('candidate-autopilot').checked)payload.session_id=state.sessionId;const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});state.session=data.state;await loadSessions();toast(state.session.autopilot?.enabled?'AI 已推进到需要你回答的阶段':'候选人策略已生成');}catch(error){await loadSession();toast(`运行失败：${error.message}`,true)}finally{busy(form,false)}};

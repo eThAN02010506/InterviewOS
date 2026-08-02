@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="InterviewOS 本地面试智能工作台">
   <title>InterviewOS · 面试智能工作台</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.3.2">
+  <link rel="stylesheet" href="/static/styles.css?v=0.3.3">
 </head>
 <body>
   <div class="app-shell">
@@ -180,9 +180,9 @@
   </div>
 
   <dialog id="session-dialog"><form method="dialog" id="session-form"><div class="section-head"><h2>创建新会话</h2><button class="icon-btn" id="close-session-dialog" type="button" aria-label="关闭">×</button></div><label>候选人姓名<input id="new-candidate"></label><label>目标岗位<input id="new-job"></label><label>公司名称<input id="new-company"></label><button class="btn primary" value="default">创建会话</button></form></dialog>
-  <dialog id="entity-dialog"><form method="dialog"><p class="eyebrow">ENTITY CONFIRMATION</p><h2>确认实体名称</h2><p id="entity-copy"></p><div class="dialog-actions"><button class="btn" id="reject-entity" type="button">保留原名称</button><button class="btn primary" id="accept-entity" type="button">确认更正</button></div></form></dialog>
+  <dialog id="entity-dialog"><form method="dialog"><p class="eyebrow">ENTITY CONFIRMATION</p><h2>确认实体名称</h2><p id="entity-copy"></p><label>确认后的名称<input id="entity-name" maxlength="200"></label><div class="dialog-actions"><button class="btn" id="reject-entity" type="button">保留原名称</button><button class="btn primary" id="accept-entity" type="button">确认使用此名称</button></div></form></dialog>
   <dialog id="claim-dialog"><form method="dialog"><p class="eyebrow">EDIT RESUME FACT</p><h2>修改简历事实</h2><label>确认后的表述<textarea id="claim-statement" rows="5"></textarea></label><label>修改说明<input id="claim-note" placeholder="例如：原简历年份有误"></label><div class="dialog-actions"><button class="btn" id="cancel-claim" type="button">取消</button><button class="btn primary" id="save-claim" type="button">保存并确认</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=0.3.2" defer></script>
+  <script src="/static/app.js?v=0.3.3" defer></script>
 </body>
 </html>

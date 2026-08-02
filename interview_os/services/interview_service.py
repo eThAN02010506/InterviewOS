@@ -978,13 +978,21 @@ class InterviewService:
             return runtime.state
 
     async def resolve_entity_candidate(
-        self, session_id: str, resolution_id: UUID, *, accept: bool
+        self,
+        session_id: str,
+        resolution_id: UUID,
+        *,
+        accept: bool,
+        proposed_name: str = "",
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             try:
                 resolution: EntityResolution = resolve_entity(
-                    runtime.state, resolution_id, accept=accept
+                    runtime.state,
+                    resolution_id,
+                    accept=accept,
+                    proposed_name=proposed_name,
                 )
             except LookupError as exc:
                 raise ResumeReviewStateError(str(exc)) from exc
