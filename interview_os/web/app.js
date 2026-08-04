@@ -153,6 +153,8 @@ function renderState() {
   renderStrategy(); renderBlueprint(); renderSources(); renderMock(); renderReports(); renderLive();
 }
 
+function renderAll() { renderState(); }
+
 function renderLive() {
   const live = state.session?.live_interview;
   if (!$('live-transcript')) return;
@@ -210,7 +212,8 @@ function renderLive() {
     const rollingHtml = live?.rolling_summary || live?.duplicate_segments_dropped ? `<div class="review-subtitle">长面试上下文</div><div class="review-claim summary"><div><small>摘要至 #${esc(live.summarized_until_sequence||0)} · 去重 ${esc(live.duplicate_segments_dropped||0)} 段</small><span>${esc(live.last_duplicate_reason || (live.rolling_summary ? live.rolling_summary.slice(-180) : '最近 12 段以内暂不需要滚动摘要'))}</span></div></div>` : '';
     const boundaryHtml = boundarySuggestions.length ? `<div class="review-subtitle">自动边界建议</div>${boundarySuggestions.map((item,index)=>`<div class="review-claim boundary"><div><small>${Math.round((item.confidence||0)*100)}% · ${esc(item.suggested_competency)}</small><span>${esc(item.reason)}（${(item.answer_segment_ids||[]).length} 段）</span><div class="boundary-factors">${(item.confidence_factors||[]).map(factor=>`<em>${esc(factor)}</em>`).join('')}</div></div><div class="claim-actions"><button type="button" data-live-boundary-index="${index}">按建议合并确认</button></div></div>`).join('')}` : '';
     const pendingHtml = pendingCandidateSegments.map(segment => `<div class="review-claim"><div><small>候选人回答 #${esc(segment.sequence)}</small><span>${esc(segment.text.slice(0, 180))}${segment.text.length > 180 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-edit="${esc(segment.id)}">修改</button><button type="button" data-live-confirm="${esc(segment.id)}">确认证据</button></div></div>`).join('');
-    const confirmedHtml = confirmedRecords.slice(-5).reverse().map(record => `<div class="review-claim confirmed"><div><small>已归档 · ${esc(record.competency)}</small><span>${esc(record.answer.slice(0, 160))}${record.answer.length > 160 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-reevaluate="${esc(record.id)}">重评</button><button type="button" data-live-revoke="${esc(record.id)}">撤销</button></div></div>`).join('');
+    const scoringLabel = record => record.scoring_status === 'scored' ? '已评分' : record.scoring_status === 'failed' ? `评分失败${record.scoring_error ? '：' + record.scoring_error : ''}` : '评分中…';
+    const confirmedHtml = confirmedRecords.slice(-5).reverse().map(record => `<div class="review-claim confirmed"><div><small>已归档 · ${esc(record.competency)} · ${esc(scoringLabel(record))}</small><span>${esc(record.answer.slice(0, 160))}${record.answer.length > 160 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-reevaluate="${esc(record.id)}">重评</button><button type="button" data-live-revoke="${esc(record.id)}">撤销</button></div></div>`).join('');
     $('live-review').innerHTML = `<div class="review-summary"><strong>${pendingCandidateSegments.length} 条待确认</strong><span>${confirmedCount} 条已归档 · ${esc(readiness)}</span></div>${rollingHtml}${boundaryHtml}${pendingHtml || '<p class="review-more">暂无待确认候选人回答。</p>'}${confirmedHtml ? `<div class="review-subtitle">最近归档证据</div>${confirmedHtml}` : ''}`;
   }
   $('live-competencies').className = competencies.length ? 'progress-list' : 'progress-list empty-state';
@@ -542,7 +545,20 @@ async function refreshDebug(){try{const [status,events,sessions]=await Promise.a
 function renderEvents(events){$('event-list').innerHTML=events.map(e=>`<div class="event-row"><span>${new Date(e.timestamp).toLocaleTimeString()}</span><span class="${esc(e.level)}">${esc(e.level)}</span><span>${esc(e.agent||e.category)} · ${esc(e.action)}${e.detail?` · ${esc(e.detail)}`:''}</span><span>${e.duration_ms?`${e.duration_ms} ms`:'—'}</span></div>`).join('')||'<div class="empty-state">暂无运行事件</div>';}
 $('refresh-events').onclick=refreshDebug;$('probe-llm').onclick=async()=>{try{const d=await api('/api/debug/probes/llm',{method:'POST'});toast(`模型连接正常 · ${d.latency_ms||0} ms`);await refreshDebug();}catch(error){toast(error.message,true)}};
 
+async function refreshLive() {
+  if (!state.sessionId || !state.session?.live_interview) return;
+  if (refreshLive.busy) return;
+  refreshLive.busy = true;
+  try {
+    const data = await api(`/api/live-interviews/${state.sessionId}`);
+    state.session = data.state;
+    renderLive();
+  } catch { /* transient poll failure is fine; next tick retries */ }
+  finally { refreshLive.busy = false; }
+}
+
 setInterval(()=>{if(state.view==='debug')refreshDebug()},4000);
+setInterval(()=>{if(state.view==='live')refreshLive()},3000);
 const requestedView = (location.hash || '').slice(1);
 if (navigation.interviewer.some(([view]) => view === requestedView)) state.role = 'interviewer';
 if (navigation.candidate.some(([view]) => view === requestedView)) state.role = 'candidate';

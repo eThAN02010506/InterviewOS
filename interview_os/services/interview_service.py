@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from time import perf_counter
@@ -11,10 +12,26 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
+from interview_os.core.evidence import Evidence, EvidenceSource
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
+    ACTION_CARD_SOURCE_REFS_MAX,
+    ANSWER_BOUNDARY_SUGGESTIONS_MAX,
+    BOUNDARY_BASE_SCORE,
+    BOUNDARY_MAX_SCORE,
+    BOUNDARY_MERGE_THRESHOLD,
+    BOUNDARY_MIN_SCORE,
+    COVERAGE_GUIDANCE_MAX_ITEMS,
+    CROSS_VALIDATION_EVIDENCE_COUNT,
+    LIVE_RECENT_SEGMENT_WINDOW,
+    LIVE_SUMMARY_CHAR_LIMIT,
+    MIN_ANSWER_BOUNDARY_SEGMENTS,
+    MIN_COMPETENCY_COVERAGE,
+    MIN_EVIDENCE_COUNT,
+    QUESTION_USAGE_MAX_ITEMS,
+    WEAK_SIGNAL_THRESHOLD,
     AnswerEvaluation,
     AutopilotState,
     AutopilotStatus,
@@ -52,6 +69,7 @@ from interview_os.core.state import (
     WorkflowStatus,
 )
 from interview_os.database.storage import Storage
+from interview_os.services.background import BackgroundTaskManager
 from interview_os.services.intelligence_service import (
     build_fact_cards,
     decide_fact_card,
@@ -62,6 +80,8 @@ from interview_os.services.intelligence_service import (
 from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.asr import ASRClient, ASRError
 from interview_os.tools.web_search import SearchProvider
+
+logger = logging.getLogger(__name__)
 
 
 class SessionNotFoundError(LookupError):
@@ -98,12 +118,14 @@ class InterviewService:
         search_provider: SearchProvider | None = None,
         debug_events: DebugEventStore | None = None,
         asr_client: ASRClient | None = None,
+        background: BackgroundTaskManager | None = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
         self.search_provider = search_provider
         self.debug_events = debug_events
         self.asr_client = asr_client
+        self._background = background or BackgroundTaskManager(debug_events=debug_events)
         self._runtimes: dict[str, AgentRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self.resume_processor = ResumeProcessor()
@@ -455,15 +477,26 @@ class InterviewService:
                 ),
                 source="live_interview",
                 transcript_segment_ids=segment_ids,
+                scoring_status="scoring",
             )
-            evaluation = await self._score_live_record(runtime, record)
-            record.evaluation = evaluation
+            placeholder = Evidence(
+                competency=clean_competency,
+                signal=answer_text[:200],
+                confidence=0.0,
+                source=EvidenceSource.LIVE_INTERVIEW,
+                source_record_id=record.id,
+                notes="评分中：确认后由后台评分回填置信度",
+            )
             runtime.state.live_interview_records.append(record)
+            runtime.state.evidence.append(placeholder)
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
             self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
+            self._background.schedule(
+                self._score_live_record_task(session_id, record.id)
+            )
         self._record_debug(
             "live_answer_confirmed",
             session_id,
@@ -472,6 +505,8 @@ class InterviewService:
                 f"segments={len(ordered_answer_segments)}; chars={len(answer_text)}"
             ),
         )
+        if runtime.state.live_interview.status == LiveInterviewStatus.ACTIVE:
+            await self._maybe_plan_live_next_question(session_id)
         return runtime.state
 
     async def reevaluate_live_evidence(
@@ -496,10 +531,11 @@ class InterviewService:
                 record.question = question.strip()
             if competency.strip():
                 record.competency = competency.strip()
-            runtime.state.evidence = [
-                item for item in runtime.state.evidence if item.source_record_id != record_id
-            ]
-            record.evaluation = await self._score_live_record(runtime, record)
+            evaluation = await self._score_live_record(runtime, record)
+            self._apply_live_scoring_result(runtime.state, record, evaluation)
+            record.evaluation = evaluation
+            record.scoring_status = "scored"
+            record.scoring_error = ""
             self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review updated live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
@@ -542,7 +578,6 @@ class InterviewService:
     async def _score_live_record(
         self, runtime: AgentRuntime, record: LiveInterviewRecord
     ) -> AnswerEvaluation:
-        evidence_count_before = len(runtime.state.evidence)
         message = await runtime.run(
             "coach_agent",
             json.dumps(
@@ -551,6 +586,7 @@ class InterviewService:
                     "answer": record.answer,
                     "competency": record.competency,
                     "evidence_source": "live_interview",
+                    "record_id": str(record.id),
                 },
                 ensure_ascii=False,
             ),
@@ -559,10 +595,147 @@ class InterviewService:
             evaluation = AnswerEvaluation.model_validate_json(message.content)
         except (ValueError, TypeError) as exc:
             raise EvaluationStateError("Live answer evaluation failed") from exc
-        for evidence in runtime.state.evidence[evidence_count_before:]:
-            if evidence.source.value == "live_interview":
-                evidence.source_record_id = record.id
         return evaluation
+
+    @staticmethod
+    def _apply_live_scoring_result(
+        state: InterviewState,
+        record: LiveInterviewRecord,
+        evaluation: AnswerEvaluation,
+    ) -> None:
+        """Backfill the confirmed placeholder evidence from a scoring result.
+
+        The placeholder is created at confirmation time so coverage guidance and
+        the action card are accurate immediately. The coach backfills it in place
+        (matching by record id); this runs as a second safety net and covers the
+        reevaluate path where competency may have changed.
+        """
+        placeholder = next(
+            (
+                item
+                for item in state.evidence
+                if item.source == EvidenceSource.LIVE_INTERVIEW
+                and item.source_record_id == record.id
+            ),
+            None,
+        )
+        if placeholder is not None:
+            placeholder.competency = record.competency
+            placeholder.signal = "; ".join(evaluation.observed_signals) or record.answer[:200]
+            placeholder.confidence = evaluation.overall_score()
+            placeholder.notes = "; ".join(evaluation.missing_signals)
+            return
+        state.evidence.append(
+            Evidence(
+                competency=record.competency,
+                signal="; ".join(evaluation.observed_signals) or record.answer[:200],
+                confidence=evaluation.overall_score(),
+                source=EvidenceSource.LIVE_INTERVIEW,
+                source_record_id=record.id,
+                notes="; ".join(evaluation.missing_signals),
+            )
+        )
+
+    async def _score_live_record_task(self, session_id: str, record_id: UUID) -> None:
+        """Background coroutine: score a confirmed live answer and write it back."""
+        runtime = self._runtimes.get(session_id)
+        if runtime is None:
+            logger.warning(
+                "Dropping background live scoring for %s: runtime not cached", session_id
+            )
+            return
+        record = next(
+            (
+                item
+                for item in runtime.state.live_interview_records
+                if item.id == record_id
+            ),
+            None,
+        )
+        if record is None:
+            return
+        try:
+            evaluation = await self._score_live_record(runtime, record)
+        except Exception as exc:  # noqa: BLE001 - background boundary, record failure
+            logger.error("Live scoring failed for %s: %s", record_id, exc)
+            async with self._lock_for(session_id):
+                current = next(
+                    (
+                        item
+                        for item in runtime.state.live_interview_records
+                        if item.id == record_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    return
+                current.scoring_status = "failed"
+                current.scoring_error = str(exc)[:500]
+                await self._persist(session_id, runtime.state)
+            return
+        async with self._lock_for(session_id):
+            current = next(
+                (
+                    item
+                    for item in runtime.state.live_interview_records
+                    if item.id == record_id
+                ),
+                None,
+            )
+            if current is None:
+                # The record was revoked while scoring ran; drop this task's
+                # placeholder so no orphaned evidence survives.
+                runtime.state.evidence = [
+                    item
+                    for item in runtime.state.evidence
+                    if not (
+                        item.source == EvidenceSource.LIVE_INTERVIEW
+                        and item.source_record_id == record_id
+                    )
+                ]
+                await self._persist(session_id, runtime.state)
+                return
+            self._apply_live_scoring_result(runtime.state, current, evaluation)
+            current.evaluation = evaluation
+            current.scoring_status = "scored"
+            current.scoring_error = ""
+            self._refresh_live_coverage_guidance(runtime.state)
+            await self._persist(session_id, runtime.state)
+
+    async def _maybe_plan_live_next_question(self, session_id: str) -> None:
+        """Auto-trigger next-question planning after evidence is confirmed.
+
+        Fires only when the live session is active, no suggestion is still
+        pending (so repeated confirms do not stack LLM calls), and there is
+        something to plan against: pending candidate segments or live evidence.
+        """
+        runtime = await self._get_runtime(session_id)
+        live = runtime.state.live_interview
+        if live.status != LiveInterviewStatus.ACTIVE:
+            return
+        if any(
+            item.status == QuestionSuggestionStatus.PENDING for item in live.suggestions
+        ):
+            return
+        live_evidence = [
+            item for item in runtime.state.live_interview_records
+            if item.source == "live_interview"
+        ]
+        recorded_segment_ids = {
+            segment_id
+            for record in live_evidence
+            for segment_id in record.transcript_segment_ids
+        }
+        has_pending_candidate = any(
+            item.speaker == TranscriptSpeaker.CANDIDATE
+            and item.stable
+            and item.confirmed
+            and item.id not in recorded_segment_ids
+            for item in live.segments
+        )
+        if not has_pending_candidate and not live_evidence:
+            return
+        await self.plan_live_next_question(session_id)
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""
@@ -1270,7 +1443,7 @@ class InterviewService:
         candidate_run: list[TranscriptSegment] = []
 
         def flush_run() -> None:
-            if len(candidate_run) < 2:
+            if len(candidate_run) < MIN_ANSWER_BOUNDARY_SEGMENTS:
                 return
             question_text = current_question.text if current_question else ""
             confidence, factors = self._score_live_boundary(candidate_run, current_question)
@@ -1310,14 +1483,14 @@ class InterviewService:
             flush_run()
             candidate_run = []
         flush_run()
-        live.answer_boundary_suggestions = suggestions[-5:]
+        live.answer_boundary_suggestions = suggestions[-ANSWER_BOUNDARY_SUGGESTIONS_MAX:]
 
     def _score_live_boundary(
         self,
         candidate_run: list[TranscriptSegment],
         current_question: TranscriptSegment | None,
     ) -> tuple[float, list[str]]:
-        score = 0.45
+        score = BOUNDARY_BASE_SCORE
         factors: list[str] = []
         if current_question is not None:
             score += 0.12
@@ -1344,18 +1517,18 @@ class InterviewService:
             factors.append("末段出现回答结束信号")
         if any(item.source == "asr" for item in candidate_run):
             factors.append("包含 ASR 分段，建议复核文本后再合并")
-        return max(0.2, min(0.92, round(score, 2))), factors[:8]
+        return max(BOUNDARY_MIN_SCORE, min(BOUNDARY_MAX_SCORE, round(score, 2))), factors[:8]
 
     def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
         live = state.live_interview
         stable_segments = [
             item for item in live.segments if item.stable and item.confirmed
         ]
-        if len(stable_segments) <= 12:
+        if len(stable_segments) <= LIVE_RECENT_SEGMENT_WINDOW:
             live.rolling_summary = ""
             live.summarized_until_sequence = 0
             return
-        cutoff = stable_segments[-12].sequence - 1
+        cutoff = stable_segments[-LIVE_RECENT_SEGMENT_WINDOW].sequence - 1
         summarized = [item for item in stable_segments if item.sequence <= cutoff]
         speaker_labels = {
             TranscriptSpeaker.INTERVIEWER: "面试官",
@@ -1367,8 +1540,8 @@ class InterviewService:
             for item in summarized
         ]
         summary = "\n".join(lines)
-        if len(summary) > 2800:
-            summary = "…\n" + summary[-2800:]
+        if len(summary) > LIVE_SUMMARY_CHAR_LIMIT:
+            summary = "…\n" + summary[-LIVE_SUMMARY_CHAR_LIMIT:]
         live.rolling_summary = summary
         live.summarized_until_sequence = cutoff
 
@@ -1381,7 +1554,7 @@ class InterviewService:
         normalized = self._normalize_live_segment_text(text)
         if len(normalized) < 8:
             return None
-        for segment in reversed(segments[-12:]):
+        for segment in reversed(segments[-LIVE_RECENT_SEGMENT_WINDOW:]):
             if segment.speaker != speaker or not segment.stable or not segment.confirmed:
                 continue
             prior = self._normalize_live_segment_text(segment.text)
@@ -1414,12 +1587,12 @@ class InterviewService:
                 reason = "尚无已确认 live 证据，最终评价无法覆盖该能力。"
                 question_type = "main"
                 sample = f"请讲一个最能体现你“{competency}”能力的真实项目。"
-            elif count < 2:
+            elif count < CROSS_VALIDATION_EVIDENCE_COUNT:
                 priority = "medium"
                 reason = "已有 1 条证据，但缺少交叉验证，建议再问一个独立场景。"
                 question_type = "follow_up"
                 sample = f"刚才关于“{competency}”的例子还有哪些量化结果或风险权衡？"
-            elif strongest < 0.65:
+            elif strongest < WEAK_SIGNAL_THRESHOLD:
                 priority = "medium"
                 reason = "已有多条证据，但评分信号偏弱，需要更具体的行为和结果。"
                 question_type = "deep_dive"
@@ -1449,7 +1622,7 @@ class InterviewService:
                 item.competency,
             )
         )
-        state.live_interview.coverage_guidance = guidance[:8]
+        state.live_interview.coverage_guidance = guidance[:COVERAGE_GUIDANCE_MAX_ITEMS]
 
     def _refresh_live_question_usage(self, state: InterviewState) -> None:
         questions = self._live_blueprint_questions(state)
@@ -1481,7 +1654,7 @@ class InterviewService:
             )
         status_order = {"pending": 0, "suggested": 1, "used": 2}
         usage.sort(key=lambda item: (status_order.get(item.status, 3), item.round_name, item.question))
-        state.live_interview.question_usage = usage[:40]
+        state.live_interview.question_usage = usage[:QUESTION_USAGE_MAX_ITEMS]
 
     def _refresh_live_action_card(self, state: InterviewState) -> None:
         live = state.live_interview
@@ -1550,7 +1723,7 @@ class InterviewService:
                 primary_cta=primary_cta,
                 secondary_cta=secondary_cta,
                 evidence_status=evidence_status,
-                source_refs=[*source_refs, *(refs or [])][:8],
+                source_refs=[*source_refs, *(refs or [])][:ACTION_CARD_SOURCE_REFS_MAX],
             )
 
         if live.status == LiveInterviewStatus.IDLE:
@@ -1573,7 +1746,10 @@ class InterviewService:
             )
             return
         if live.status == LiveInterviewStatus.COMPLETED:
-            ready = total_evidence >= 3 and len(covered_competencies) >= 2
+            ready = (
+                total_evidence >= MIN_EVIDENCE_COUNT
+                and len(covered_competencies) >= MIN_COMPETENCY_COVERAGE
+            )
             live.action_card = card(
                 "evaluate" if ready else "review_evidence",
                 "high" if not ready else "medium",
@@ -1597,7 +1773,7 @@ class InterviewService:
                 refs=[f"unknown={len(unknown_segments)}"],
             )
             return
-        if boundary is not None and boundary.confidence >= 0.65:
+        if boundary is not None and boundary.confidence >= BOUNDARY_MERGE_THRESHOLD:
             live.action_card = card(
                 "merge_boundary",
                 "high",
@@ -1639,13 +1815,13 @@ class InterviewService:
             )
             return
         if top_gap is not None and (
-            total_evidence < 3
-            or len(covered_competencies) < 2
+            total_evidence < MIN_EVIDENCE_COUNT
+            or len(covered_competencies) < MIN_COMPETENCY_COVERAGE
             or top_gap.priority in {"high", "medium"}
         ):
             live.action_card = card(
                 "plan_gap_question",
-                "medium" if total_evidence >= 2 else "high",
+                "medium" if total_evidence >= CROSS_VALIDATION_EVIDENCE_COUNT else "high",
                 f"补齐“{top_gap.competency}”证据",
                 f"{top_gap.reason} 建议下一问：{top_gap.sample_question}",
                 "根据回答生成",
@@ -1653,7 +1829,7 @@ class InterviewService:
                 refs=[f"gap={top_gap.competency}", f"priority={top_gap.priority}"],
             )
             return
-        if total_evidence < 3 or len(covered_competencies) < 2:
+        if total_evidence < MIN_EVIDENCE_COUNT or len(covered_competencies) < MIN_COMPETENCY_COVERAGE:
             live.action_card = card(
                 "plan_gap_question",
                 "high",

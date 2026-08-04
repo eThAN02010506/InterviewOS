@@ -616,7 +616,9 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
     assert record["answer"] == f"{first_text}\n{second_text}"
     assert record["transcript_segment_ids"] == [question["id"], first["id"], second["id"]]
     assert state["live_interview"]["answer_boundary_suggestions"] == []
-    assert state["live_interview"]["action_card"]["action_type"] == "plan_gap_question"
+    # After merging evidence, the next-question planner auto-runs: a pending
+    # suggestion takes priority, so the card moves straight to deciding it.
+    assert state["live_interview"]["action_card"]["action_type"] == "decide_question"
     assert state["evidence"][0]["source_record_id"] == record["id"]
     assert duplicate.status_code == 409
 
@@ -902,3 +904,57 @@ def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_pa
         "Incident Review",
     }
     assert result["evaluation"]["recommendation"] != "insufficient_evidence"
+
+
+def test_long_live_interview_rolls_and_dedupes(tmp_path):
+    """Long interview keeps context bounded: summary activates, duplicates drop,
+    and the next-question planner stays fast enough for the 5s product target."""
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'long-live.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        # A real long interview: 30+ alternating Q&A turns, with a few
+        # consecutive candidate chunks (as chunked ASR would produce).
+        for index in range(30):
+            client.post(
+                f"/api/live-interviews/{session_id}/segments",
+                json={"speaker": "interviewer", "text": f"第 {index} 轮：请补充一次架构决策。"},
+            )
+            client.post(
+                f"/api/live-interviews/{session_id}/segments",
+                json={"speaker": "candidate", "text": f"第 {index} 轮回答：我对比方案并用压测验证。"},
+            )
+            if index % 10 == 9:
+                # Chunked ASR split: a second candidate chunk for the same answer.
+                client.post(
+                    f"/api/live-interviews/{session_id}/segments",
+                    json={"speaker": "candidate", "text": f"第 {index} 轮补充：P95 延迟下降，以上就是。"},
+                )
+        # Duplicate segment is dropped without growing the transcript. The
+        # dedup window only covers the most recent LIVE_RECENT_SEGMENT_WINDOW
+        # segments, so re-send the last candidate turn.
+        before = client.get(f"/api/live-interviews/{session_id}").json()["state"]["live_interview"]
+        duplicate_count = before["duplicate_segments_dropped"]
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "第 29 轮补充：P95 延迟下降，以上就是。"},
+        )
+        after = client.get(f"/api/live-interviews/{session_id}").json()["state"]["live_interview"]
+        assert after["duplicate_segments_dropped"] == duplicate_count + 1
+
+        # Rolling summary must be active and the raw transcript must not have
+        # grown proportionally with the summary.
+        planned = client.post(f"/api/live-interviews/{session_id}/suggestions")
+        planned_json = planned.json()["state"]["live_interview"]
+        assert planned_json["summarized_until_sequence"] > 0
+        assert planned_json["rolling_summary"]
+        assert planned_json["duplicate_segments_dropped"] >= 1
+        # Next-question planning must stay within the 5s product budget.
+        assert planned.elapsed.total_seconds() <= 5.0
+        # Boundary suggestions exist for merged candidate runs.
+        assert planned_json["answer_boundary_suggestions"]
+

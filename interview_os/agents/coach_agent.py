@@ -19,6 +19,7 @@ class CoachInput(BaseModel):
     answer: str
     competency: str = "Answer Quality"
     evidence_source: EvidenceSource = EvidenceSource.MOCK_INTERVIEW
+    record_id: str | None = None
 
 
 class CoachAgent(Agent):
@@ -74,5 +75,25 @@ class CoachAgent(Agent):
             source=coach_input.evidence_source,
             notes="; ".join(evaluation.missing_signals),
         )
+        if coach_input.record_id is not None:
+            # Live confirmation already created a placeholder evidence row for
+            # this record; backfill it instead of appending a duplicate so the
+            # evidence chain stays consistent between confirm and scoring.
+            placeholder = next(
+                (
+                    item
+                    for item in state.evidence
+                    if item.source == EvidenceSource.LIVE_INTERVIEW
+                    and item.source_record_id is not None
+                    and str(item.source_record_id) == coach_input.record_id
+                ),
+                None,
+            )
+            if placeholder is not None:
+                placeholder.competency = ev.competency
+                placeholder.signal = ev.signal
+                placeholder.confidence = ev.confidence
+                placeholder.notes = ev.notes
+                return self.make_response(evaluation.model_dump_json())
         state.add_evidence(ev)
         return self.make_response(evaluation.model_dump_json())

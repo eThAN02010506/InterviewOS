@@ -98,6 +98,7 @@ def create_app(
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()
+        await application.state.interview_service._background.close()
         await asr_client.close()
         await storage.close()
 

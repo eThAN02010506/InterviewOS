@@ -11,6 +11,31 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from interview_os.core.evidence import Evidence
 
+# 证据门槛：至少需要多少条证据与多少个胜任力，才能形成招聘建议
+MIN_EVIDENCE_COUNT = 3
+MIN_COMPETENCY_COVERAGE = 2
+CROSS_VALIDATION_EVIDENCE_COUNT = 2  # 单个胜任力需要多少条独立证据才算交叉验证
+
+# 实时面试上下文边界
+LIVE_RECENT_SEGMENT_WINDOW = 12  # 规划/去重/摘要保留的最近稳定片段窗口
+LIVE_SUMMARY_CHAR_LIMIT = 2800  # 滚动摘要的截断字符上限
+
+# 覆盖引导
+COVERAGE_GUIDANCE_MAX_ITEMS = 8
+WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度低于此值判为信号偏弱
+
+# 行动卡
+ACTION_CARD_SOURCE_REFS_MAX = 8
+QUESTION_USAGE_MAX_ITEMS = 40
+ANSWER_BOUNDARY_SUGGESTIONS_MAX = 5
+MIN_ANSWER_BOUNDARY_SEGMENTS = 2  # 合并为一个回答边界建议所需的最少连续候选人片段数
+
+# 回答边界置信度打分系数
+BOUNDARY_BASE_SCORE = 0.45
+BOUNDARY_MIN_SCORE = 0.2
+BOUNDARY_MAX_SCORE = 0.92
+BOUNDARY_MERGE_THRESHOLD = 0.65  # 行动卡触发"合并连续回答"的置信度门槛
+
 
 class InterviewStage(str, Enum):
     NOT_STARTED = "not_started"
@@ -346,9 +371,15 @@ class LiveInterviewRecord(BaseModel):
     question: str
     answer: str
     competency: str
-    evaluation: AnswerEvaluation
+    evaluation: AnswerEvaluation = Field(
+        default_factory=lambda: AnswerEvaluation(
+            content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
+        )
+    )
     source: str = "interview_transcript"
     transcript_segment_ids: list[UUID] = Field(default_factory=list)
+    scoring_status: str = "pending"  # pending | scoring | scored | failed
+    scoring_error: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -535,10 +566,13 @@ class InterviewState(BaseModel):
         evidence_competencies = {
             item.competency for item in self.evidence if item.competency.strip()
         }
-        if len(self.evidence) >= 3 and len(evidence_competencies) >= 2:
+        if len(self.evidence) >= MIN_EVIDENCE_COUNT and len(evidence_competencies) >= MIN_COMPETENCY_COVERAGE:
             return
         self.evaluation.recommendation = HiringRecommendation.INSUFFICIENT_EVIDENCE
-        warning = "至少需要 3 条证据并覆盖 2 个胜任力，才能形成招聘建议"
+        warning = (
+            f"至少需要 {MIN_EVIDENCE_COUNT} 条证据并覆盖 "
+            f"{MIN_COMPETENCY_COVERAGE} 个胜任力，才能形成招聘建议"
+        )
         if warning not in self.evaluation.risks:
             self.evaluation.risks.append(warning)
         if self.evaluation.summary and not self.evaluation.summary.startswith("证据门槛未满足"):
@@ -547,7 +581,8 @@ class InterviewState(BaseModel):
             self.feedback.overall = "当前证据不足，单题表现仅供参考，不能形成录用结论。"
         if self.feedback.recommendation_reasoning:
             self.feedback.recommendation_reasoning = (
-                "证据门槛未满足：至少需要 3 条证据并覆盖 2 个胜任力；"
+                f"证据门槛未满足：至少需要 {MIN_EVIDENCE_COUNT} 条证据并覆盖 "
+                f"{MIN_COMPETENCY_COVERAGE} 个胜任力；"
                 "当前不能给出录用或不录用建议。"
             )
         note = "证据不足不是负面证据，需要继续采集独立回答"
@@ -558,7 +593,6 @@ class InterviewState(BaseModel):
             ),
             note,
         ]
-
     def summary(self) -> str:
         return (
             f"Stage: {self.current_stage.value} | "

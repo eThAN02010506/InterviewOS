@@ -214,6 +214,16 @@ and generating evaluation can be triggered directly, while judgment-heavy steps
 such as editing speakers or deciding between adopted/edited/skipped questions
 scroll and spotlight the exact review area.
 
+The live loop now scores evidence in the background instead of blocking the next
+question. Confirming a candidate answer returns immediately and places a
+placeholder `live_interview` evidence row, so coverage guidance and the action
+card's evidence count stay accurate while the coach evaluates asynchronously
+(`scoring_status` transitions `scoring` → `scored`, surfaced in the review queue).
+Next-question planning fires automatically after an answer is confirmed (skipped
+when a suggestion is still pending to avoid duplicate LLM calls), and the live view
+polls every 3 seconds to refresh the suggestion card and scoring status. This
+removes the manual "confirm evidence, then click generate" wait from the hot path.
+
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
 question. It should help the interviewer stay structured without taking over the
@@ -238,9 +248,13 @@ The remaining roadmap is deliberately separated:
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
    guidance, question-usage tracking, explainable boundary confidence, and a
-   server-driven next-action card with clickable interviewer CTAs.
+   server-driven next-action card with clickable interviewer CTAs. Evidence scoring
+   now runs in the background so it never blocks the next-question suggestion, and
+   planning is auto-triggered after an answer is confirmed.
 6. **Hardening** — long-interview tests, deterministic fallbacks, latency budgets,
-   redacted observability, and cost measurement.
+   redacted observability, and cost measurement. A long 30-turn e2e regression
+   asserts the bounded-context + dedup behavior and the 5s planning budget with a
+   stub model.
 
 The live path must not invoke an LLM for every partial word. Stable transcript turns
 feed a bounded context made from recent dialogue, a rolling summary, the interview

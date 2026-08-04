@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message, MessageType
 from interview_os.core.state import (
+    LIVE_RECENT_SEGMENT_WINDOW,
     InterviewState,
     QuestionSuggestion,
     QuestionSuggestionType,
@@ -34,7 +35,7 @@ class LiveInterviewAgent(Agent):
             item
             for item in state.live_interview.segments
             if item.sequence > state.live_interview.summarized_until_sequence
-        ][-12:]
+        ][-LIVE_RECENT_SEGMENT_WINDOW:]
         transcript = "\n".join(
             f"[{segment.speaker.value}] {segment.text}"
             for segment in recent_segments
