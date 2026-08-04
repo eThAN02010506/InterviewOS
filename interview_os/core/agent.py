@@ -55,7 +55,7 @@ class Agent(ABC):
     @abstractmethod
     async def execute(self, state: InterviewState, instruction: str = "") -> Message: ...
 
-    async def think(self, prompt: str, context: str = "") -> str:
+    async def think(self, prompt: str, context: str = "", max_tokens: int | None = None) -> str:
         messages = [{"role": "system", "content": self._system_prompt}]
         history = self.memory.short_term.to_llm_messages(n=5)
         messages.extend(history)
@@ -66,7 +66,10 @@ class Agent(ABC):
         if self.llm_client is None:
             return "[LLM not configured - returning placeholder]"
 
-        response = await self.llm_client.chat(messages)
+        kwargs = {}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        response = await self.llm_client.chat(messages, **kwargs)
         return response
 
     async def think_structured(
@@ -75,9 +78,15 @@ class Agent(ABC):
         model: type[StructuredModelT],
         *,
         context: str = "",
+        max_tokens: int | None = None,
     ) -> StructuredModelT:
-        """Generate validated JSON and make one bounded repair attempt."""
-        raw = await self.think(prompt, context=context)
+        """Generate validated JSON from a single LLM call.
+
+        On invalid output we raise so the caller can fall back deterministically;
+        a repair call would re-prefill the whole context, which is the dominant
+        cost on a local model.
+        """
+        raw = await self.think(prompt, context=context, max_tokens=max_tokens)
         try:
             return parse_model_output(raw, model)
         except (ValueError, TypeError):
@@ -86,33 +95,13 @@ class Agent(ABC):
                     DebugEvent(
                         level=DebugLevel.WARNING,
                         category="model",
-                        action="structured_output_retry",
+                        action="structured_output_fallback",
                         session_id=self.session_id,
                         agent=self.name,
-                        detail=f"Repairing invalid {model.__name__} output",
+                        detail=f"Invalid {model.__name__} output; caller should fall back",
                     )
                 )
-            repair_prompt = (
-                "Repair the previous response into valid JSON only. Do not explain.\n"
-                f"Required JSON Schema:\n{model.model_json_schema()}\n"
-                f"Previous response:\n{raw[:12000]}"
-            )
-            repaired = await self.think(repair_prompt)
-            try:
-                return parse_model_output(repaired, model)
-            except (ValueError, TypeError):
-                if self.debug_events is not None:
-                    self.debug_events.record(
-                        DebugEvent(
-                            level=DebugLevel.ERROR,
-                            category="model",
-                            action="structured_output_retry_failed",
-                            session_id=self.session_id,
-                            agent=self.name,
-                            detail=f"Could not validate {model.__name__}",
-                        )
-                    )
-                raise
+            raise
 
     def make_response(self, content: str, recipient: str = "runtime") -> Message:
         return Message(

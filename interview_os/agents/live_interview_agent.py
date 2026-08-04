@@ -7,9 +7,13 @@ import logging
 from pydantic import ValidationError
 
 from interview_os.core.agent import Agent
+from interview_os.core.evidence import EvidenceSource
 from interview_os.core.message import Message, MessageType
 from interview_os.core.state import (
     LIVE_RECENT_SEGMENT_WINDOW,
+    PLANNER_MAX_TOKENS,
+    PLANNER_QUESTION_MAP_MAX,
+    PLANNER_SUMMARY_CHAR_LIMIT,
     InterviewState,
     QuestionSuggestion,
     QuestionSuggestionType,
@@ -41,31 +45,53 @@ class LiveInterviewAgent(Agent):
             for segment in recent_segments
             if segment.stable and segment.confirmed
         )
+        used_question_ids = set(state.live_interview.used_question_ids)
+        last_source_id = ""
+        for suggestion in reversed(state.live_interview.suggestions):
+            if suggestion.source_question_id.strip():
+                last_source_id = suggestion.source_question_id.strip()
+                break
         blueprint_questions = [
             question
             for interview_round in state.blueprint.rounds
             for question in interview_round.questions
         ]
+        mapped_questions = [
+            question
+            for question in blueprint_questions
+            if str(question.id) not in used_question_ids
+        ][:PLANNER_QUESTION_MAP_MAX]
+        if last_source_id and not any(str(q.id) == last_source_id for q in mapped_questions):
+            linked = next(
+                (q for q in blueprint_questions if str(q.id) == last_source_id), None
+            )
+            if linked is not None:
+                mapped_questions.append(linked)
         question_map = "\n".join(
             f"- id={question.id}; competency={question.competency}; question={question.question}; "
             f"signals={question.strong_signals}"
-            for question in blueprint_questions
+            for question in mapped_questions
         ) or "No prepared blueprint questions."
         question_usage = "\n".join(
             f"- status={item.status}; id={item.question_id}; round={item.round_name}; "
             f"competency={item.competency}; suggested={item.suggested_count}; "
             f"last={item.last_suggestion_status}; question={item.question}"
-            for item in state.live_interview.question_usage[:20]
+            for item in state.live_interview.question_usage[:12]
         ) or "No blueprint question usage yet."
         evidence_map = "\n".join(
-            f"- {item.competency}: {item.signal}" for item in state.evidence[-20:]
-        ) or "No confirmed evidence yet."
+            f"- {item.competency}: {item.signal}"
+            for item in state.evidence[-20:]
+            if item.source == EvidenceSource.LIVE_INTERVIEW
+        ) or "No confirmed live evidence yet."
         coverage_guidance = "\n".join(
             f"- priority={item.priority}; competency={item.competency}; "
             f"evidence={item.evidence_count}; confidence={item.strongest_confidence:.2f}; "
             f"reason={item.reason}; suggested={item.sample_question}"
             for item in state.live_interview.coverage_guidance[:5]
         ) or "No coverage guidance available."
+        rolling_summary = state.live_interview.rolling_summary
+        if len(rolling_summary) > PLANNER_SUMMARY_CHAR_LIMIT:
+            rolling_summary = "…\n" + rolling_summary[-PLANNER_SUMMARY_CHAR_LIMIT:]
         prompt = (
             "Return exactly one JSON object matching the QuestionSuggestion schema. "
             "Prepare a question for the interviewer; do not answer it and do not address the "
@@ -84,12 +110,12 @@ class LiveInterviewAgent(Agent):
             f"Recorded evidence:\n{evidence_map}\n"
             f"Coverage guidance:\n{coverage_guidance}\n"
             f"Rolling transcript summary:\n"
-            f"{state.live_interview.rolling_summary or 'No older transcript summary yet.'}\n"
+            f"{rolling_summary or 'No older transcript summary yet.'}\n"
             f"Recent confirmed transcript:\n{transcript}"
         )
         try:
             suggestion = await self.think_structured(
-                prompt, QuestionSuggestion, context=context
+                prompt, QuestionSuggestion, context=context, max_tokens=PLANNER_MAX_TOKENS
             )
             matched_competency = self._match_competency(suggestion.competency, state)
             if matched_competency is None:

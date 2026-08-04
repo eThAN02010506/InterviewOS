@@ -13,6 +13,9 @@ from interview_os.core.evidence import EvidenceSource
 from interview_os.core.state import (
     AnswerEvaluation,
     Evidence,
+    InterviewBlueprint,
+    InterviewQuestion,
+    InterviewRound,
     InterviewState,
     JobDescription,
     LiveInterviewRecord,
@@ -597,3 +600,111 @@ async def test_revoke_while_scoring_drops_orphaned_placeholder(scoring_service):
     revoked = await scoring_service.revoke_live_evidence(session_id, record_id)
     assert revoked.live_interview_records == []
     assert all(item.source_record_id != record_id for item in revoked.evidence)
+
+
+# ---------------------------------------------------------------------------
+# Planner context slimming: unused questions only, max_tokens, single call
+# ---------------------------------------------------------------------------
+
+
+class _CapturingPlannerLLM:
+    """Records the last planner prompt and chat kwargs, returns valid JSON."""
+
+    def __init__(self):
+        self.last_prompt = ""
+        self.last_kwargs = {}
+        self.chat_calls = 0
+        self.calls = []
+
+    async def chat(self, messages, **kwargs):
+        self.chat_calls += 1
+        self.calls.append((messages, kwargs))
+        self.last_prompt = "\n".join(
+            message.get("content", "") for message in messages
+        )
+        self.last_kwargs = kwargs
+        return (
+            '{"suggested_question":"追问一下验证方法。","question_type":"follow_up",'
+            '"competency":"系统设计","rationale":"需要补充验证","evidence_gap":"量化验证",'
+            '"expected_signals":["指标","压测"],"confidence":0.8,"alternatives":["回滚"]}'
+        )
+
+    async def embed(self, text):
+        return []
+
+
+def _planner_state() -> InterviewState:
+    state = InterviewState()
+    state.blueprint = InterviewBlueprint(
+        rounds=[
+            InterviewRound(
+                name="技术面",
+                goal="验证",
+                questions=[
+                    InterviewQuestion(
+                        question="已用的系统设计题",
+                        competency="系统设计",
+                        rationale="",
+                    ),
+                    InterviewQuestion(
+                        question="未用的事故复盘题",
+                        competency="Incident Review",
+                        rationale="",
+                    ),
+                ],
+            )
+        ]
+    )
+    state.live_interview.used_question_ids = [
+        str(state.blueprint.rounds[0].questions[0].id)
+    ]
+    state.live_interview.segments = [
+        _interviewer_segment(1, "请讲一次系统设计经历。"),
+        _segment(2, "我对比了缓存方案并用压测验证。"),
+    ]
+    return state
+
+
+async def test_planner_excludes_used_questions_and_passes_max_tokens(tmp_path):
+    llm = _CapturingPlannerLLM()
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'planner-slim.db'}")
+    await storage.init_db()
+    try:
+        from interview_os.agents.live_interview_agent import LiveInterviewAgent
+
+        state = _planner_state()
+        agent = LiveInterviewAgent(llm_client=llm)
+        await agent.execute(state)
+    finally:
+        await storage.close()
+    # The used question must not appear in the planner prompt.
+    assert "已用的系统设计题" not in llm.last_prompt
+    assert "未用的事故复盘题" in llm.last_prompt
+    # max_tokens must be forwarded to the LLM client.
+    assert llm.last_kwargs.get("max_tokens") == 512
+
+
+async def test_think_structured_invalid_output_makes_single_call(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'planner-bad.db'}")
+    await storage.init_db()
+    try:
+        from interview_os.agents.live_interview_agent import LiveInterviewAgent
+
+        calls = []
+
+        class _CountingBadLLM:
+            async def chat(self, messages, **kwargs):
+                calls.append(1)
+                return "not json"
+
+            async def embed(self, text):
+                return []
+
+        state = _planner_state()
+        counting_agent = LiveInterviewAgent(llm_client=_CountingBadLLM())
+        await counting_agent.execute(state)
+    finally:
+        await storage.close()
+    # Invalid output falls back deterministically with exactly one LLM call;
+    # there is no second repair call re-prefilling the context.
+    assert len(calls) == 1

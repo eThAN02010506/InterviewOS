@@ -20,6 +20,11 @@ CROSS_VALIDATION_EVIDENCE_COUNT = 2  # 单个胜任力需要多少条独立证�
 LIVE_RECENT_SEGMENT_WINDOW = 12  # 规划/去重/摘要保留的最近稳定片段窗口
 LIVE_SUMMARY_CHAR_LIMIT = 2800  # 滚动摘要的截断字符上限
 
+# 下一问题规划器上下文边界（压缩 prefill）
+PLANNER_QUESTION_MAP_MAX = 12  # 规划器一次最多携带的未用蓝图题数量
+PLANNER_SUMMARY_CHAR_LIMIT = 1500  # 规划器看到的滚动摘要截断字符上限
+PLANNER_MAX_TOKENS = 512  # 规划器结构化输出的 max_tokens，避免 decode 阶段浪费
+
 # 覆盖引导
 COVERAGE_GUIDANCE_MAX_ITEMS = 8
 WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度低于此值判为信号偏弱

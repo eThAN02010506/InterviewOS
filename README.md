@@ -224,6 +224,15 @@ when a suggestion is still pending to avoid duplicate LLM calls), and the live v
 polls every 3 seconds to refresh the suggestion card and scoring status. This
 removes the manual "confirm evidence, then click generate" wait from the hot path.
 
+The planner's own LLM call is also bounded to keep it fast on a local model. The
+question map sent to the model contains only unused blueprint questions plus the
+question the last suggestion referenced (not the full blueprint), rolling-summary
+context is capped at 1500 chars, and the evidence list is limited to live evidence.
+A 512-token `max_tokens` cap avoids wasted decode, and an invalid model response
+falls back deterministically without a second re-prefilling repair call. On a
+representative 5-round blueprint the planner context shrinks ~33% (≈6.8k → ≈4.5k
+chars), cutting the dominant prefill cost for the 20B local model.
+
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next
 question. It should help the interviewer stay structured without taking over the
