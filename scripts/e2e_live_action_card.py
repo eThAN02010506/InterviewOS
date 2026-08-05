@@ -145,13 +145,12 @@ def main() -> None:
             },
         )
         checkpoint("merged_evidence", merged)
-        require(action_type(merged) == "plan_gap_question", "merged evidence should reveal a gap")
+        # Merging evidence now auto-plans the next question, so the card moves
+        # straight to deciding a pending suggestion (no manual plan step).
+        require(action_type(merged) == "decide_question", "merge should auto-plan a suggestion")
         require(len(merged["state"]["live_interview_records"]) == 1, "one live record expected")
-
-        planned = request_json(client, "POST", f"/api/live-interviews/{session_id}/suggestions")
-        checkpoint("question_planned", planned)
-        require(action_type(planned) == "decide_question", "pending suggestion should be decided")
-        suggestion = live_state(planned)["suggestions"][-1]
+        suggestion = live_state(merged)["suggestions"][-1]
+        require(suggestion["status"] == "pending", "auto-planned suggestion should be pending")
 
         adopted = request_json(
             client,

@@ -292,12 +292,15 @@ data:
 ```
 
 `e2e_live_action_card.py` verifies the interviewer-side Live Copilot loop: start
-with consent, detect a mergeable answer boundary, confirm live evidence, plan and
-adopt a next question, collect enough evidence, finish the live session, and
-generate a hiring evaluation. On the 2026-08-02 local run against the configured
-8001 text model, the script completed in 113.823 seconds; action-card planning took
-33.033 seconds and final evaluation took 51.191 seconds. That proves the functional
-loop is usable, but it also keeps performance hardening visible.
+with consent, detect a mergeable answer boundary, confirm live evidence, adopt the
+auto-planned next question (planning now fires automatically after evidence is
+confirmed, no manual step), collect enough evidence, finish the live session, and
+generate a hiring evaluation. On the 2026-08-05 local run against the configured
+8001 text model, the script completed in 86.307 seconds; action-card planning took
+24.631 seconds and final evaluation took 40.886 seconds, down from 113.823 / 33.033 /
+51.191 on the 2026-08-02 run before scoring was made async and the planner context
+was slimmed. The loop is usable end to end; the remaining gap to the 5s
+next-question target is the 20B model's own generation time, not code-path work.
 
 ## Next Implementation Plan
 
