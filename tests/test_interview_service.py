@@ -476,3 +476,30 @@ async def test_final_evaluation_requires_evidence(tmp_path):
     with pytest.raises(EvaluationStateError, match="No interview evidence"):
         await service.run_evaluation(session_id)
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_candidate_prep_survives_invalid_strategy_output(tmp_path):
+    """Invalid strategy output falls back to a generic plan instead of failing."""
+
+    class _StrategyFailingLLM(WorkflowMockLLM):
+        async def chat(self, messages, **kwargs):
+            prompt = messages[-1]["content"]
+            if "fuse three inputs" in prompt.lower():
+                return "not valid strategy json"
+            return await super().chat(messages, **kwargs)
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'strategy-fallback.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, _StrategyFailingLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    state = await service.run_candidate_prep(
+        session_id,
+        resume_text="Python systems engineer",
+        job_description="Platform engineer owning distributed systems",
+        company_name="Example",
+    )
+    assert state.workflow.status.value == "completed"
+    assert state.strategy.summary  # generic fallback summary
+    assert state.mock_interview.questions  # mock questions still generated
+    await storage.close()
