@@ -705,6 +705,7 @@ async def test_think_structured_invalid_output_makes_single_call(tmp_path):
         await counting_agent.execute(state)
     finally:
         await storage.close()
-    # Invalid output falls back deterministically with exactly one LLM call;
-    # there is no second repair call re-prefilling the context.
-    assert len(calls) == 1
+    # Invalid output triggers one lightweight retry (same prompt, no added
+    # context), then the planner falls back deterministically instead of a
+    # second repair call re-prefilling the whole context.
+    assert len(calls) == 2

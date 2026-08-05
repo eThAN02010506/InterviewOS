@@ -231,10 +231,17 @@ The planner's own LLM call is also bounded to keep it fast on a local model. The
 question map sent to the model contains only unused blueprint questions plus the
 question the last suggestion referenced (not the full blueprint), rolling-summary
 context is capped at 1500 chars, and the evidence list is limited to live evidence.
-A 512-token `max_tokens` cap avoids wasted decode, and an invalid model response
-falls back deterministically without a second re-prefilling repair call. On a
-representative 5-round blueprint the planner context shrinks ~33% (≈6.8k → ≈4.5k
-chars), cutting the dominant prefill cost for the 20B local model.
+A 512-token `max_tokens` cap avoids wasted decode. On a representative 5-round
+blueprint the planner context shrinks ~33% (≈6.8k → ≈4.5k chars), cutting the
+dominant prefill cost for the 20B local model.
+
+Structured-output generation is resilient to the model drifting off-schema:
+`think_structured` retries the same prompt once on invalid output (no extra
+context, zero cost on the happy path), then agents with deterministic fallbacks
+take over. Enterprise interview design now builds a generic JD-based blueprint
+from job competencies when the model returns empty rounds, so a resume-less
+interview (JD only, common before the candidate's resume arrives) no longer fails
+the whole workflow.
 
 The product direction for live interviews is an interviewer-side copilot that can
 listen during the conversation, keep an evidence map, and quietly prepare the next

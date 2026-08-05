@@ -9,7 +9,6 @@ from interview_os.services.interview_service import (
     InterviewService,
     MockInterviewStateError,
     SessionNotFoundError,
-    WorkflowExecutionError,
 )
 from interview_os.tools.web_search import SearchProvider, SearchResult
 
@@ -377,17 +376,16 @@ async def test_failed_workflow_records_progress(tmp_path):
     await storage.init_db()
     service = InterviewService(storage, MockLLM(), FakeSearchProvider())
     session_id, _ = await service.create_session()
-    with pytest.raises(WorkflowExecutionError):
-        await service.run_enterprise_design(
-            session_id,
-            resume_text="Python engineer",
-            job_description="Platform role",
-            company_name="Example",
-        )
-    state = await service.get_state(session_id)
-    assert state.workflow.status.value == "failed"
-    assert state.workflow.current_step == "interview_design_agent"
-    assert "did not return any rounds" in state.workflow.error
+    state = await service.run_enterprise_design(
+        session_id,
+        resume_text="Python engineer",
+        job_description="Platform role",
+        company_name="Example",
+    )
+    # The design agent returns a deterministic generic blueprint when the model
+    # output is invalid, so the workflow completes instead of failing.
+    assert state.workflow.status.value == "completed"
+    assert state.blueprint.rounds
     await storage.close()
 
 

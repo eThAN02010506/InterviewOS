@@ -62,7 +62,7 @@ class AnalysisResponse(BaseModel):
 
 class CandidatePrepRequest(BaseModel):
     session_id: str
-    resume_text: str = Field(min_length=1)
+    resume_text: str = ""
     job_description: str = Field(min_length=1)
     company_name: str = Field(min_length=1)
     company_context: str = ""
@@ -73,7 +73,7 @@ class CandidatePrepRequest(BaseModel):
 
 class EnterpriseDesignRequest(BaseModel):
     session_id: str
-    resume_text: str = Field(min_length=1)
+    resume_text: str = ""
     job_description: str = Field(min_length=1)
     company_name: str = Field(min_length=1)
     company_context: str = ""
@@ -81,7 +81,7 @@ class EnterpriseDesignRequest(BaseModel):
 
 class AutopilotRequest(BaseModel):
     role: str = Field(pattern="^(candidate|interviewer)$")
-    resume_text: str = Field(min_length=1)
+    resume_text: str = ""
     job_description: str = Field(min_length=1)
     company_name: str = Field(min_length=1)
     company_context: str = ""

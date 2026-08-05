@@ -80,28 +80,43 @@ class Agent(ABC):
         context: str = "",
         max_tokens: int | None = None,
     ) -> StructuredModelT:
-        """Generate validated JSON from a single LLM call.
+        """Generate validated JSON, retrying once on invalid output.
 
-        On invalid output we raise so the caller can fall back deterministically;
-        a repair call would re-prefill the whole context, which is the dominant
-        cost on a local model.
+        Local models occasionally drift from the JSON schema. Retrying the same
+        prompt once (no added context) costs nothing on the happy path and
+        meaningfully reduces whole-workflow failures for agents without a
+        deterministic fallback. On a second invalid output we raise so the
+        caller can fall back.
         """
-        raw = await self.think(prompt, context=context, max_tokens=max_tokens)
-        try:
-            return parse_model_output(raw, model)
-        except (ValueError, TypeError):
-            if self.debug_events is not None:
-                self.debug_events.record(
-                    DebugEvent(
-                        level=DebugLevel.WARNING,
-                        category="model",
-                        action="structured_output_fallback",
-                        session_id=self.session_id,
-                        agent=self.name,
-                        detail=f"Invalid {model.__name__} output; caller should fall back",
+        last_error: Exception | None = None
+        for attempt in (1, 2):
+            raw = await self.think(prompt, context=context, max_tokens=max_tokens)
+            try:
+                return parse_model_output(raw, model)
+            except (ValueError, TypeError) as exc:
+                last_error = exc
+                if self.debug_events is not None:
+                    self.debug_events.record(
+                        DebugEvent(
+                            level=DebugLevel.WARNING,
+                            category="model",
+                            action=(
+                                "structured_output_retry"
+                                if attempt == 1
+                                else "structured_output_fallback"
+                            ),
+                            session_id=self.session_id,
+                            agent=self.name,
+                            detail=(
+                                f"Retrying invalid {model.__name__} output"
+                                if attempt == 1
+                                else f"Invalid {model.__name__} output; caller should fall back"
+                            ),
+                        )
                     )
-                )
-            raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"Unreachable: {model.__name__} parsing failed")
 
     def make_response(self, content: str, recipient: str = "runtime") -> Message:
         return Message(
