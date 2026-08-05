@@ -19,11 +19,13 @@ class PDFParserTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         file_path = kwargs.get("file_path", "")
         try:
-            from pypdf import PdfReader
-            reader = PdfReader(file_path)
-            text = "\n\n".join(page.extract_text() for page in reader.pages if page.extract_text())
-            return ToolResult(success=True, data={"text": text, "pages": len(reader.pages)})
+            import pdfplumber
+
+            with pdfplumber.open(file_path) as pdf:
+                page_texts = [page.extract_text() or "" for page in pdf.pages]
+                text = "\n\n".join(page_texts)
+                return ToolResult(success=True, data={"text": text, "pages": len(pdf.pages)})
         except ImportError:
-            return ToolResult(success=False, error="pypdf not installed. Run: pip install pypdf")
+            return ToolResult(success=False, error="pdfplumber not installed. Run: pip install pdfplumber")
         except Exception as exc:  # noqa: BLE001 - third-party parser errors vary
             return ToolResult(success=False, error=str(exc))

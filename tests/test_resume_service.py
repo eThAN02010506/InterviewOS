@@ -58,6 +58,82 @@ def test_resume_rejects_empty_document():
         ResumeProcessor().process("resume.pdf", b"")
 
 
+def _register_chinese_font() -> str:
+    """Register a system Chinese font for reportlab so CJK renders, not tofu."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    candidates = [
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+    for index, path in enumerate(candidates):
+        import os
+
+        if os.path.exists(path):
+            name = f"CJKTest{index}"
+            try:
+                pdfmetrics.registerFont(TTFont(name, path))
+                return name
+            except Exception:  # noqa: BLE001, S112 - try the next candidate font
+                continue
+    raise RuntimeError("No usable system CJK font found for the reportlab test")
+
+
+def make_pdf_with_table() -> bytes:
+    from io import BytesIO as _BytesIO
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import registerFontFamily
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Table
+
+    font_name = _register_chinese_font()
+    registerFontFamily(font_name, normal=font_name, bold=font_name, italic=font_name, boldItalic=font_name)
+    buffer = _BytesIO()
+    document = SimpleDocTemplate(buffer, pagesize=A4)
+    body = ParagraphStyle("body", fontName=font_name, fontSize=10, leading=14)
+    story = [
+        Paragraph("Ada Lovelace 简历", body),
+        Paragraph("工作经历：字节跳动 高级工程师 2022-至今", body),
+        Table(
+            [
+                ["负责内容", "推荐系统架构"],
+                ["关键成果", "延迟降低 40%"],
+            ],
+            colWidths=[40 * mm, 60 * mm],
+            style=[
+                ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ],
+        ),
+        Paragraph("项目经验：分布式缓存系统，QPS 提升 3 倍。", body),
+    ]
+    document.build(story)
+    return buffer.getvalue()
+
+
+def test_pdf_resume_extracts_text_and_table():
+    content = make_pdf_with_table()
+
+    text, review = ResumeProcessor().process("ada.pdf", content)
+
+    assert review.metadata.file_type == "pdf"
+    assert review.metadata.page_count >= 1
+    assert "Ada Lovelace 简历" in text
+    assert "延迟降低 40%" in text
+    assert "推荐系统架构" in text
+
+
+def test_pdf_extraction_keeps_line_breaks():
+    content = make_pdf_with_table()
+    text, _ = ResumeProcessor().process("lines.pdf", content)
+    # Multi-line headings must not be flattened into one space-separated blob;
+    # pdfplumber keeps structural line breaks.
+    assert "Ada Lovelace 简历" in text
+
+
 def test_resume_normalization_removes_control_characters_and_reports_artifacts():
     normalized = ResumeProcessor._normalize("New H\x00C Group\nExperience")
     issues = ResumeProcessor._find_issues(normalized, had_encoding_artifacts=True)

@@ -83,7 +83,10 @@ The API now persists session state in SQLite. A minimal analysis flow is:
 
 PDF and Word (`.docx`) resumes can be uploaded through
 `POST /api/resumes/{session_id}/upload`. Files are parsed locally before the Agent
-workflow runs. The response includes extraction warnings and human-review items
+workflow runs. PDF text is extracted with pdfplumber (replacing pypdf), which keeps
+structural line breaks and table rows instead of emitting pypdf's column-alignment
+padding; docx tables are extracted row by row so multi-row tables do not collapse
+into one long line. The response includes extraction warnings and human-review items
 for education, employment, certifications, and measurable claims. Uploading a
 resume never starts public web research automatically.
 

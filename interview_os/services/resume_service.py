@@ -63,18 +63,11 @@ class ResumeProcessor:
     @staticmethod
     def _extract_pdf(content: bytes) -> tuple[str, int]:
         try:
-            from pypdf import PdfReader
+            import pdfplumber
 
-            reader = PdfReader(BytesIO(content))
-            if reader.is_encrypted and not reader.decrypt(""):
-                raise ResumeProcessingError("PDF 已加密，请上传未加密版本")
-            page_texts = []
-            for page in reader.pages:
-                try:
-                    page_texts.append(page.extract_text(extraction_mode="layout") or "")
-                except TypeError:
-                    page_texts.append(page.extract_text() or "")
-            return "\n\n".join(page_texts), len(reader.pages)
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                page_texts = [page.extract_text() or "" for page in pdf.pages]
+                return "\n\n".join(page_texts), len(pdf.pages)
         except ResumeProcessingError:
             raise
         except Exception as exc:
@@ -88,10 +81,14 @@ class ResumeProcessor:
             document = Document(BytesIO(content))
             blocks = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
             for table in document.tables:
+                row_blocks = []
                 for row in table.rows:
                     cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                     if cells:
-                        blocks.append(" | ".join(cells))
+                        row_blocks.append(" | ".join(cells))
+                if row_blocks:
+                    blocks.append("[表格]")
+                    blocks.extend(row_blocks)
             return "\n".join(blocks), 1
         except Exception as exc:
             raise ResumeProcessingError("Word 文件损坏或不是有效的 .docx 文件") from exc
