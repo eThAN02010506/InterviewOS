@@ -743,6 +743,7 @@ def test_live_audio_context_includes_blueprint_transcript_evidence(service):
         _interviewer_segment(1, "请讲一次系统架构权衡。"),
         _segment(2, "我对比了缓存和数据库方案。"),
     ]
+    state.live_interview.rolling_summary = "历史摘要内容"
     state.evidence.append(
         Evidence(
             competency="系统设计",
@@ -752,18 +753,24 @@ def test_live_audio_context_includes_blueprint_transcript_evidence(service):
         )
     )
     context = service._live_audio_context(state)
+    # Focused mode keeps the anchor, recent transcript, and evidence...
     assert "岗位能力：系统设计、稳定性治理" in context
     assert "请讲一次系统架构权衡" in context
     assert "缓存方案选型与压测验证" in context
     assert "系统设计" in context
+    # ...and intentionally excludes advancement-only info.
+    assert "历史摘要" not in context
+    assert "待问蓝图题" not in context
+    assert "覆盖引导" not in context
 
 
-def test_live_audio_context_is_bounded(service):
+def test_live_audio_context_keeps_anchor_when_over_limit(service):
     state = InterviewState(job=JobDescription(title="岗位", competencies=["能力"]))
-    # Long transcript to force truncation
+    # Long transcript far exceeding the cap; the anchor must survive.
     state.live_interview.segments = [
         _segment(i, f"第 {i} 段回答：{'内容' * 200}", confirmed=True)
         for i in range(1, 13)
     ]
     context = service._live_audio_context(state)
     assert len(context) <= 2600  # OMNI_CONTEXT_CHAR_LIMIT + slack
+    assert "岗位能力：能力" in context  # anchor is never dropped

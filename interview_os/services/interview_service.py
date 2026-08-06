@@ -31,8 +31,6 @@ from interview_os.core.state import (
     MIN_COMPETENCY_COVERAGE,
     MIN_EVIDENCE_COUNT,
     OMNI_CONTEXT_CHAR_LIMIT,
-    PLANNER_QUESTION_MAP_MAX,
-    PLANNER_SUMMARY_CHAR_LIMIT,
     QUESTION_USAGE_MAX_ITEMS,
     WEAK_SIGNAL_THRESHOLD,
     AnswerEvaluation,
@@ -773,15 +771,19 @@ class InterviewService:
 
     @staticmethod
     def _live_audio_context(state: InterviewState) -> str:
-        """Bounded interview context for the omni audio-direct model.
+        """Focused, priority-ordered context for the omni audio-direct model.
 
-        Mirrors the text planner's inputs (blueprint, transcript, evidence,
-        coverage guidance) but keeps a tighter char cap so the model's prefill
-        does not erase the audio-direct latency advantage.
+        The direct path exists to be fast, so it carries only what the model
+        needs to turn a candidate utterance into a good follow-up: job/covered
+        competencies (anchor), the recent stable conversation, and the most
+        recent live evidence. Lower-value "advancement" info (blueprint backlog,
+        historical summary, coverage guidance) is intentionally excluded to keep
+        prefill small. If the focused blocks still exceed the limit, blocks are
+        dropped lowest-priority first rather than truncating the tail (which
+        would lose the anchor).
         """
         parts: list[str] = []
         competencies = "、".join(state.job.competencies) or state.job.title or "目标岗位"
-        parts.append(f"岗位能力：{competencies}")
         covered = "、".join(
             dict.fromkeys(
                 item.competency
@@ -789,8 +791,11 @@ class InterviewService:
                 if item.competency.strip()
             )
         )
+        anchor = f"岗位能力：{competencies}"
         if covered:
-            parts.append(f"已覆盖证据能力：{covered}")
+            anchor += f"；已覆盖能力：{covered}"
+        parts.append(anchor)
+
         stable_segments = [
             item
             for item in state.live_interview.segments[-LIVE_RECENT_SEGMENT_WINDOW:]
@@ -802,52 +807,27 @@ class InterviewService:
                 TranscriptSpeaker.CANDIDATE: "候选人",
                 TranscriptSpeaker.UNKNOWN: "待确认",
             }
-            transcript = "；".join(
-                f"{speaker_labels.get(item.speaker, item.speaker.value)}：{item.text}"
-                for item in stable_segments
-            )
-            parts.append(f"最近对话：{transcript}")
-        if state.live_interview.rolling_summary:
-            summary = state.live_interview.rolling_summary
-            if len(summary) > PLANNER_SUMMARY_CHAR_LIMIT:
-                summary = "…" + summary[-PLANNER_SUMMARY_CHAR_LIMIT:]
-            parts.append(f"历史摘要：{summary}")
-        used_ids = set(state.live_interview.used_question_ids)
-        blueprint_questions = [
-            question
-            for interview_round in state.blueprint.rounds
-            for question in interview_round.questions
-        ]
-        mapped = [
-            question
-            for question in blueprint_questions
-            if str(question.id) not in used_ids
-        ][:PLANNER_QUESTION_MAP_MAX]
-        if mapped:
             parts.append(
-                "待问蓝图题：" + "；".join(
-                    f"{question.competency}：{question.question}"
-                    for question in mapped[:4]
+                "最近对话："
+                + "；".join(
+                    f"{speaker_labels.get(item.speaker, item.speaker.value)}：{item.text}"
+                    for item in stable_segments
                 )
             )
+
         live_evidence = [
             f"{item.competency}：{item.signal}"
-            for item in state.evidence[-20:]
+            for item in state.evidence[-5:]
             if item.source == EvidenceSource.LIVE_INTERVIEW
         ]
         if live_evidence:
-            parts.append("已确认证据：" + "；".join(live_evidence[:5]))
-        coverage = state.live_interview.coverage_guidance[:5]
-        if coverage:
-            parts.append(
-                "覆盖引导：" + "；".join(
-                    f"{item.competency}({item.priority})" for item in coverage
-                )
-            )
-        context = "\n".join(parts)
-        if len(context) > OMNI_CONTEXT_CHAR_LIMIT:
-            context = "…" + context[-OMNI_CONTEXT_CHAR_LIMIT:]
-        return context
+            parts.append("已确认证据：" + "；".join(live_evidence))
+
+        # Drop lowest-priority blocks first (evidence, then transcript) until
+        # under the cap. The competency anchor is always kept.
+        while len("\n".join(parts)) > OMNI_CONTEXT_CHAR_LIMIT and len(parts) > 1:
+            parts.pop()
+        return "\n".join(parts)
 
     async def _inject_audio_direct_suggestion(
         self,
