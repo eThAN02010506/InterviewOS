@@ -312,6 +312,24 @@ generate a hiring evaluation. On the 2026-08-05 local run against the configured
 was slimmed. The loop is usable end to end; the remaining gap to the 5s
 next-question target is the 20B model's own generation time, not code-path work.
 
+The full audio loop (the interviewer's primary input path) was verified against the
+real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s
+(`source=asr`), confirming the transcribed segment became evidence, background
+scoring marked it `scored`, and next-question planning auto-fired — all without
+code changes. A browser-driven walkthrough of every page (candidate prep, mock
+interview, improvement report; enterprise design, live copilot, evidence review;
+settings, debug console) rendered with zero console errors; JD-inferred-requirement
+confirmation and resume-claim confirmation both round-tripped to the server. The
+entity-resolution dialog and fact cards are covered by API unit tests but were not
+UI-tested this run (they need a live public-search hit to trigger).
+
+A few real-use robustness fixes shipped after these runs: resume text is optional
+in autopilot/workflow requests (a JD-only interview no longer 422s); structured
+output retries the same prompt once before falling back; and both the interview
+design and interview strategy agents build deterministic generic outputs when the
+model returns empty results, so a resume-less design or a bad fusion response no
+longer fails the whole workflow.
+
 ## Next Implementation Plan
 
 The next work should move in this order:
