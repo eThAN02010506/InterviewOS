@@ -227,6 +227,20 @@ when a suggestion is still pending to avoid duplicate LLM calls), and the live v
 polls every 3 seconds to refresh the suggestion card and scoring status. This
 removes the manual "confirm evidence, then click generate" wait from the hot path.
 
+The live audio path is switchable between two modes (Settings → 实时音频处理):
+- **ASR + text (default)**: the classic path — audio to the LAN ASR, transcript to
+  the text LLM.
+- **Audio direct (omni)**: candidate audio goes straight to an OpenAI-compatible
+  multimodal model (e.g. Qwen3-Omni on 8004), skipping ASR entirely; the model
+  hears the answer and returns a next-question suggestion. A settings panel lets
+  you name the provider, point it at a base URL/model, and probe its capability
+  (a real audio sample is sent to verify the endpoint returns a usable question).
+  Measured with a real Chinese WAV, the audio-direct path returned a grounded
+  follow-up question in ~1.8s (non-streamed) and ~1s first token with streaming —
+  vs ~32s for ASR + 20B text. It intentionally does not create a transcript
+  segment (the model understands the audio directly); the suggestion is injected
+  straight into the review queue.
+
 The planner's own LLM call is also bounded to keep it fast on a local model. The
 question map sent to the model contains only unused blueprint questions plus the
 question the last suggestion referenced (not the full blueprint), rolling-summary

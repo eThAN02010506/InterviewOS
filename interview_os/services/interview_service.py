@@ -61,6 +61,7 @@ from interview_os.core.state import (
     MockSessionStatus,
     QuestionSuggestion,
     QuestionSuggestionStatus,
+    QuestionSuggestionType,
     RequirementOrigin,
     ResumeClaimStatus,
     TranscriptSegment,
@@ -119,16 +120,26 @@ class InterviewService:
         debug_events: DebugEventStore | None = None,
         asr_client: ASRClient | None = None,
         background: BackgroundTaskManager | None = None,
+        omni_client: Any = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
         self.search_provider = search_provider
         self.debug_events = debug_events
         self.asr_client = asr_client
+        self.omni_client = omni_client
+        self.live_audio_mode = "asr_text"  # "asr_text" | "audio_direct"
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
         self._runtimes: dict[str, AgentRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self.resume_processor = ResumeProcessor()
+
+    def set_live_audio_mode(self, mode: str) -> None:
+        if mode not in {"asr_text", "audio_direct"}:
+            raise ValueError(f"Unsupported live audio mode: {mode}")
+        if mode == "audio_direct" and self.omni_client is None:
+            raise ValueError("Live audio direct requires an omni client")
+        self.live_audio_mode = mode
 
     async def start_live_interview(
         self, session_id: str, *, consent_confirmed: bool
@@ -280,14 +291,34 @@ class InterviewService:
         speaker: TranscriptSpeaker,
         language: str = "zh",
     ) -> tuple[InterviewState, str]:
-        if self.asr_client is None:
-            raise LiveInterviewStateError("ASR client is not configured")
         if len(content) > 25 * 1024 * 1024:
             raise LiveInterviewStateError("Audio chunk exceeds the 25 MB limit")
         runtime = await self._get_runtime(session_id)
         if runtime.state.live_interview.status != LiveInterviewStatus.ACTIVE:
             raise LiveInterviewStateError("Live interview must be active before transcribing audio")
         started = perf_counter()
+        if self.live_audio_mode == "audio_direct":
+            if self.omni_client is None:
+                raise LiveInterviewStateError("Omni audio client is not configured")
+            if speaker != TranscriptSpeaker.CANDIDATE:
+                raise LiveInterviewStateError("音频直连模式仅支持候选人回答")
+            context = self._live_audio_context(runtime.state)
+            result = await self.omni_client.suggest_next_question(
+                content, content_type=content_type, context=context, stream=False
+            )
+            suggestion_text = result if isinstance(result, str) else ""
+            await self._inject_audio_direct_suggestion(
+                session_id, runtime, suggestion_text
+            )
+            self._record_debug(
+                "audio_direct_suggestion",
+                session_id,
+                detail=f"chars={len(suggestion_text)}",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            return runtime.state, suggestion_text
+        if self.asr_client is None:
+            raise LiveInterviewStateError("ASR client is not configured")
         try:
             transcript = await self.asr_client.transcribe(
                 content,
@@ -736,6 +767,58 @@ class InterviewService:
         if not has_pending_candidate and not live_evidence:
             return
         await self.plan_live_next_question(session_id)
+
+    @staticmethod
+    def _live_audio_context(state: InterviewState) -> str:
+        """Compact context for the omni audio-direct model."""
+        competencies = "、".join(state.job.competencies) or state.job.title or "目标岗位"
+        covered = "、".join(
+            dict.fromkeys(
+                item.competency
+                for item in state.evidence
+                if item.competency.strip()
+            )
+        )
+        pending_blueprint = sum(
+            1 for item in state.live_interview.question_usage if item.status == "pending"
+        )
+        parts = [f"岗位能力：{competencies}"]
+        if covered:
+            parts.append(f"已覆盖证据能力：{covered}")
+        if pending_blueprint:
+            parts.append(f"待问蓝图题：{pending_blueprint} 道")
+        return "；".join(parts)
+
+    async def _inject_audio_direct_suggestion(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        suggestion_text: str,
+    ) -> None:
+        """Create a QuestionSuggestion from an audio-direct model answer."""
+        clean = suggestion_text.strip()
+        if not clean:
+            clean = "请再补充说明一下你刚才提到的方案权衡与结果。"
+        competency = (
+            runtime.state.job.competencies[0]
+            if runtime.state.job.competencies
+            else "综合能力"
+        )
+        suggestion = QuestionSuggestion(
+            suggested_question=clean[:4000],
+            question_type=QuestionSuggestionType.FOLLOW_UP,
+            competency=competency,
+            rationale="基于候选人实时语音回答生成的追问建议",
+            evidence_gap="需要进一步验证回答中的行动、权衡与量化结果",
+            expected_signals=["具体行动", "技术权衡", "可量化结果"],
+            confidence=0.7,
+        )
+        runtime.state.live_interview.suggestions.append(suggestion)
+        async with self._lock_for(session_id):
+            self._refresh_live_question_usage(runtime.state)
+            self._refresh_live_action_card(runtime.state)
+            runtime.state.next_action = "Interviewer reviews the audio-direct suggestion"
+            await self._persist(session_id, runtime.state)
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""

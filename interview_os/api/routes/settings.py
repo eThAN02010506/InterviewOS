@@ -41,10 +41,19 @@ class ASRSettingsUpdate(BaseModel):
     timeout_seconds: float | None = Field(default=None, ge=1, le=600)
 
 
+class LiveAudioSettingsUpdate(BaseModel):
+    mode: Literal["asr_text", "audio_direct"] | None = None
+    name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+
+
 class SettingsUpdate(BaseModel):
     search: SearchSettingsUpdate | None = None
     llm: LLMSettingsUpdate | None = None
     asr: ASRSettingsUpdate | None = None
+    live_audio: LiveAudioSettingsUpdate | None = None
     persist: bool = True
 
 
@@ -53,10 +62,12 @@ async def get_settings(request: Request):
     search: SearchProviderManager = request.app.state.search_manager
     llm = request.app.state.llm_client
     asr: ASRClient = request.app.state.asr_client
+    omni = getattr(request.app.state, "omni_client", None)
     return {
         "search": search.status(),
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "asr": asr.status(),
+        "live_audio": omni.status() if omni is not None else {"enabled": False},
         "persistence": "local_permission_restricted",
         "persisted_locally": request.app.state.settings_store.path.exists(),
     }
@@ -68,6 +79,7 @@ async def update_settings(payload: SettingsUpdate, request: Request):
     llm = request.app.state.llm_client
     asr: ASRClient = request.app.state.asr_client
     store: LocalSettingsStore = request.app.state.settings_store
+    omni = getattr(request.app.state, "omni_client", None)
     try:
         if payload.search:
             search.configure(**payload.search.model_dump())
@@ -77,15 +89,37 @@ async def update_settings(payload: SettingsUpdate, request: Request):
             await llm.reconfigure(**payload.llm.model_dump())
         if payload.asr:
             asr.configure(**payload.asr.model_dump())
+        if payload.live_audio:
+            if omni is None:
+                raise ValueError("Live audio direct is not configured")
+            omni.configure(**payload.live_audio.model_dump())
+            service = request.app.state.interview_service
+            if payload.live_audio.mode is not None:
+                try:
+                    service.set_live_audio_mode(payload.live_audio.mode)
+                    omni.mode = payload.live_audio.mode
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         if payload.persist:
             saved = {"search": search.secret_snapshot()}
             if isinstance(llm, LocalLLMClient):
                 saved["llm"] = llm.secret_snapshot()
             saved["asr"] = asr.secret_snapshot()
+            if omni is not None:
+                saved["live_audio"] = omni.secret_snapshot()
             store.save(saved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await get_settings(request)
+
+
+@router.post("/probe-live-audio")
+async def probe_live_audio(request: Request):
+    omni = getattr(request.app.state, "omni_client", None)
+    if omni is None:
+        raise HTTPException(status_code=400, detail="Live audio direct is not configured")
+    capability = await omni.probe_capability()
+    return {"capability": capability}
 
 
 @router.get("/ui", response_class=HTMLResponse)

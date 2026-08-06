@@ -29,6 +29,7 @@ from interview_os.api.routes import (
 from interview_os.core.debug import DebugEventStore
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
+from interview_os.models.omni_client import OmniAudioClient
 from interview_os.services.interview_service import (
     EvaluationStateError,
     InterviewService,
@@ -56,6 +57,7 @@ def create_app(
     configure_llm: bool = True,
     settings_store: LocalSettingsStore | None = None,
     asr_client: ASRClient | None = None,
+    omni_client: OmniAudioClient | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
@@ -83,23 +85,40 @@ def create_app(
             logger.warning("Ignoring invalid persisted search settings")
     active_search_provider = search_provider or search_manager
     asr_client = asr_client or ASRClient(**saved_settings.get("asr", {}))
+    saved_live_audio = saved_settings.get("live_audio")
+    if omni_client is None:
+        omni_client = (
+            OmniAudioClient(**saved_live_audio)
+            if isinstance(saved_live_audio, dict) and saved_live_audio
+            else OmniAudioClient()
+        )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         await storage.init_db()
         application.state.interview_service = InterviewService(
-            storage, llm_client, active_search_provider, debug_events, asr_client
+            storage, llm_client, active_search_provider, debug_events, asr_client,
+            omni_client=omni_client,
         )
+        saved_mode = (saved_live_audio or {}).get("mode", "asr_text")
+        if isinstance(saved_mode, str):
+            try:
+                application.state.interview_service.set_live_audio_mode(saved_mode)
+                omni_client.mode = saved_mode
+            except ValueError:
+                logger.warning("Ignoring invalid persisted live audio mode: %s", saved_mode)
         application.state.search_manager = search_manager
         application.state.llm_client = llm_client
         application.state.debug_events = debug_events
         application.state.settings_store = settings_store
         application.state.asr_client = asr_client
+        application.state.omni_client = omni_client
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()
         await application.state.interview_service._background.close()
         await asr_client.close()
+        await omni_client.close()
         await storage.close()
 
     application = FastAPI(

@@ -958,3 +958,80 @@ def test_long_live_interview_rolls_and_dedupes(tmp_path):
         # Boundary suggestions exist for merged candidate runs.
         assert planned_json["answer_boundary_suggestions"]
 
+
+
+class _FakeOmniClient:
+    def __init__(self):
+        self.mode = "asr_text"
+        self.calls = []
+
+    async def suggest_next_question(self, audio_bytes, *, content_type="audio/wav", context="", stream=True):
+        self.calls.append({"bytes": len(audio_bytes), "content_type": content_type, "context": context})
+        return "请再补充说明一下方案权衡与量化结果。"
+
+    async def probe_capability(self):
+        return {"ok": True, "latency_ms": 1200.0, "sample": "测试建议"}
+
+    def configure(self, **kwargs):
+        if kwargs.get("mode"):
+            self.mode = kwargs["mode"]
+
+    def status(self):
+        return {"enabled": True, "mode": self.mode, "name": "测试直连", "base_url": "http://omni.test", "model": "m", "api_key_configured": False, "capability": {}}
+
+    def secret_snapshot(self):
+        return {"mode": self.mode, "name": "测试直连", "base_url": "http://omni.test", "api_key": "", "model": "m"}
+
+    async def close(self):
+        pass
+
+
+def test_live_audio_direct_mode_injects_suggestion(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'audio-direct.db'}")
+    omni = _FakeOmniClient()
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        omni_client=omni,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        # Switch to audio-direct via settings
+        switched = client.put(
+            "/api/settings",
+            json={"live_audio": {"mode": "audio_direct", "name": "我的直连"}, "persist": False},
+        )
+        assert switched.status_code == 200
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        uploaded = client.post(
+            f"/api/live-interviews/{session_id}/audio",
+            data={"speaker": "candidate", "language": "zh"},
+            files={"file": ("answer.wav", b"fake-audio-bytes", "audio/wav")},
+        )
+        assert uploaded.status_code == 200
+        live = uploaded.json()["state"]["live_interview"]
+        # No transcript segment, but a suggestion injected directly.
+        assert not any(s["speaker"] == "candidate" for s in live["segments"])
+        assert live["suggestions"], "audio-direct should inject a suggestion"
+        assert live["suggestions"][-1]["suggested_question"] == "请再补充说明一下方案权衡与量化结果。"
+
+
+def test_settings_probe_live_audio_reports_capability(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'probe.db'}")
+    omni = _FakeOmniClient()
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        omni_client=omni,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        probe = client.post("/api/settings/probe-live-audio")
+        assert probe.status_code == 200
+        assert probe.json()["capability"]["ok"] is True
