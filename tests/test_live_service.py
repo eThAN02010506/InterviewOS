@@ -709,3 +709,61 @@ async def test_think_structured_invalid_output_makes_single_call(tmp_path):
     # context), then the planner falls back deterministically instead of a
     # second repair call re-prefilling the whole context.
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# _live_audio_context (bounded full context for audio-direct mode)
+# ---------------------------------------------------------------------------
+
+
+def test_live_audio_context_includes_blueprint_transcript_evidence(service):
+    state = InterviewState()
+    state.job.competencies = ["系统设计", "稳定性治理"]
+    state.blueprint = InterviewBlueprint(
+        rounds=[
+            InterviewRound(
+                name="技术面",
+                goal="验证",
+                questions=[
+                    InterviewQuestion(
+                        question="请讲一次系统架构权衡。",
+                        competency="系统设计",
+                        rationale="",
+                    ),
+                    InterviewQuestion(
+                        question="请讲一次事故复盘。",
+                        competency="稳定性治理",
+                        rationale="",
+                    ),
+                ],
+            )
+        ]
+    )
+    state.live_interview.segments = [
+        _interviewer_segment(1, "请讲一次系统架构权衡。"),
+        _segment(2, "我对比了缓存和数据库方案。"),
+    ]
+    state.evidence.append(
+        Evidence(
+            competency="系统设计",
+            signal="缓存方案选型与压测验证",
+            confidence=0.8,
+            source=EvidenceSource.LIVE_INTERVIEW,
+        )
+    )
+    context = service._live_audio_context(state)
+    assert "岗位能力：系统设计、稳定性治理" in context
+    assert "请讲一次系统架构权衡" in context
+    assert "缓存方案选型与压测验证" in context
+    assert "系统设计" in context
+
+
+def test_live_audio_context_is_bounded(service):
+    state = InterviewState(job=JobDescription(title="岗位", competencies=["能力"]))
+    # Long transcript to force truncation
+    state.live_interview.segments = [
+        _segment(i, f"第 {i} 段回答：{'内容' * 200}", confirmed=True)
+        for i in range(1, 13)
+    ]
+    context = service._live_audio_context(state)
+    assert len(context) <= 2600  # OMNI_CONTEXT_CHAR_LIMIT + slack

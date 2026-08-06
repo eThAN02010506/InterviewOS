@@ -25,6 +25,9 @@ PLANNER_QUESTION_MAP_MAX = 12  # 规划器一次最多携带的未用蓝图题�
 PLANNER_SUMMARY_CHAR_LIMIT = 1500  # 规划器看到的滚动摘要截断字符上限
 PLANNER_MAX_TOKENS = 512  # 规划器结构化输出的 max_tokens，避免 decode 阶段浪费
 
+# 音频直连（全模态模型）上下文边界
+OMNI_CONTEXT_CHAR_LIMIT = 2500  # 直连模型一次携带的完整上下文截断字符上限
+
 # 覆盖引导
 COVERAGE_GUIDANCE_MAX_ITEMS = 8
 WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度低于此值判为信号偏弱

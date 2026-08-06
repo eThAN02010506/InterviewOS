@@ -391,6 +391,7 @@ def test_live_audio_transcription_and_next_question_flow(tmp_path):
         llm_client=WorkflowLLM(),
         configure_llm=False,
         asr_client=asr,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
     )
     with TestClient(app) as client:
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
@@ -1008,6 +1009,16 @@ def test_live_audio_direct_mode_injects_suggestion(tmp_path):
             f"/api/live-interviews/{session_id}/start",
             json={"consent_confirmed": True},
         )
+        # Add an interviewer question + candidate answer so the audio-direct
+        # context has transcript material to include.
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "interviewer", "text": "请讲一次系统设计经历。"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我对比了缓存和数据库方案。"},
+        )
         uploaded = client.post(
             f"/api/live-interviews/{session_id}/audio",
             data={"speaker": "candidate", "language": "zh"},
@@ -1015,10 +1026,19 @@ def test_live_audio_direct_mode_injects_suggestion(tmp_path):
         )
         assert uploaded.status_code == 200
         live = uploaded.json()["state"]["live_interview"]
-        # No transcript segment, but a suggestion injected directly.
-        assert not any(s["speaker"] == "candidate" for s in live["segments"])
+        # Audio-direct creates no new transcript segment (the model hears the
+        # audio directly); only the manually-added candidate segment remains.
+        candidate_segments = [s for s in live["segments"] if s["speaker"] == "candidate"]
+        assert len(candidate_segments) == 1  # only the manual one
+        assert not any(s["source"] == "asr" for s in live["segments"])
         assert live["suggestions"], "audio-direct should inject a suggestion"
         assert live["suggestions"][-1]["suggested_question"] == "请再补充说明一下方案权衡与量化结果。"
+        # The omni client must have received bounded context with transcript.
+        assert omni.calls, "omni client should have been called"
+        sent_context = omni.calls[-1]["context"]
+        assert "岗位能力" in sent_context
+        assert "请讲一次系统设计经历" in sent_context
+        assert len(sent_context) <= 2600  # bounded by OMNI_CONTEXT_CHAR_LIMIT
 
 
 def test_settings_probe_live_audio_reports_capability(tmp_path):
