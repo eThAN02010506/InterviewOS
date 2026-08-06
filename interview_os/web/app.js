@@ -493,6 +493,50 @@ function enqueueLiveContinuousChunk(blob){if(!blob.size)return;liveContinuousQue
 async function processLiveContinuousQueue(){if(liveContinuousUploading)return;liveContinuousUploading=true;try{while(liveContinuousQueue.length){const chunk=liveContinuousQueue.shift();$('live-recording-note').textContent=`正在转写连续监听第 ${chunk.index} 段；剩余 ${liveContinuousQueue.length} 段。`;try{await uploadLiveAudioBlob(chunk.blob,chunk.type,'unknown',`continuous-${chunk.index}`);renderLive();}catch(error){$('live-recording-note').textContent=`连续监听第 ${chunk.index} 段转写失败，可手动输入补录。`;toast(`连续监听第 ${chunk.index} 段转写失败：${error.message}`,true);}}}finally{liveContinuousUploading=false;if(!liveContinuousMode){$('live-recording-note').textContent='连续监听队列已处理完成；请审阅待确认片段。';}renderLive();}}
 
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
+
+let liveSuggestionStream = null;
+async function streamNextSuggestion() {
+  if (!state.sessionId || liveSuggestionStream) return;
+  liveSuggestionStream = true;
+  const node = $('live-suggestion');
+  if (node) {
+    node.className = 'suggestion-card streaming';
+    node.innerHTML = '<p class="streaming-hint">AI 正在生成下一问…</p><div id="streaming-text" class="streaming-text"></div>';
+  }
+  try {
+    const resp = await fetch(`/api/live-interviews/${state.sessionId}/suggestions/stream`, {method:'POST'});
+    if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || '流式建议失败');
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    const box = $('streaming-text');
+    let buffer = '';
+    let full = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream:true});
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const event = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+        const line = event.split('\n').find(l => l.startsWith('data: '));
+        if (line) {
+          const piece = line.slice(6);
+          full += piece;
+          if (box) box.textContent = full;
+        }
+      }
+    }
+    await refreshLive();
+    if (node) node.classList.remove('streaming');
+    toast('下一问已流式生成');
+  } catch (error) {
+    toast(error.message, true);
+    await refreshLive();
+  } finally {
+    liveSuggestionStream = null;
+  }
+}
+$('live-stream-plan')?.addEventListener('click', streamNextSuggestion);
 $('live-confirm-all').onclick=async()=>{const competency=window.prompt('批量确认使用的能力维度；留空则由系统按问题推断','')||'';const button=$('live-confirm-all');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/batch`,{method:'POST',body:JSON.stringify({competency})});state.session=data.state;renderAll();toast('待确认候选人回答已批量归档');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 $('live-confirm-merged').onclick=async()=>{const recordedSegmentIds=new Set((state.session?.live_interview_records||[]).flatMap(record=>record.transcript_segment_ids||[]));const pending=(state.session?.live_interview?.segments||[]).filter(segment=>segment.speaker==='candidate'&&!recordedSegmentIds.has(segment.id));if(pending.length<2){toast('至少需要两段候选人发言才能合并确认',true);return;}const defaultSequences=pending.map(segment=>segment.sequence).join(',');const selected=window.prompt('输入要合并的候选人片段序号，用逗号分隔',defaultSequences)||'';const wanted=new Set(selected.split(',').map(value=>Number(value.trim())).filter(Number.isFinite));const segmentIds=pending.filter(segment=>wanted.has(segment.sequence)).map(segment=>segment.id);if(segmentIds.length<2){toast('请选择至少两段候选人发言',true);return;}const defaultCompetency=state.session?.job?.competencies?.[0]||'综合能力';const competency=window.prompt('合并后的回答对应哪个能力维度？',defaultCompetency)||'';if(!competency.trim())return;const questionSegmentId=nearestLiveQuestionSegmentId(segmentIds[0]);const button=$('live-confirm-merged');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/merge`,{method:'POST',body:JSON.stringify({segment_ids:segmentIds,question_segment_id:questionSegmentId,competency})});state.session=data.state;renderAll();toast(`已合并 ${segmentIds.length} 段候选人回答为一条证据`);}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 async function confirmBoundarySuggestion(suggestion, button = null) {if(!suggestion)return;const competency=window.prompt('合并后的回答对应哪个能力维度？',suggestion.suggested_competency||'综合能力')||'';if(!competency.trim())return;if(button)busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/merge`,{method:'POST',body:JSON.stringify({segment_ids:suggestion.answer_segment_ids||[],question_segment_id:suggestion.question_segment_id||null,competency})});state.session=data.state;renderAll();toast(`已按边界建议合并 ${(suggestion.answer_segment_ids||[]).length} 段回答`);}catch(error){toast(error.message,true)}finally{if(button)busy(button,false)}}

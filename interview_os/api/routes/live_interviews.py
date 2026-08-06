@@ -6,6 +6,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.responses import StreamingResponse
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
@@ -180,6 +181,17 @@ async def transcribe_audio(
 @router.post("/{session_id}/suggestions", response_model=WorkflowResponse)
 async def plan_next_question(session_id: str, service: Service):
     return response(session_id, await service.plan_live_next_question(session_id))
+
+
+@router.post("/{session_id}/suggestions/stream")
+async def stream_next_question(session_id: str, service: Service):
+    """Stream the next-question suggestion token by token (text/event-stream)."""
+
+    async def event_stream():
+        async for piece in service.stream_live_suggestion(session_id):
+            yield f"data: {piece}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.patch("/{session_id}/suggestions/{suggestion_id}", response_model=WorkflowResponse)

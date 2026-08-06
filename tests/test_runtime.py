@@ -47,3 +47,57 @@ async def test_runtime_run_missing_agent_async():
     runtime = AgentRuntime()
     result = await runtime.run("nonexistent")
     assert "not found" in result.content
+
+
+@pytest.mark.asyncio
+async def test_local_llm_chat_stream_yields_delta_content():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        body = request.content
+        assert b"stream" in body
+        return httpx.Response(
+            200,
+            text=(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"
+                "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n"
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="m",
+        transport=httpx.MockTransport(handler),
+    )
+    chunks = []
+    async for piece in client.chat_stream([{"role": "user", "content": "hi"}]):
+        chunks.append(piece)
+    assert chunks == ["你", "好"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_chat_stream_failure_yields_error():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    def handler(request):
+        raise httpx.ConnectError("boom")
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="m",
+        transport=httpx.MockTransport(handler),
+    )
+    chunks = []
+    async for piece in client.chat_stream([{"role": "user", "content": "hi"}]):
+        chunks.append(piece)
+    assert chunks and "LLM Error" in chunks[0]
+    await client.close()

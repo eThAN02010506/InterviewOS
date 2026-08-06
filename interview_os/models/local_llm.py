@@ -5,8 +5,10 @@ Supports Ollama / vLLM / LM Studio backends.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -17,6 +19,11 @@ from interview_os.models.llm_interface import LLMClient
 from interview_os.services.settings_service import PermissionRestrictedJsonStore
 
 logger = logging.getLogger(__name__)
+
+
+def _approx_tokens(text: str) -> int:
+    """Rough token estimate for streaming (no server usage count available)."""
+    return max(1, len(text) // 4)
 
 
 class LocalLLMClient(LLMClient):
@@ -31,6 +38,7 @@ class LocalLLMClient(LLMClient):
         input_cost_per_million: float = 0.0,
         output_cost_per_million: float = 0.0,
         metrics_path: str | Path | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url: str = base_url or os.getenv("LLM_BASE_URL") or "http://localhost:11434/v1"
         self.api_key: str = api_key or os.getenv("LLM_API_KEY") or "ollama"
@@ -40,7 +48,7 @@ class LocalLLMClient(LLMClient):
         )
         self.input_cost_per_million = max(0.0, input_cost_per_million)
         self.output_cost_per_million = max(0.0, output_cost_per_million)
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120.0)
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120.0, transport=transport)
         self._metrics_store = (
             PermissionRestrictedJsonStore(metrics_path) if metrics_path is not None else None
         )
@@ -86,6 +94,62 @@ class LocalLLMClient(LLMClient):
             self._metrics["failures"] += 1
             logger.error("LLM chat failed: %s", exc)
             return f"[LLM Error: {exc}]"
+        finally:
+            self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
+            self._persist_metrics()
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream tokens from the OpenAI-compatible endpoint as SSE lines.
+
+        Yields each ``delta.content`` piece as it arrives; the caller can relay
+        them to the browser so a suggestion renders incrementally instead of
+        after the full generation.
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            **kwargs,
+        }
+        started = perf_counter()
+        self._metrics["requests"] += 1
+        try:
+            resp = await self._client.post(
+                "/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            resp.raise_for_status()
+            content = ""
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                piece = line[5:].strip()
+                if piece == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(piece)
+                    delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                    text = delta.get("content") or ""
+                except (ValueError, TypeError):
+                    continue
+                if text:
+                    content += text
+                    yield text
+            if content:
+                self._metrics["completion_tokens"] += _approx_tokens(content)
+        except httpx.HTTPError as exc:
+            self._metrics["failures"] += 1
+            logger.error("LLM chat_stream failed: %s", exc)
+            yield f"[LLM Error: {exc}]"
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
             self._persist_metrics()

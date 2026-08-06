@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -862,6 +863,36 @@ class InterviewService:
             self._refresh_live_action_card(runtime.state)
             runtime.state.next_action = "Interviewer reviews the audio-direct suggestion"
             await self._persist(session_id, runtime.state)
+
+    async def stream_live_suggestion(self, session_id: str) -> AsyncIterator[str]:
+        """Stream a next-question suggestion token by token.
+
+        Yields each text chunk as the model generates it, then persists the
+        completed suggestion into the review queue so the flow is the same as
+        a non-streamed plan. Falls back to a static suggestion if streaming is
+        not possible.
+        """
+        runtime = await self._get_runtime(session_id)
+        state = runtime.state
+        context = self._live_audio_context(state)
+        text = ""
+        if self.llm_client is not None and hasattr(self.llm_client, "chat_stream"):
+            prompt = (
+                "你是面试官助手。根据面试上下文，给出一个聚焦证据缺口的下一问追问。"
+                "直接输出问题本身，中文，简洁，不超过两句话。不要输出 JSON。\n\n"
+                f"面试上下文：\n{context}"
+            )
+            messages = [
+                {"role": "system", "content": "你是面试官助手，根据上下文给出下一问追问。"},
+                {"role": "user", "content": prompt},
+            ]
+            async for piece in self.llm_client.chat_stream(messages, temperature=0.4, max_tokens=200):
+                text += piece
+                yield piece
+        if not text.strip():
+            text = "请再补充说明一下你刚才提到的方案权衡与量化结果。"
+            yield text
+        await self._inject_audio_direct_suggestion(session_id, runtime, text)
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""

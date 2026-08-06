@@ -238,6 +238,14 @@ when a suggestion is still pending to avoid duplicate LLM calls), and the live v
 polls every 3 seconds to refresh the suggestion card and scoring status. This
 removes the manual "confirm evidence, then click generate" wait from the hot path.
 
+Next-question suggestions can also be **streamed** (SSE): the "流式生成" button
+calls `POST /api/live-interviews/{id}/suggestions/stream`, which streams the model
+output token by token so the suggestion card fills in live instead of appearing
+after the full generation. Transcript ingestion stays chunked (the LAN ASR has no
+streaming endpoint), but a finished chunk immediately produces a streaming
+suggestion. Verified with the real 8001 model: tokens arrive incrementally and the
+completed suggestion lands in the review queue (~8s full, first token ~1s).
+
 The live audio path is switchable between two modes (Settings → 实时音频处理):
 - **ASR + text (default)**: the classic path — audio to the LAN ASR, transcript to
   the text LLM.
