@@ -85,6 +85,7 @@ function setRole(role) {
 function setView(view) {
   const allowed = navigation[state.role].some(([name]) => name === view) || globalViews.has(view);
   if (!allowed) view = `${state.role}-home`;
+  if (view !== 'live' && liveSuggestionAbort) liveSuggestionAbort.abort();
   state.view = view;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
   [$('view-eyebrow').textContent, $('view-title').textContent] = viewMeta[view];
@@ -197,8 +198,10 @@ function renderLive() {
     return `<div class="transcript-segment ${esc(segment.speaker)}" data-segment-id="${esc(segment.id)}"><span>${segment.speaker==='candidate'?'候选人':segment.speaker==='interviewer'?'面试官':'待确认'} · ${esc(segment.source)}</span><p>${esc(segment.text)}</p><div class="transcript-actions">${editAction}${evidenceAction}</div></div>`;
   }).join('') : '尚无转写片段。';
   const suggestion = [...(live?.suggestions || [])].reverse().find(item => item.status === 'pending') || [...(live?.suggestions || [])].reverse()[0];
-  $('live-suggestion').className = suggestion ? 'suggestion-card' : 'empty-state';
-  $('live-suggestion').innerHTML = suggestion ? `<div class="suggestion-meta"><span>${esc(suggestion.question_type)}</span><b>${esc(suggestion.competency)}</b><em>${Math.round((suggestion.confidence||0)*100)}%</em></div><h4>${esc(suggestion.final_question||suggestion.suggested_question)}</h4><p>${esc(suggestion.rationale)}</p>${suggestion.evidence_gap?`<div class="evidence-gap"><small>待补证据</small>${esc(suggestion.evidence_gap)}</div>`:''}${tags(suggestion.expected_signals||[])}${suggestion.status==='pending'?`<div class="suggestion-actions"><button class="btn primary compact" data-live-decision="adopted" data-suggestion-id="${esc(suggestion.id)}">采用</button><button class="btn compact" data-live-decision="edited" data-suggestion-id="${esc(suggestion.id)}">编辑后采用</button><button class="btn compact" data-live-decision="skipped" data-suggestion-id="${esc(suggestion.id)}">跳过</button></div>`:`<small>处理结果：${esc(suggestion.status)}</small>`}` : '录入候选人回答后，AI 会准备一个有证据目标的问题。';
+  if (!liveSuggestionStream) {
+    $('live-suggestion').className = suggestion ? 'suggestion-card' : 'empty-state';
+    $('live-suggestion').innerHTML = suggestion ? `<div class="suggestion-meta"><span>${esc(suggestion.question_type)}</span><b>${esc(suggestion.competency)}</b><em>${Math.round((suggestion.confidence||0)*100)}%</em></div><h4>${esc(suggestion.final_question||suggestion.suggested_question)}</h4><p>${esc(suggestion.rationale)}</p>${suggestion.evidence_gap?`<div class="evidence-gap"><small>待补证据</small>${esc(suggestion.evidence_gap)}</div>`:''}${tags(suggestion.expected_signals||[])}${suggestion.status==='pending'?`<div class="suggestion-actions"><button class="btn primary compact" data-live-decision="adopted" data-suggestion-id="${esc(suggestion.id)}">采用</button><button class="btn compact" data-live-decision="edited" data-suggestion-id="${esc(suggestion.id)}">编辑后采用</button><button class="btn compact" data-live-decision="skipped" data-suggestion-id="${esc(suggestion.id)}">跳过</button></div>`:`<small>处理结果：${esc(suggestion.status)}</small>`}` : '录入候选人回答后，AI 会准备一个有证据目标的问题。';
+  }
   const competencies = state.session?.job?.competencies || [];
   if ($('live-review')) {
     $('live-confirm-all').disabled = !pendingCandidateSegments.length;
@@ -495,45 +498,68 @@ async function processLiveContinuousQueue(){if(liveContinuousUploading)return;li
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 
 let liveSuggestionStream = null;
+let liveSuggestionAbort = null;
 async function streamNextSuggestion() {
   if (!state.sessionId || liveSuggestionStream) return;
   liveSuggestionStream = true;
+  liveSuggestionAbort = new AbortController();
   const node = $('live-suggestion');
   if (node) {
     node.className = 'suggestion-card streaming';
     node.innerHTML = '<p class="streaming-hint">AI 正在生成下一问…</p><div id="streaming-text" class="streaming-text"></div>';
   }
   try {
-    const resp = await fetch(`/api/live-interviews/${state.sessionId}/suggestions/stream`, {method:'POST'});
+    const resp = await fetch(`/api/live-interviews/${state.sessionId}/suggestions/stream`, {method:'POST', signal: liveSuggestionAbort.signal});
     if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || '流式建议失败');
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     const box = $('streaming-text');
     let buffer = '';
     let full = '';
-    while (true) {
+    let finished = false;
+    while (!finished) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, {stream:true});
+      buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+      finished = done;
       let idx;
       while ((idx = buffer.indexOf('\n\n')) !== -1) {
         const event = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
-        const line = event.split('\n').find(l => l.startsWith('data: '));
-        if (line) {
-          const piece = line.slice(6);
-          full += piece;
-          if (box) box.textContent = full;
+        for (const line of event.split('\n')) {
+          if (line.startsWith('data: ')) {
+            const piece = line.slice(6);
+            full += piece;
+            if (box) box.textContent = full;
+          }
         }
       }
+      if (done) break;
     }
-    await refreshLive();
+    // Flush any trailing buffer (partial final event).
+    if (buffer.trim()) {
+      for (const line of buffer.trim().split('\n')) {
+        if (line.startsWith('data: ')) { full += line.slice(6); }
+      }
+      if (box) box.textContent = full;
+    }
+    // Directly refresh state, bypassing the poll's busy guard.
+    try {
+      const data = await api(`/api/live-interviews/${state.sessionId}`);
+      state.session = data.state;
+      renderLive();
+    } catch { /* ignore refresh errors */ }
     if (node) node.classList.remove('streaming');
     toast('下一问已流式生成');
   } catch (error) {
-    toast(error.message, true);
-    await refreshLive();
+    if (error.name !== 'AbortError') {
+      toast(error.message, true);
+      try {
+        const data = await api(`/api/live-interviews/${state.sessionId}`);
+        state.session = data.state; renderLive();
+      } catch { /* ignore */ }
+    }
   } finally {
     liveSuggestionStream = null;
+    liveSuggestionAbort = null;
   }
 }
 $('live-stream-plan')?.addEventListener('click', streamNextSuggestion);

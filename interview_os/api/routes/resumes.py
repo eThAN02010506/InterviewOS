@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -21,9 +21,11 @@ async def upload_resume(
     session_id: str,
     service: Service,
     file: Annotated[UploadFile, File()],
-    structure: Annotated[str, Form()] = "rules",
+    structure: Annotated[Literal["rules", "llm"], Form()] = "rules",
 ):
     content = await file.read(MAX_RESUME_BYTES + 1)
+    if len(content) > MAX_RESUME_BYTES:
+        raise ResumeProcessingError("简历不能超过 10 MB")
     state = await service.upload_resume(
         session_id, file.filename or "resume", content, structure=structure
     )

@@ -186,6 +186,10 @@ async def plan_next_question(session_id: str, service: Service):
 @router.post("/{session_id}/suggestions/stream")
 async def stream_next_question(session_id: str, service: Service):
     """Stream the next-question suggestion token by token (text/event-stream)."""
+    # Guard before streaming so a non-active session returns 409 instead of an
+    # uncaught generator error mid-stream.
+    state = await service.get_state(session_id)
+    service.assert_live_active(state)
 
     async def event_stream():
         async for piece in service.stream_live_suggestion(session_id):

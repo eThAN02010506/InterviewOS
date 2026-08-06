@@ -802,9 +802,9 @@ class InterviewService:
 
         stable_segments = [
             item
-            for item in state.live_interview.segments[-LIVE_RECENT_SEGMENT_WINDOW:]
+            for item in state.live_interview.segments
             if item.stable and item.confirmed
-        ]
+        ][-LIVE_RECENT_SEGMENT_WINDOW:]
         if stable_segments:
             speaker_labels = {
                 TranscriptSpeaker.INTERVIEWER: "面试官",
@@ -821,9 +821,9 @@ class InterviewService:
 
         live_evidence = [
             f"{item.competency}：{item.signal}"
-            for item in state.evidence[-5:]
+            for item in state.evidence
             if item.source == EvidenceSource.LIVE_INTERVIEW
-        ]
+        ][-5:]
         if live_evidence:
             parts.append("已确认证据：" + "；".join(live_evidence))
 
@@ -841,7 +841,7 @@ class InterviewService:
     ) -> None:
         """Create a QuestionSuggestion from an audio-direct model answer."""
         clean = suggestion_text.strip()
-        if not clean:
+        if not clean or clean.startswith("[LLM Error"):
             clean = "请再补充说明一下你刚才提到的方案权衡与结果。"
         competency = (
             runtime.state.job.competencies[0]
@@ -857,8 +857,8 @@ class InterviewService:
             expected_signals=["具体行动", "技术权衡", "可量化结果"],
             confidence=0.7,
         )
-        runtime.state.live_interview.suggestions.append(suggestion)
         async with self._lock_for(session_id):
+            runtime.state.live_interview.suggestions.append(suggestion)
             self._refresh_live_question_usage(runtime.state)
             self._refresh_live_action_card(runtime.state)
             runtime.state.next_action = "Interviewer reviews the audio-direct suggestion"
@@ -870,10 +870,12 @@ class InterviewService:
         Yields each text chunk as the model generates it, then persists the
         completed suggestion into the review queue so the flow is the same as
         a non-streamed plan. Falls back to a static suggestion if streaming is
-        not possible.
+        not possible. Callers should guard with :meth:`assert_live_active`
+        first so the 409 is raised before streaming begins.
         """
         runtime = await self._get_runtime(session_id)
         state = runtime.state
+        self.assert_live_active(state)
         context = self._live_audio_context(state)
         text = ""
         if self.llm_client is not None and hasattr(self.llm_client, "chat_stream"):
@@ -889,10 +891,15 @@ class InterviewService:
             async for piece in self.llm_client.chat_stream(messages, temperature=0.4, max_tokens=200):
                 text += piece
                 yield piece
-        if not text.strip():
+        if not text.strip() or text.startswith("[LLM Error"):
             text = "请再补充说明一下你刚才提到的方案权衡与量化结果。"
             yield text
         await self._inject_audio_direct_suggestion(session_id, runtime, text)
+
+    @staticmethod
+    def assert_live_active(state: InterviewState) -> None:
+        if state.live_interview.status != LiveInterviewStatus.ACTIVE:
+            raise LiveInterviewStateError("Live interview must be active")
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""

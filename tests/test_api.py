@@ -1125,3 +1125,18 @@ def test_resume_upload_default_rules_structure(tmp_path):
         review = uploaded.json()["state"]["resume_review"]
         assert review["structured_by"] == "rules"
         assert review["structured"] == []
+
+
+def test_suggestions_stream_requires_active_live(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'stream-guard.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        # Live not started -> streaming must refuse instead of calling the LLM.
+        resp = client.post(f"/api/live-interviews/{session_id}/suggestions/stream")
+        assert resp.status_code == 409

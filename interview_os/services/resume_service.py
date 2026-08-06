@@ -241,12 +241,21 @@ class ResumeProcessor:
         merged: list[str] = []
         for line in lines:
             statement = line.strip()
+            prev = merged[-1] if merged else ""
+            # Only fold when the previous line is a date-range start
+            # ("YYYY-MM to Company"), not any line that happens to contain "to".
+            is_range_start = bool(
+                re.search(
+                    r"\b(?:19|20)\d{2}[-/.]\d{1,2}\s+(?:to|至)\s+[A-Za-z一-鿿]",
+                    prev,
+                )
+            )
             if (
                 statement
                 and merged
                 and re.fullmatch(r"(?:19|20)\d{2}[-/.]\d{1,2}", statement)
-                and re.search(r"\bto\b", merged[-1])
-                and not re.search(r"(?:19|20)\d{2}[-/.]\d{1,2}\s*to\s*\S+\s*(?:19|20)\d{2}[-/.]\d{1,2}", merged[-1])
+                and is_range_start
+                and not re.search(r"(?:19|20)\d{2}[-/.]\d{1,2}\s*to\s*\S+\s*(?:19|20)\d{2}[-/.]\d{1,2}", prev)
             ):
                 merged[-1] = f"{merged[-1]} {statement}"
                 continue
