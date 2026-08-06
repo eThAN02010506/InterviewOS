@@ -295,6 +295,7 @@ class InterviewService:
         content_type: str,
         speaker: TranscriptSpeaker,
         language: str = "zh",
+        mode: str = "single",
     ) -> tuple[InterviewState, str]:
         if len(content) > 25 * 1024 * 1024:
             raise LiveInterviewStateError("Audio chunk exceeds the 25 MB limit")
@@ -305,6 +306,10 @@ class InterviewService:
         if self.live_audio_mode == "audio_direct":
             if self.omni_client is None:
                 raise LiveInterviewStateError("Omni audio client is not configured")
+            if mode == "dialogue":
+                return await self._transcribe_dialogue(
+                    session_id, runtime, content, content_type=content_type, started=started
+                )
             if speaker != TranscriptSpeaker.CANDIDATE:
                 raise LiveInterviewStateError("音频直连模式仅支持候选人回答")
             context = self._live_audio_context(runtime.state)
@@ -900,6 +905,67 @@ class InterviewService:
     def assert_live_active(state: InterviewState) -> None:
         if state.live_interview.status != LiveInterviewStatus.ACTIVE:
             raise LiveInterviewStateError("Live interview must be active")
+
+    @staticmethod
+    def _merge_diarized_segments(
+        segments: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Merge consecutive utterances from the same speaker into one segment.
+
+        The diarize model returns one entry per sentence; a long candidate
+        answer spanning several sentences should become one transcript segment
+        so it can be confirmed as a single piece of evidence.
+        """
+        merged: list[dict[str, str]] = []
+        for segment in segments:
+            speaker = segment.get("speaker", "unknown")
+            text = segment.get("text", "").strip()
+            if not text:
+                continue
+            if merged and merged[-1]["speaker"] == speaker:
+                merged[-1]["text"] = f"{merged[-1]['text']}\n{text}"
+            else:
+                merged.append({"speaker": speaker, "text": text})
+        return merged
+
+    async def _transcribe_dialogue(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        content: bytes,
+        *,
+        content_type: str,
+        started: float,
+    ) -> tuple[InterviewState, str]:
+        """Transcribe a dialog, auto-splitting speakers, then append segments."""
+        diarized = await self.omni_client.transcribe_diarize(
+            content, content_type=content_type
+        )
+        merged = self._merge_diarized_segments(diarized)
+        if not merged:
+            raise LiveInterviewStateError("音频直连未能识别对话中的说话人，请重试或手动输入")
+        summary_parts: list[str] = []
+        for segment in merged:
+            speaker = (
+                TranscriptSpeaker.CANDIDATE
+                if segment["speaker"] == "candidate"
+                else TranscriptSpeaker.INTERVIEWER
+                if segment["speaker"] == "interviewer"
+                else TranscriptSpeaker.UNKNOWN
+            )
+            text = segment["text"]
+            summary_parts.append(text)
+            await self.append_live_transcript(
+                session_id, text=text, speaker=speaker, source="audio_direct"
+            )
+        self._record_debug(
+            "audio_direct_dialogue",
+            session_id,
+            detail=f"segments={len(merged)}; speakers={len({s['speaker'] for s in merged})}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        summary = " | ".join(summary_parts)
+        return runtime.state, summary
 
     async def confirm_pending_live_answers(
         self, session_id: str, *, competency: str = ""

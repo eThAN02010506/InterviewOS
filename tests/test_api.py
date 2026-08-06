@@ -1140,3 +1140,62 @@ def test_suggestions_stream_requires_active_live(tmp_path):
         # Live not started -> streaming must refuse instead of calling the LLM.
         resp = client.post(f"/api/live-interviews/{session_id}/suggestions/stream")
         assert resp.status_code == 409
+
+
+class _DiarizeOmni:
+    """Stub omni client returning a two-speaker dialog split."""
+
+    async def transcribe_diarize(self, audio_bytes, *, content_type="audio/wav"):
+        return [
+            {"speaker": "interviewer", "text": "请讲一次系统设计。"},
+            {"speaker": "candidate", "text": "我对比了缓存和数据库方案。"},
+            {"speaker": "candidate", "text": "用压测验证性能提升。"},
+        ]
+
+    def configure(self, **kwargs):
+        pass
+
+    async def suggest_next_question(self, audio_bytes, *, content_type="audio/wav", context="", stream=True):
+        return "追问建议"
+
+    async def probe_capability(self):
+        return {"ok": True}
+
+    def status(self):
+        return {"enabled": True}
+
+    def secret_snapshot(self):
+        return {}
+
+    async def close(self):
+        pass
+
+
+def test_audio_direct_dialogue_mode_splits_speakers(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'dialogue.db'}")
+    omni = _DiarizeOmni()
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        omni_client=omni,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        client.put("/api/settings", json={"live_audio": {"mode": "audio_direct"}, "persist": False})
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True})
+        uploaded = client.post(
+            f"/api/live-interviews/{session_id}/audio",
+            data={"mode": "dialogue", "speaker": "unknown", "language": "zh"},
+            files={"file": ("dialog.wav", b"audio-bytes", "audio/wav")},
+        )
+        assert uploaded.status_code == 200
+        live = uploaded.json()["state"]["live_interview"]
+        segments = live["segments"]
+        speakers = [s["speaker"] for s in segments]
+        # Interviewer + one merged candidate segment (two candidate utterances merged).
+        assert speakers[0] == "interviewer"
+        assert speakers[1] == "candidate"
+        assert len(segments) == 2
+        assert "用压测验证性能提升" in segments[1]["text"]

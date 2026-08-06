@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -161,6 +161,7 @@ async def transcribe_audio(
     file: Annotated[UploadFile, File()],
     speaker: Annotated[str, Form()] = "candidate",
     language: Annotated[str, Form()] = "zh",
+    mode: Annotated[Literal["single", "dialogue"], Form()] = "single",
 ):
     try:
         parsed_speaker = TranscriptSpeaker(speaker)
@@ -174,6 +175,7 @@ async def transcribe_audio(
         content_type=file.content_type or "application/octet-stream",
         speaker=parsed_speaker,
         language=language,
+        mode=mode,
     )
     return response(session_id, state)
 

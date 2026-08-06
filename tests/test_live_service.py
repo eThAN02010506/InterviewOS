@@ -774,3 +774,54 @@ def test_live_audio_context_keeps_anchor_when_over_limit(service):
     context = service._live_audio_context(state)
     assert len(context) <= 2600  # OMNI_CONTEXT_CHAR_LIMIT + slack
     assert "岗位能力：能力" in context  # anchor is never dropped
+
+
+# ---------------------------------------------------------------------------
+# diarize: parse + merge
+# ---------------------------------------------------------------------------
+
+
+def test_parse_diarized_response_maps_speakers():
+    from interview_os.models.omni_client import _parse_diarized_response
+
+    raw = '''```json
+    {"segments":[{"speaker":"面试官","text":"请讲一次系统设计。"},{"speaker":"候选人","text":"我对比了方案。"}]}
+    ```'''
+    segments = _parse_diarized_response(raw)
+    assert segments == [
+        {"speaker": "interviewer", "text": "请讲一次系统设计。"},
+        {"speaker": "candidate", "text": "我对比了方案。"},
+    ]
+
+
+def test_parse_diarized_response_invalid_returns_empty():
+    from interview_os.models.omni_client import _parse_diarized_response
+
+    assert _parse_diarized_response("not json") == []
+    assert _parse_diarized_response("") == []
+
+
+def test_merge_diarized_segments_combines_consecutive_speakers():
+    merged = InterviewService._merge_diarized_segments(
+        [
+            {"speaker": "interviewer", "text": "问题一"},
+            {"speaker": "candidate", "text": "回答第一句"},
+            {"speaker": "candidate", "text": "回答第二句"},
+            {"speaker": "interviewer", "text": "追问"},
+        ]
+    )
+    assert len(merged) == 3
+    assert merged[1]["speaker"] == "candidate"
+    assert "回答第一句" in merged[1]["text"]
+    assert "回答第二句" in merged[1]["text"]
+
+
+def test_merge_diarized_segments_skips_empty():
+    merged = InterviewService._merge_diarized_segments(
+        [
+            {"speaker": "interviewer", "text": "   "},
+            {"speaker": "candidate", "text": "有效回答"},
+        ]
+    )
+    assert len(merged) == 1
+    assert merged[0]["speaker"] == "candidate"

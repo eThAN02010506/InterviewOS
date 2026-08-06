@@ -31,6 +31,38 @@ def _read_file(path: str) -> bytes:
     with open(path, "rb") as handle:
         return handle.read()
 
+
+def _parse_diarized_response(raw: str) -> list[dict[str, str]]:
+    """Parse the diarize JSON into speaker-labelled segments."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`").removeprefix("json")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return []
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    segments: list[dict[str, str]] = []
+    for entry in payload.get("segments", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        speaker_raw = str(entry.get("speaker") or "").strip()
+        utterance = str(entry.get("text") or "").strip()
+        if not utterance:
+            continue
+        speaker = (
+            "candidate"
+            if "候选" in speaker_raw or "candidate" in speaker_raw.lower()
+            else "interviewer"
+            if "面试" in speaker_raw or "interview" in speaker_raw.lower()
+            else "unknown"
+        )
+        segments.append({"speaker": speaker, "text": utterance})
+    return segments
+
 # A short built-in Chinese utterance used to verify the endpoint actually
 # understands audio end to end, not just that it responds.
 _PROBE_AUDIO_BASE64 = (
@@ -175,6 +207,40 @@ class OmniAudioClient:
                 yield "[音频直连模型未返回可用建议]"
 
         return chunks()
+
+    async def transcribe_diarize(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str = "audio/wav",
+    ) -> list[dict[str, str]]:
+        """Ask the omni model to split the audio by speaker.
+
+        The model hears a two-person dialog and returns per-utterance speaker
+        labels. Returns a list of ``{"speaker": "interviewer"|"candidate",
+        "text": ...}``; an empty list on any failure so the caller falls back.
+        """
+        audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
+        fmt = "wav" if "wav" in content_type else "mp3" if "mp3" in content_type else "webm"
+        system = (
+            "你是面试助手。这段对话里第一个说话的是面试官，另一个是候选人。"
+            "请逐句标注说话人。只输出 JSON："
+            '{"segments":[{"speaker":"面试官或候选人","text":"..."}]}'
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            self._audio_message(audio_base64, fmt),
+        ]
+        try:
+            response, _ = await self._chat(messages, max_tokens=600, stream=False)
+            raw = response.json()["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001 - report and fall back
+            logger.warning("Omni diarize failed: %s", exc)
+            return []
+        segments = _parse_diarized_response(raw)
+        if not segments:
+            logger.warning("Omni diarize returned no usable segments")
+        return segments
 
     @staticmethod
     async def _read_probe_audio(path: str) -> bytes:

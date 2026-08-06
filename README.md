@@ -257,6 +257,15 @@ The live audio path is switchable between two modes (Settings → 实时音频�
   It intentionally does not create a transcript segment (the model understands
   the audio directly); the suggestion is injected straight into the review queue.
 
+  The audio-direct mode also supports **automatic speaker separation**: the
+  "对话模式" button records a whole dialog (interviewer + candidate, no manual
+  speaker selection), sends it to the omni model, which returns per-utterance
+  speaker labels; consecutive utterances from the same speaker are merged into
+  one transcript segment so a long candidate answer becomes one confirmable
+  evidence segment. Verified with a real two-voice Chinese dialog: the model
+  correctly split interviewer vs candidate across 4 turns. Manual speaker
+  correction remains available if the split is ever wrong.
+
   The direct path's context is **focused and priority-ordered** for speed: it
   carries only the job/covered competencies (the anchor, always kept), the
   recent stable conversation, and the most recent live evidence. Advancement-only
