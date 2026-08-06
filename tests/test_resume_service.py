@@ -147,3 +147,18 @@ def test_employment_claim_requires_timeline_signal():
     )
     employment = [claim.statement for claim in claims if claim.category == "employment"]
     assert employment == ["2020-01 Example Company Senior Manager"]
+
+
+def test_vertical_date_range_merges_end_date_and_recognizes_english_company():
+    # A vertical date layout: start + employer on one line, end date alone next.
+    text = (
+        "2018-07 to ZUORA\n"
+        "2022-12\n"
+        "Senior Recruiting Manager\n"
+        "Led Talent Acquisition across APAC.\n"
+    )
+    claims = ResumeProcessor._find_claims(text)
+    employment = [c.statement for c in claims if c.category == "employment"]
+    # The end date is folded into the employer line, and the bare English
+    # company name (no Inc/Corp/Company suffix) is still recognized.
+    assert any("2018-07 to ZUORA 2022-12" in statement for statement in employment)

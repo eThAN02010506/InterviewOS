@@ -187,7 +187,11 @@ class ResumeProcessor:
             ),
             (
                 "employment",
-                re.compile(r"有限公司|集团|inc\.?|corp\.?|company|任职|就职", re.IGNORECASE),
+                re.compile(
+                    r"有限公司|集团|inc\.?|corp\.?|company|任职|就职|"
+                    r"(?:19|20)\d{2}[-/.]\d{1,2}\s+to\s+[A-Za-z]",
+                    re.IGNORECASE,
+                ),
                 "public_source_or_reference",
             ),
             (
@@ -202,7 +206,7 @@ class ResumeProcessor:
             ),
         )
         seen: set[tuple[str, str]] = set()
-        for line in text.splitlines():
+        for line in ResumeProcessor._merge_vertical_date_ranges(text.splitlines()):
             statement = line.strip()
             if not 8 <= len(statement) <= 300:
                 continue
@@ -225,3 +229,26 @@ class ResumeProcessor:
                     if len(claims) == 40:
                         return claims
         return claims
+
+    @staticmethod
+    def _merge_vertical_date_ranges(lines: list[str]) -> list[str]:
+        """Fold a lone end-date line into the preceding 'YYYY-MM to Company' line.
+
+        Some PDFs lay out a date range vertically: the start date + employer on
+        one line, the end date alone on the next. Without merging, the end date
+        becomes an orphan line and timeline claims lose their period.
+        """
+        merged: list[str] = []
+        for line in lines:
+            statement = line.strip()
+            if (
+                statement
+                and merged
+                and re.fullmatch(r"(?:19|20)\d{2}[-/.]\d{1,2}", statement)
+                and re.search(r"\bto\b", merged[-1])
+                and not re.search(r"(?:19|20)\d{2}[-/.]\d{1,2}\s*to\s*\S+\s*(?:19|20)\d{2}[-/.]\d{1,2}", merged[-1])
+            ):
+                merged[-1] = f"{merged[-1]} {statement}"
+                continue
+            merged.append(line)
+        return merged
