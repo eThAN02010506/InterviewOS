@@ -144,10 +144,28 @@ class ResumeClaim(BaseModel):
     note: str = ""
 
 
+class ResumeStructuredSection(BaseModel):
+    """One structured resume entry from LLM-based parsing.
+
+    LLM structuring classifies entries into semantic sections (education,
+    employment, research, leadership, awards, skills) instead of relying on
+    keyword matching, so a research description that mentions a university is
+    not mistaken for education.
+    """
+
+    category: str
+    institution: str = ""
+    title: str = ""
+    date_range: str = ""
+    description: str = ""
+
+
 class ResumeReview(BaseModel):
     metadata: ResumeFileMetadata = Field(default_factory=ResumeFileMetadata)
     issues: list[ResumeValidationIssue] = Field(default_factory=list)
     claims: list[ResumeClaim] = Field(default_factory=list)
+    structured: list[ResumeStructuredSection] = Field(default_factory=list)
+    structured_by: str = "rules"  # "rules" | "llm"
     reviewed_at: datetime | None = None
 
 

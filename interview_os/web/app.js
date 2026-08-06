@@ -265,7 +265,10 @@ function renderResumeReview() {
     if (!review?.metadata?.filename) { node.innerHTML = ''; node.classList.remove('visible'); return; }
     const unresolved = (review.claims || []).filter(claim => claim.status === 'unverified');
     node.classList.add('visible');
+    const structuredHtml = (review.structured_by === 'llm' && review.structured?.length)
+      ? `<div class="review-subtitle">AI 结构化板块（${esc(review.structured_by)}）</div>${review.structured.map(s => `<div class="review-claim structured"><div><small>${esc(s.category)}${s.date_range ? ` · ${esc(s.date_range)}` : ''}</small><strong>${esc(s.institution)}${s.title ? ` — ${esc(s.title)}` : ''}</strong>${s.description ? `<span>${esc(s.description)}</span>` : ''}</div></div>`).join('')}` : '';
     node.innerHTML = `<div class="review-summary"><strong>${esc(review.metadata.filename)}</strong><span>${review.metadata.character_count} 字 · ${review.issues.length} 项提示 · ${unresolved.length} 项待确认</span></div>
+      ${structuredHtml}
       ${(review.issues || []).map(issue => `<div class="review-issue ${esc(issue.severity)}"><b>${esc(issue.severity === 'warning' ? '请检查' : '提示')}</b><span>${esc(issue.message)}</span></div>`).join('')}
       ${unresolved.slice(0, 8).map(claim => `<div class="review-claim"><div><small>${esc(claim.category)}</small><span>${esc(claim.statement)}</span></div><div class="claim-actions"><button type="button" data-claim-action="confirmed" data-claim-id="${esc(claim.id)}">确认</button><button type="button" data-claim-action="modified" data-claim-id="${esc(claim.id)}">修改</button><button type="button" data-claim-action="needs_documents" data-claim-id="${esc(claim.id)}">要材料</button><button type="button" data-claim-action="ignored" data-claim-id="${esc(claim.id)}">忽略</button></div></div>`).join('')}
       ${unresolved.length > 8 ? `<p class="review-more">另有 ${unresolved.length - 8} 项，可在后续审阅中处理。</p>` : ''}`;
@@ -376,12 +379,14 @@ document.querySelectorAll('.resume-file').forEach(input => input.onchange = asyn
   if (!file || !await ensureSession()) return;
   const upload = event.target.closest('.resume-upload');
   const form = new FormData(); form.append('file', file);
+  const structure = upload?.querySelector('.resume-llm-structure');
+  if (structure?.checked) form.append('structure', 'llm');
   busy(upload, true);
   try {
     const data = await api(`/api/resumes/${state.sessionId}/upload`, {method:'POST', body:form});
     state.session = data.state;
     $(upload.dataset.resumeTarget).value = state.session.candidate.raw_resume_text;
-    renderState(); toast('简历已解析，请先查看校验项');
+    renderState(); toast(state.session.resume_review?.structured_by === 'llm' ? 'AI 结构化完成，已按板块分类' : '简历已解析，请先查看校验项');
   } catch (error) { toast(error.message, true); }
   finally { busy(upload, false); event.target.value = ''; }
 });

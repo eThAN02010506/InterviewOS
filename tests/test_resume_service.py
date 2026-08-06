@@ -162,3 +162,46 @@ def test_vertical_date_range_merges_end_date_and_recognizes_english_company():
     # The end date is folded into the employer line, and the bare English
     # company name (no Inc/Corp/Company suffix) is still recognized.
     assert any("2018-07 to ZUORA 2022-12" in statement for statement in employment)
+
+
+def test_parse_structured_response_fenced_json():
+    from interview_os.services.resume_llm import _parse_structured_response
+
+    raw = '''```json
+    {"education":[{"category":"education","institution":"SMIC","title":"High School","date_range":"08/2020 - 06/2024","description":"Pursuing high school"}],"employment":[],"research":[{"category":"research","institution":"Tsinghua University","title":"Participant","date_range":"07/2023 - 09/2023","description":"Anomaly detection research"}]}
+    ```'''
+    sections = _parse_structured_response(raw)
+    assert len(sections) == 2
+    assert sections[0].category == "education"
+    assert sections[0].institution == "SMIC"
+    assert sections[1].category == "research"
+    assert sections[1].institution == "Tsinghua University"
+
+
+def test_parse_structured_response_invalid_returns_empty():
+    from interview_os.services.resume_llm import _parse_structured_response
+
+    assert _parse_structured_response("not json at all") == []
+    assert _parse_structured_response("") == []
+
+
+async def test_structure_resume_with_llm_success():
+    from interview_os.services.resume_llm import structure_resume_with_llm
+
+    class _StubLLM:
+        async def chat(self, messages, **kwargs):
+            return '{"education":[{"category":"education","institution":"SMIC","date_range":"08/2020 - 06/2024"}]}'
+
+    sections = await structure_resume_with_llm("SMIC high school", _StubLLM())
+    assert len(sections) == 1
+    assert sections[0].category == "education"
+
+
+async def test_structure_resume_with_llm_failure_returns_empty():
+    from interview_os.services.resume_llm import structure_resume_with_llm
+
+    class _BadLLM:
+        async def chat(self, messages, **kwargs):
+            raise RuntimeError("llm down")
+
+    assert await structure_resume_with_llm("SMIC", _BadLLM()) == []

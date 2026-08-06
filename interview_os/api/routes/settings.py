@@ -49,11 +49,18 @@ class LiveAudioSettingsUpdate(BaseModel):
     model: str | None = None
 
 
+class ResumeLLMSettingsUpdate(BaseModel):
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+
+
 class SettingsUpdate(BaseModel):
     search: SearchSettingsUpdate | None = None
     llm: LLMSettingsUpdate | None = None
     asr: ASRSettingsUpdate | None = None
     live_audio: LiveAudioSettingsUpdate | None = None
+    resume_llm: ResumeLLMSettingsUpdate | None = None
     persist: bool = True
 
 
@@ -63,11 +70,15 @@ async def get_settings(request: Request):
     llm = request.app.state.llm_client
     asr: ASRClient = request.app.state.asr_client
     omni = getattr(request.app.state, "omni_client", None)
+    resume_llm = getattr(request.app.state, "resume_llm_client", None)
     return {
         "search": search.status(),
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "asr": asr.status(),
         "live_audio": omni.status() if omni is not None else {"enabled": False},
+        "resume_llm": (
+            resume_llm.settings_status() if isinstance(resume_llm, LocalLLMClient) else {"managed": True}
+        ),
         "persistence": "local_permission_restricted",
         "persisted_locally": request.app.state.settings_store.path.exists(),
     }
@@ -100,6 +111,13 @@ async def update_settings(payload: SettingsUpdate, request: Request):
                     omni.mode = payload.live_audio.mode
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if payload.resume_llm:
+            resume_llm = getattr(request.app.state, "resume_llm_client", None)
+            if not isinstance(resume_llm, LocalLLMClient):
+                raise ValueError("Resume LLM client cannot be configured from the UI")
+            await resume_llm.reconfigure(**payload.resume_llm.model_dump())
+            service = request.app.state.interview_service
+            service.resume_llm_client = resume_llm
         if payload.persist:
             saved = {"search": search.secret_snapshot()}
             if isinstance(llm, LocalLLMClient):
@@ -107,6 +125,9 @@ async def update_settings(payload: SettingsUpdate, request: Request):
             saved["asr"] = asr.secret_snapshot()
             if omni is not None:
                 saved["live_audio"] = omni.secret_snapshot()
+            resume_llm = getattr(request.app.state, "resume_llm_client", None)
+            if isinstance(resume_llm, LocalLLMClient):
+                saved["resume_llm"] = resume_llm.secret_snapshot()
             store.save(saved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -79,6 +79,7 @@ from interview_os.services.intelligence_service import (
     review_job_description,
     sync_entity_resolutions,
 )
+from interview_os.services.resume_llm import structure_resume_with_llm
 from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.asr import ASRClient, ASRError
 from interview_os.tools.web_search import SearchProvider
@@ -122,6 +123,7 @@ class InterviewService:
         asr_client: ASRClient | None = None,
         background: BackgroundTaskManager | None = None,
         omni_client: Any = None,
+        resume_llm_client: Any = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -129,6 +131,7 @@ class InterviewService:
         self.debug_events = debug_events
         self.asr_client = asr_client
         self.omni_client = omni_client
+        self.resume_llm_client = resume_llm_client
         self.live_audio_mode = "asr_text"  # "asr_text" | "audio_direct"
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
         self._runtimes: dict[str, AgentRuntime] = {}
@@ -915,10 +918,23 @@ class InterviewService:
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "candidate_agent", text)
 
-    async def upload_resume(self, session_id: str, filename: str, content: bytes) -> InterviewState:
+    async def upload_resume(
+        self,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        *,
+        structure: str = "rules",
+    ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)
+            structuring_client = self.resume_llm_client or self.llm_client
+            if structure == "llm" and structuring_client is not None:
+                sections = await structure_resume_with_llm(text, structuring_client)
+                if sections:
+                    review.structured = sections
+                    review.structured_by = "llm"
             runtime.state.candidate.raw_resume_text = text
             runtime.state.resume_review = review
             runtime.state.next_action = "Review resume checks, then continue the interview workflow"
@@ -927,7 +943,8 @@ class InterviewService:
                 "resume_processed",
                 session_id,
                 detail=f"{review.metadata.file_type}, {review.metadata.character_count} chars, "
-                f"{len(review.issues)} issues, {len(review.claims)} claims",
+                f"{len(review.issues)} issues, {len(review.claims)} claims, "
+                f"structured={review.structured_by}",
             )
             return runtime.state
 

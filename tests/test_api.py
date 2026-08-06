@@ -102,6 +102,23 @@ def make_resume_docx() -> bytes:
     return output.getvalue()
 
 
+def make_resume_pdf() -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate
+
+    buffer = BytesIO()
+    document = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("Resume", styles["Title"]),
+        Paragraph("SMIC High School 08/2020 - 06/2024", styles["BodyText"]),
+        Paragraph("ZUORA Senior Recruiting Manager 2018-07 - 2022-12", styles["BodyText"]),
+    ]
+    document.build(story)
+    return buffer.getvalue()
+
+
 def test_session_resume_analysis_flow(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     app = create_app(storage=storage, llm_client=MockLLM(), configure_llm=False)
@@ -1055,3 +1072,56 @@ def test_settings_probe_live_audio_reports_capability(tmp_path):
         probe = client.post("/api/settings/probe-live-audio")
         assert probe.status_code == 200
         assert probe.json()["capability"]["ok"] is True
+
+
+class _StructuringLLM:
+    async def chat(self, messages, **kwargs):
+        return '{"education":[{"category":"education","institution":"SMIC","title":"High School","date_range":"08/2020 - 06/2024"}],"employment":[{"category":"employment","institution":"ZUORA","title":"Senior Recruiting Manager","date_range":"2018-07 - 2022-12"}]}'
+
+    async def embed(self, text):
+        return []
+
+
+def test_resume_upload_with_llm_structure(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-llm.db'}")
+    llm = _StructuringLLM()
+    app = create_app(
+        storage=storage,
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+        resume_llm_client=llm,
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        uploaded = client.post(
+            f"/api/resumes/{session_id}/upload",
+            data={"structure": "llm"},
+            files={"file": ("resume.pdf", make_resume_pdf(), "application/pdf")},
+        )
+        assert uploaded.status_code == 200
+        review = uploaded.json()["state"]["resume_review"]
+        assert review["structured_by"] == "llm"
+        assert review["structured"], "LLM structuring should populate sections"
+        categories = {s["category"] for s in review["structured"]}
+        assert categories == {"education", "employment"}
+
+
+def test_resume_upload_default_rules_structure(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-rules.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        uploaded = client.post(
+            f"/api/resumes/{session_id}/upload",
+            files={"file": ("resume.pdf", make_resume_pdf(), "application/pdf")},
+        )
+        assert uploaded.status_code == 200
+        review = uploaded.json()["state"]["resume_review"]
+        assert review["structured_by"] == "rules"
+        assert review["structured"] == []

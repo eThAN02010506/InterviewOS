@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import ResumeClaimUpdateRequest, WorkflowResponse
@@ -17,9 +17,16 @@ Service = Annotated[InterviewService, Depends(get_interview_service)]
 
 
 @router.post("/{session_id}/upload", response_model=WorkflowResponse)
-async def upload_resume(session_id: str, service: Service, file: Annotated[UploadFile, File()]):
+async def upload_resume(
+    session_id: str,
+    service: Service,
+    file: Annotated[UploadFile, File()],
+    structure: Annotated[str, Form()] = "rules",
+):
     content = await file.read(MAX_RESUME_BYTES + 1)
-    state = await service.upload_resume(session_id, file.filename or "resume", content)
+    state = await service.upload_resume(
+        session_id, file.filename or "resume", content, structure=structure
+    )
     return WorkflowResponse(session_id=session_id, state=state.model_dump(mode="json"))
 
 

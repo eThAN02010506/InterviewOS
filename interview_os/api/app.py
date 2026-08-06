@@ -59,6 +59,7 @@ def create_app(
     settings_store: LocalSettingsStore | None = None,
     asr_client: ASRClient | None = None,
     omni_client: OmniAudioClient | None = None,
+    resume_llm_client: Any = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
@@ -93,6 +94,13 @@ def create_app(
             if isinstance(saved_live_audio, dict) and saved_live_audio
             else OmniAudioClient()
         )
+    saved_resume_llm = saved_settings.get("resume_llm")
+    if resume_llm_client is None:
+        resume_llm_client = (
+            LocalLLMClient(**saved_resume_llm)
+            if isinstance(saved_resume_llm, dict) and saved_resume_llm.get("base_url")
+            else llm_client
+        )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -100,6 +108,7 @@ def create_app(
         application.state.interview_service = InterviewService(
             storage, llm_client, active_search_provider, debug_events, asr_client,
             omni_client=omni_client,
+            resume_llm_client=resume_llm_client,
         )
         saved_mode = (saved_live_audio or {}).get("mode", "asr_text")
         if isinstance(saved_mode, str):
@@ -114,6 +123,7 @@ def create_app(
         application.state.settings_store = settings_store
         application.state.asr_client = asr_client
         application.state.omni_client = omni_client
+        application.state.resume_llm_client = resume_llm_client
         yield
         if llm_client is not None and hasattr(llm_client, "close"):
             await llm_client.close()

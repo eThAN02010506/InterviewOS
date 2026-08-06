@@ -90,6 +90,17 @@ into one long line. The response includes extraction warnings and human-review i
 for education, employment, certifications, and measurable claims. Uploading a
 resume never starts public web research automatically.
 
+Resume parsing is rule-based by default, but an optional **AI structured
+enhancement** is available: check the "AI 结构化增强" box on upload (or pass
+`structure=llm`) and a local multimodal LLM (configured in Settings → resume_llm,
+e.g. Qwen3-Omni on 8004) parses the extracted text into semantic sections
+(education / employment / research / leadership / awards / skills). This fixes the
+rule matcher's blind spots — a research description that mentions a university is
+no longer mistaken for education, and awards are no longer classified as jobs. On
+the real Mingyuan resume, LLM structuring produced 15 correctly-classified
+sections where the rules produced 8 with several misclassifications. The rules
+result is always kept as a fallback when the LLM is unavailable.
+
 1. `POST /api/interviews/sessions`
 2. `POST /api/analysis/resume` with the returned `session_id`
 3. `POST /api/analysis/job` and `POST /api/analysis/interviewer`

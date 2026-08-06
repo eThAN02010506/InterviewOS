@@ -80,6 +80,7 @@
             <div class="resume-upload" data-resume-target="candidate-resume">
               <input class="resume-file" id="candidate-resume-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
               <label for="candidate-resume-file"><strong>上传 PDF 或 Word 简历</strong><span>本地解析 · 最大 10 MB · 不会自动发送到公开搜索</span></label>
+              <label class="checkbox-inline"><input type="checkbox" class="resume-llm-structure">AI 结构化增强（识别教育/工作/研究板块，较慢）</label>
             </div>
             <div class="resume-review" id="candidate-resume-review"></div>
             <label>解析后的简历内容<textarea id="candidate-resume" required rows="8" placeholder="也可以直接粘贴简历文本"></textarea></label>
@@ -104,6 +105,7 @@
             <div class="resume-upload" data-resume-target="enterprise-resume">
               <input class="resume-file" id="enterprise-resume-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
               <label for="enterprise-resume-file"><strong>上传候选人 PDF 或 Word 简历</strong><span>解析后先审阅字段、时间线和待核验陈述</span></label>
+              <label class="checkbox-inline"><input type="checkbox" class="resume-llm-structure">AI 结构化增强（识别教育/工作/研究板块，较慢）</label>
             </div>
             <div class="resume-review" id="enterprise-resume-review"></div>
             <label>解析后的候选人简历<textarea id="enterprise-resume" required rows="8"></textarea></label>
