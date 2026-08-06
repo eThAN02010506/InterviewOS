@@ -312,12 +312,14 @@ feed a bounded context made from recent dialogue, a rolling summary, the intervi
 blueprint, and confirmed evidence. The target is transcript feedback within two
 seconds and a next-question suggestion within five seconds after an answer ends.
 
-The default LAN ASR integration is `http://192.168.1.97:8003` (MiMo-V2.5-ASR),
+The default LAN ASR integration is `http://192.168.1.97:8007` (Qwen3-ASR-1.7B),
 behind a configurable provider adapter rather than hard-coded into the interview
 workflow. Its `/health`, OpenAI-compatible `/v1/audio/transcriptions`, WAV input,
-and JSON text response have been verified. Streaming support and concurrency limits
-remain part of long-interview hardening. When ASR is unavailable, the live workspace
-retains typed/pasted transcript input as the safe fallback.
+and JSON text response have been verified; a multi-sentence Chinese WAV transcribes
+in ~5.1s with clean text. `http://192.168.1.97:8003` (MiMo-V2.5-ASR) remains a
+verified alternative. Streaming support and concurrency limits remain part of
+long-interview hardening. When ASR is unavailable, the live workspace retains
+typed/pasted transcript input as the safe fallback.
 
 `http://192.168.1.8:9001` was tested with the same multi-sentence WAV fixture. Its
 OpenAI-compatible endpoint was faster, but returned only the first sentence, so it
