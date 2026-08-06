@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from interview_os.api.routes import (
@@ -188,7 +189,18 @@ def create_app(
         accept = request.headers.get("accept", "")
         if "application/json" in accept and "text/html" not in accept:
             return JSONResponse({"name": "InterviewOS", "version": "0.2.0", "status": "running"})
-        return FileResponse(WEB_DIR / "index.html")
+        # Inject a version derived from the asset files' mtimes so browsers
+        # invalidate cached app.js/styles.css whenever the frontend changes,
+        # without a manual version bump.
+        version = 0
+        for asset in ("app.js", "styles.css"):
+            try:
+                version = max(version, int(os.stat(WEB_DIR / asset).st_mtime_ns))
+            except OSError:
+                continue
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        html = re.sub(r"\?v=STATIC_VERSION", f"?v={version}", html)
+        return HTMLResponse(html)
 
     @application.get("/health")
     async def health():

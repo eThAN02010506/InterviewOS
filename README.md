@@ -235,11 +235,18 @@ The live audio path is switchable between two modes (Settings → 实时音频�
   hears the answer and returns a next-question suggestion. A settings panel lets
   you name the provider, point it at a base URL/model, and probe its capability
   (a real audio sample is sent to verify the endpoint returns a usable question).
-  Measured with a real Chinese WAV, the audio-direct path returned a grounded
-  follow-up question in ~1.8s (non-streamed) and ~1s first token with streaming —
-  vs ~32s for ASR + 20B text. It intentionally does not create a transcript
-  segment (the model understands the audio directly); the suggestion is injected
-  straight into the review queue.
+  It intentionally does not create a transcript segment (the model understands
+  the audio directly); the suggestion is injected straight into the review queue.
+
+  The direct path's context is **focused and priority-ordered** for speed: it
+  carries only the job/covered competencies (the anchor, always kept), the
+  recent stable conversation, and the most recent live evidence. Advancement-only
+  information (blueprint backlog, rolling summary, coverage guidance) is
+  excluded so prefill stays small. If the focused blocks still exceed the cap,
+  blocks are dropped lowest-priority first — never the tail, so the anchor is
+  never lost. Measured with a real Chinese WAV in a 7-round-blueprint session,
+  the focused direct path returned a grounded follow-up in ~3.5s (vs ~8.9s with
+  the full-context version, and vs ~32s for ASR + 20B text).
 
 The planner's own LLM call is also bounded to keep it fast on a local model. The
 question map sent to the model contains only unused blueprint questions plus the
