@@ -2,7 +2,8 @@ const state = {
   sessionId: localStorage.getItem('interviewos.session') || '',
   role: localStorage.getItem('interviewos.role') || 'candidate',
   session: null,
-  view: ''
+  view: '',
+  settings: null
 };
 let liveRecorder = null;
 let liveAudioChunks = [];
@@ -11,6 +12,24 @@ let liveContinuousMode = false;
 let liveContinuousQueue = [];
 let liveContinuousUploading = false;
 let liveContinuousChunkIndex = 0;
+// VAD: silence-based utterance chunking for continuous listening.
+const VAD_SPEECH_RMS = 0.02;        // RMS above this counts as speech
+const VAD_SILENCE_MS = 600;         // silence of this length ends an utterance
+const VAD_MIN_UTTERANCE_MS = 300;   // shorter utterances are dropped
+const VAD_GRACE_MS = 300;           // ignore speech briefly after a finalize
+const VAD_TIMESLICE_MS = 250;       // MediaRecorder timeslice for continuous mode
+const VAD_LEVEL_INTERVAL_MS = 100;  // indicator/level loop cadence
+let liveVadAudioContext = null;
+let liveVadAnalyser = null;
+let liveVadData = null;
+let liveVadState = 'idle';          // idle | in-speech | finalizing
+let liveVadSpeechStart = 0;
+let liveVadLastSpeech = 0;
+let liveVadLastFinalizeAt = 0;
+let liveVadUtteranceChunks = [];
+let liveVadUtteranceBytes = 0;
+let liveVadFinalizing = false;
+let liveVadTimer = null;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const cssEscape = value => globalThis.CSS?.escape ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, '\\$&');
@@ -172,8 +191,12 @@ function renderLive() {
   $('live-stop-continuous').disabled = !liveContinuousMode;
   $('live-plan').disabled = status !== 'active';
   if (liveContinuousMode || liveContinuousQueue.length || liveContinuousUploading) {
-    const uploading = liveContinuousUploading ? '，正在转写 1 段' : '';
-    $('live-recording-note').textContent = `连续分段监听${liveContinuousMode ? '中' : '已停止'}：队列 ${liveContinuousQueue.length} 段${uploading}。分段会先标记为“待确认”，请审阅说话人与文本后再归档证据。`;
+    if (liveContinuousMode) {
+      updateLiveVadNote();
+    } else {
+      const uploading = liveContinuousUploading ? '，正在转写 1 段' : '';
+      $('live-recording-note').textContent = `连续监听已停止：队列 ${liveContinuousQueue.length} 段${uploading}。分段会先标记为“待确认”，请审阅说话人与文本后再归档证据。`;
+    }
   }
   const segments = live?.segments || [];
   const recordedSegmentIds = new Set((state.session?.live_interview_records || []).flatMap(record => record.transcript_segment_ids || []));
@@ -483,7 +506,61 @@ $('live-text-form').onsubmit=async e=>{e.preventDefault();const text=$('live-tex
 
 function liveAudioType(){return ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type))||'';}
 function liveAudioFilename(type,prefix='speech'){return type.includes('mp4')?`${prefix}.m4a`:`${prefix}.webm`;}
-async function uploadLiveAudioBlob(blob,type,speaker,prefix='speech',mode='single'){const form=new FormData();form.append('file',blob,liveAudioFilename(type,prefix));form.append('speaker',speaker);form.append('language','zh');if(mode==='dialogue')form.append('mode','dialogue');const data=await api(`/api/live-interviews/${state.sessionId}/audio`,{method:'POST',body:form});state.session=data.state;return data;}
+async function encodeBlobAsWav(blob){
+  // Convert MediaRecorder webm/opus to a 16 kHz mono 16-bit PCM WAV so the
+  // LAN ASR (Qwen3-ASR on 8007) can decode it — it rejects webm. Returns a
+  // Blob; falls back to the original blob if decoding is unavailable.
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx || !blob.size) return blob;
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioBuffer = await new AudioCtx().decodeAudioData(arrayBuffer);
+    const sampleRate = 16000;
+    const offline = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * sampleRate), sampleRate);
+    const source = offline.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offline.destination);
+    source.start(0);
+    const rendered = await offline.startRendering();
+    const pcm = rendered.getChannelData(0);
+    const dataSize = pcm.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    let offset = 44;
+    for (let i = 0; i < pcm.length; i++) {
+      const s = Math.max(-1, Math.min(1, pcm[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([view], {type: 'audio/wav'});
+  } catch (error) {
+    return blob;
+  }
+}
+async function uploadLiveAudioBlob(blob,type,speaker,prefix='speech',mode='single'){
+  const wavBlob = await encodeBlobAsWav(blob);
+  const isWav = wavBlob.type === 'audio/wav';
+  const form=new FormData();
+  form.append('file', wavBlob, isWav ? `${prefix}.wav` : liveAudioFilename(type,prefix));
+  form.append('speaker',speaker);
+  form.append('language','zh');
+  if(mode==='dialogue')form.append('mode','dialogue');
+  const data=await api(`/api/live-interviews/${state.sessionId}/audio`,{method:'POST',body:form});state.session=data.state;return data;
+}
 
 $('live-record').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveAudioChunks=[];liveRecorder.ondataavailable=event=>{if(event.data.size)liveAudioChunks.push(event.data)};liveRecorder.onstop=uploadLiveRecording;liveRecorder.start(1000);liveDialogueMode=false;$('live-record').disabled=true;$('live-stop-record').disabled=false;$('live-recording-note').textContent=`正在录制${$('live-speaker').value==='candidate'?'候选人':$('live-speaker').value==='interviewer'?'面试官':'待确认'}发言…`;renderLive();}catch(error){toast(`无法使用麦克风：${error.message}`,true)}};
 $('live-dialogue').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveAudioChunks=[];liveRecorder.ondataavailable=event=>{if(event.data.size)liveAudioChunks.push(event.data)};liveRecorder.onstop=uploadLiveRecording;liveRecorder.start(1000);liveDialogueMode=true;$('live-record').disabled=true;$('live-stop-record').disabled=false;$('live-recording-note').textContent='对话模式：录一段面试官与候选人的对话，AI 将自动区分说话人。';renderLive();toast('对话模式开始，请录完整段对话');}catch(error){toast(`无法使用麦克风：${error.message}`,true)}};
@@ -492,10 +569,19 @@ $('live-stop-record').onclick=()=>{if(liveRecorder?.state==='recording'){liveRec
 let liveDialogueMode = false;
 async function uploadLiveRecording(){const recorder=liveRecorder;const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());const type=recorder?.mimeType||'audio/webm';const blob=new Blob(liveAudioChunks,{type});liveAudioChunks=[];const wasDialogue=liveDialogueMode;liveDialogueMode=false;if(!blob.size){toast('没有录到音频',true);renderLive();return;}try{await uploadLiveAudioBlob(blob,type,'unknown','speech',wasDialogue?'dialogue':'single');$('live-recording-note').textContent=wasDialogue?'对话已转写并自动区分说话人；候选人回答可确认。':'转写完成；候选人回答结束后可生成下一问题。';renderLive();toast(wasDialogue?'对话已自动分说话人':'音频已转为文字');}catch(error){$('live-recording-note').textContent='转写失败，可使用手动文本输入。';toast(error.message,true);renderLive();}}
 
-$('live-continuous').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风连续录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveContinuousMode=true;liveContinuousQueue=[];liveContinuousChunkIndex=0;liveRecorder.ondataavailable=event=>{if(event.data.size)enqueueLiveContinuousChunk(new Blob([event.data],{type:liveRecorder?.mimeType||'audio/webm'}));};liveRecorder.onstop=()=>{const stream=liveMediaStream;liveRecorder=null;liveMediaStream=null;stream?.getTracks().forEach(track=>track.stop());liveContinuousMode=false;$('live-recording-note').textContent=liveContinuousQueue.length||liveContinuousUploading?'连续监听已停止；剩余音频正在转写。':'连续监听已停止。';renderLive();};liveRecorder.start(15000);$('live-recording-note').textContent='连续分段监听中：每 15 秒上传一段，默认标记为待确认说话人。';renderLive();toast('连续分段监听已开始');}catch(error){liveContinuousMode=false;toast(`无法启动连续监听：${error.message}`,true);renderLive();}};
-$('live-stop-continuous').onclick=()=>{liveContinuousMode=false;if(liveRecorder?.state==='recording'){liveRecorder.stop();$('live-recording-note').textContent='连续监听停止中；正在处理已录到的音频。'}renderLive();};
+$('live-continuous').onclick=startLiveContinuousVad;
+$('live-stop-continuous').onclick=()=>{if(liveRecorder?.state==='recording'){liveContinuousMode=false;liveRecorder.stop();$('live-recording-note').textContent='连续监听停止中；正在处理已录到的音频。'}renderLive();};
 function enqueueLiveContinuousChunk(blob){if(!blob.size)return;liveContinuousQueue.push({blob,type:blob.type||'audio/webm',index:++liveContinuousChunkIndex});processLiveContinuousQueue();renderLive();}
-async function processLiveContinuousQueue(){if(liveContinuousUploading)return;liveContinuousUploading=true;try{while(liveContinuousQueue.length){const chunk=liveContinuousQueue.shift();$('live-recording-note').textContent=`正在转写连续监听第 ${chunk.index} 段；剩余 ${liveContinuousQueue.length} 段。`;try{await uploadLiveAudioBlob(chunk.blob,chunk.type,'unknown',`continuous-${chunk.index}`);renderLive();}catch(error){$('live-recording-note').textContent=`连续监听第 ${chunk.index} 段转写失败，可手动输入补录。`;toast(`连续监听第 ${chunk.index} 段转写失败：${error.message}`,true);}}}finally{liveContinuousUploading=false;if(!liveContinuousMode){$('live-recording-note').textContent='连续监听队列已处理完成；请审阅待确认片段。';}renderLive();}}
+async function processLiveContinuousQueue(){if(liveContinuousUploading)return;liveContinuousUploading=true;try{while(liveContinuousQueue.length){const chunk=liveContinuousQueue.shift();if(!liveContinuousMode){$('live-recording-note').textContent=`正在转写连续监听第 ${chunk.index} 段；剩余 ${liveContinuousQueue.length} 段。`;}else{updateLiveVadNote();}try{await uploadLiveAudioBlob(chunk.blob,chunk.type,'unknown',`continuous-${chunk.index}`,liveContinuousUploadMode());renderLive();}catch(error){$('live-recording-note').textContent=`连续监听第 ${chunk.index} 段转写失败，可手动输入补录。`;toast(`连续监听第 ${chunk.index} 段转写失败：${error.message}`,true);}}}finally{liveContinuousUploading=false;if(!liveContinuousMode){$('live-recording-note').textContent='连续监听队列已处理完成；请审阅待确认片段。';}else{updateLiveVadNote();}renderLive();}}
+async function startLiveContinuousVad(){if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风连续录制',true);return;}try{liveMediaStream=await navigator.mediaDevices.getUserMedia({audio:true});liveContinuousMode=true;liveContinuousQueue=[];liveContinuousChunkIndex=0;liveVadUtteranceChunks=[];liveVadUtteranceBytes=0;liveVadState='idle';liveVadSpeechStart=0;liveVadLastSpeech=0;liveVadLastFinalizeAt=0;liveVadFinalizing=false;liveVadAudioContext=new(window.AudioContext||window.webkitAudioContext)();liveVadAnalyser=liveVadAudioContext.createAnalyser();liveVadAnalyser.fftSize=1024;liveVadAnalyser.smoothingTimeConstant=0.3;const source=liveVadAudioContext.createMediaStreamSource(liveMediaStream);source.connect(liveVadAnalyser);liveVadData=new Float32Array(liveVadAnalyser.fftSize);liveVadTimer=setInterval(analyzeLiveVadLevel,VAD_LEVEL_INTERVAL_MS);startContinuousRecorder(liveAudioType());updateLiveVadNote();renderLive();toast('语音分段监听已开始：静音约 0.6 秒自动结束一段');}catch(error){teardownLiveContinuous();toast(`无法启动连续监听：${error.message}`,true);renderLive();}}
+function startContinuousRecorder(preferred){if(!liveMediaStream)return;liveRecorder=new MediaRecorder(liveMediaStream,preferred?{mimeType:preferred}:undefined);liveRecorder.ondataavailable=event=>{if(!event.data.size)return;if(!liveVadUtteranceChunks.length)liveVadSpeechStart=performance.now();liveVadUtteranceChunks.push(event.data);liveVadUtteranceBytes+=event.data.size;if(liveVadUtteranceBytes>20*1024*1024&&liveRecorder?.state==='recording'){liveVadState='finalizing';finalizeLiveUtterance();}};liveRecorder.onstop=stopLiveContinuousVad;liveRecorder.start(VAD_TIMESLICE_MS);}
+function analyzeLiveVadLevel(){if(!liveVadAnalyser||!liveVadData||!liveContinuousMode)return;if(liveVadAudioContext?.state==='suspended'){liveVadAudioContext.resume();return;}liveVadAnalyser.getFloatTimeDomainData(liveVadData);let sum=0;for(let i=0;i<liveVadData.length;i++)sum+=liveVadData[i]*liveVadData[i];const rms=Math.sqrt(sum/liveVadData.length);const now=performance.now();const speaking=rms>=VAD_SPEECH_RMS;if(liveVadState==='idle'){if(now-liveVadLastFinalizeAt<VAD_GRACE_MS)return;if(speaking){liveVadState='in-speech';liveVadSpeechStart=now;liveVadLastSpeech=now;}}else if(liveVadState==='in-speech'){if(speaking){liveVadLastSpeech=now;}else if(now-liveVadLastSpeech>=VAD_SILENCE_MS){if(now-liveVadSpeechStart>=VAD_MIN_UTTERANCE_MS){liveVadState='finalizing';finalizeLiveUtterance();}else{liveVadState='idle';liveVadSpeechStart=0;liveVadLastSpeech=0;}}}updateLiveVadNote();}
+function finalizeLiveUtterance(){if(liveVadFinalizing)return;liveVadFinalizing=true;liveVadLastFinalizeAt=performance.now();if(liveVadState!=='finalizing')liveVadState='finalizing';if(liveRecorder?.state==='recording')liveRecorder.stop();}
+function stopLiveContinuousVad(){const hadSpeech=liveVadUtteranceChunks.length>0;const type=liveRecorder?.mimeType||'audio/webm';if(hadSpeech){const blob=new Blob(liveVadUtteranceChunks,{type});liveVadUtteranceChunks=[];liveVadUtteranceBytes=0;enqueueLiveContinuousChunk(blob);}liveVadFinalizing=false;liveVadState='idle';liveVadSpeechStart=0;liveVadLastSpeech=0;if(liveContinuousMode){if(liveMediaStream)startContinuousRecorder(liveAudioType());updateLiveVadNote();renderLive();}else{teardownLiveContinuous();$('live-recording-note').textContent=liveContinuousQueue.length||liveContinuousUploading?'连续监听已停止；剩余音频正在转写。':'连续监听已停止。';renderLive();}}
+function teardownLiveContinuous(){liveContinuousMode=false;if(liveVadTimer){clearInterval(liveVadTimer);liveVadTimer=null;}if(liveVadAudioContext){liveVadAudioContext.close().catch(()=>{});liveVadAudioContext=null;}liveVadAnalyser=null;liveVadData=null;liveVadState='idle';liveVadUtteranceChunks=[];liveVadUtteranceBytes=0;liveVadSpeechStart=0;liveVadLastSpeech=0;liveVadLastFinalizeAt=0;liveVadFinalizing=false;if(liveMediaStream){liveMediaStream.getTracks().forEach(track=>track.stop());}liveMediaStream=null;liveRecorder=null;}
+function liveContinuousUploadMode(){const mode=state.settings?.live_audio?.mode||document.querySelector('#setting-live-audio-mode')?.value||'asr_text';return mode==='audio_direct'?'dialogue':'single';}
+function updateLiveVadNote(){const note=$('live-recording-note');if(!note)return;if(liveVadState==='in-speech'){note.textContent=`正在听取 (${Math.max(0,Math.floor((performance.now()-liveVadSpeechStart)/1000))}s)`;note.classList.add('listening');}else{note.textContent='正在聆听…';note.classList.remove('listening');}if(liveContinuousUploading||liveContinuousQueue.length){note.textContent+=` ｜ 队列 ${liveContinuousQueue.length} 段${liveContinuousUploading?'，正在转写 1 段':''}`;}}
+window.addEventListener('pagehide',()=>{if(liveRecorder?.state==='recording')liveRecorder.stop();});
 
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 
@@ -615,7 +701,7 @@ document.addEventListener('click',async event=>{const button=event.target.closes
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-reevaluate]');if(!button)return;const record=state.session?.live_interview_records?.find(item=>item.id===button.dataset.liveReevaluate);if(!record)return;const question=window.prompt('重评使用的问题文本',record.question)||'';if(!question.trim())return;const competency=window.prompt('重评使用的能力维度',record.competency)||'';if(!competency.trim())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/${record.id}/reevaluate`,{method:'PATCH',body:JSON.stringify({question,competency})});state.session=data.state;renderAll();toast('live 证据已重新评分');}catch(error){toast(error.message,true)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('[data-live-revoke]');if(!button)return;const recordId=button.dataset.liveRevoke;if(!recordId)return;if(!window.confirm('撤销这条已归档证据？转写片段会保留，可修改后重新确认。'))return;try{const data=await api(`/api/live-interviews/${state.sessionId}/evidence/${recordId}`,{method:'DELETE'});state.session=data.state;renderAll();toast('已撤销 live 证据，转写片段仍保留');}catch(error){toast(error.message,true)}});
 
-async function loadSettings(){try{const s=await api('/api/settings');$('setting-provider').value=s.search.selected;$('setting-base-url').value=s.llm.base_url||'';$('setting-model').value=s.llm.model||'';$('setting-input-cost').value=s.llm.input_cost_per_million||0;$('setting-output-cost').value=s.llm.output_cost_per_million||0;$('setting-search-cost').value=s.search.search_request_cost_usd||0;$('setting-asr-url').value=s.asr?.base_url||'';$('setting-asr-path').value=s.asr?.transcription_path||'/v1/audio/transcriptions';$('setting-asr-model').value=s.asr?.model||'whisper-1';$('setting-asr-timeout').value=s.asr?.timeout_seconds||90;const la=s.live_audio||{};const liveAudioMode=document.querySelector('#setting-live-audio-mode');if(liveAudioMode&&s.live_audio!==undefined){liveAudioMode.value=s.live_audio.mode||'asr_text';}
+async function loadSettings(){try{const s=await api('/api/settings');state.settings=s;$('setting-provider').value=s.search.selected;$('setting-base-url').value=s.llm.base_url||'';$('setting-model').value=s.llm.model||'';$('setting-input-cost').value=s.llm.input_cost_per_million||0;$('setting-output-cost').value=s.llm.output_cost_per_million||0;$('setting-search-cost').value=s.search.search_request_cost_usd||0;$('setting-asr-url').value=s.asr?.base_url||'';$('setting-asr-path').value=s.asr?.transcription_path||'/v1/audio/transcriptions';$('setting-asr-model').value=s.asr?.model||'whisper-1';$('setting-asr-timeout').value=s.asr?.timeout_seconds||90;const la=s.live_audio||{};const liveAudioMode=document.querySelector('#setting-live-audio-mode');if(liveAudioMode&&s.live_audio!==undefined){liveAudioMode.value=s.live_audio.mode||'asr_text';}
 if($('setting-live-audio-name'))$('setting-live-audio-name').value=la.name||'音频直连';
 if($('setting-live-audio-url'))$('setting-live-audio-url').value=la.base_url||'http://192.168.1.97:8004/v1';
 if($('setting-live-audio-model'))$('setting-live-audio-model').value=la.model||'';

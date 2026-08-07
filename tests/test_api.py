@@ -1199,3 +1199,59 @@ def test_audio_direct_dialogue_mode_splits_speakers(tmp_path):
         assert speakers[1] == "candidate"
         assert len(segments) == 2
         assert "用压测验证性能提升" in segments[1]["text"]
+
+
+def test_audio_direct_dialogue_mode_single_utterance_creates_segment(tmp_path):
+    """A single finalized utterance in audio_direct dialogue mode becomes one segment.
+
+    This is the contract the silence-based continuous listening path relies on:
+    the browser finalizes a whole utterance at ~0.6s of silence and uploads it with
+    mode=dialogue, and the omni diarize produces exactly one transcript segment.
+    """
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'utterance.db'}")
+
+    class _SingleUtteranceOmni:
+        async def transcribe_diarize(self, audio_bytes, *, content_type="audio/wav"):
+            return [{"speaker": "candidate", "text": "我对比了缓存和数据库方案，用压测验证性能提升。"}]
+
+        def configure(self, **kwargs):
+            pass
+
+        async def suggest_next_question(self, audio_bytes, *, content_type="audio/wav", context="", stream=True):
+            return "追问建议"
+
+        async def probe_capability(self):
+            return {"ok": True}
+
+        def status(self):
+            return {"enabled": True}
+
+        def secret_snapshot(self):
+            return {}
+
+        async def close(self):
+            pass
+
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        omni_client=_SingleUtteranceOmni(),
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        client.put("/api/settings", json={"live_audio": {"mode": "audio_direct"}, "persist": False})
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True})
+        uploaded = client.post(
+            f"/api/live-interviews/{session_id}/audio",
+            data={"mode": "dialogue", "speaker": "unknown", "language": "zh"},
+            files={"file": ("utterance.webm", b"audio-bytes", "audio/webm")},
+        )
+        assert uploaded.status_code == 200
+        live = uploaded.json()["state"]["live_interview"]
+        segments = live["segments"]
+        assert len(segments) == 1
+        assert segments[0]["speaker"] == "candidate"
+        assert segments[0]["source"] == "audio_direct"
+        assert "用压测验证性能提升" in segments[0]["text"]

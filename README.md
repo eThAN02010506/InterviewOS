@@ -200,12 +200,18 @@ question, consecutive candidate segments, answer length, ASR involvement, and
 ending-language cues. Confirmed live records can also be re-evaluated with an
 updated question or competency while preserving the same transcript trace.
 
-A conservative **chunked continuous listening MVP** is also implemented. It reuses
+A **silence-based continuous listening MVP** is also implemented. It reuses
 the existing HTTP ASR upload endpoint instead of introducing a second protocol too
-early. The browser records short chunks, uploads them sequentially, shows queue and
-upload status, and marks each chunk as `unknown` speaker by default. This keeps the
-interviewer in control: the user must correct speaker/text and explicitly confirm
-candidate answers before any chunk can become hiring evidence.
+early. Instead of fixed 15s chunks, the browser runs a Web Audio VAD: it keeps
+recording continuously and finalizes a whole utterance when the speaker goes quiet
+for ~0.6s (silence, not speaker change, is the end-of-utterance signal — a
+candidate can finish while the interviewer stays silent, and the utterance still
+finalizes). Each finalized utterance uploads sequentially as one self-contained
+audio chunk (one MediaRecorder session per utterance, so every upload decodes
+cleanly), shows queue and upload status, and marks each chunk as `unknown` speaker
+by default. A live "正在听取 (Xs)" indicator shows while speech is ongoing. This
+keeps the interviewer in control: the user must correct speaker/text and
+explicitly confirm candidate answers before any chunk can become hiring evidence.
 For longer interviews, the live state now maintains a bounded rolling transcript
 summary and drops exact repeated transcript chunks before they can grow the
 conversation context. The next-question planner receives the rolling summary,
@@ -265,6 +271,12 @@ The live audio path is switchable between two modes (Settings → 实时音频�
   evidence segment. Verified with a real two-voice Chinese dialog: the model
   correctly split interviewer vs candidate across 4 turns. Manual speaker
   correction remains available if the split is ever wrong.
+  In continuous mode the browser also drives speaker separation: each silence-
+  finalized utterance uploads with `mode=dialogue`, so the omni model auto-labels
+  the speaker for every utterance (the same diarize path as the 对话模式 button).
+  Continuous mode thus works in both live-audio modes — in `asr_text` chunks land
+  as `unknown`-speaker "待确认" segments, in `audio_direct` they land with an
+  auto-detected speaker.
 
   The direct path's context is **focused and priority-ordered** for speed: it
   carries only the job/covered competencies (the anchor, always kept), the
@@ -304,10 +316,13 @@ The remaining roadmap is deliberately separated:
 1. **Completed turn-based MVP** — live state, typed or recorded turns, structured
    planning, visible consent controls, deterministic fallbacks, interviewer
    decisions, transcript review, evidence confirmation, and final evaluation gates.
-2. **Completed chunked continuous listening MVP** — keep the existing HTTP ASR upload path,
-   let the browser record short sequential audio chunks, mark uncertain chunks as
-   `unknown` speaker by default, and require transcript review before evidence is
-   created. This gives a practical bridge before true streaming.
+2. **Completed silence-based continuous listening MVP** — keep the existing HTTP ASR upload path;
+   the browser runs a Web Audio VAD and finalizes one whole utterance per ~0.6s of
+   silence (a separate MediaRecorder session per utterance so every upload is a
+   clean self-contained audio file), marks chunks as `unknown` speaker by default in
+   `asr_text` mode (auto-separated in `audio_direct`), and requires transcript
+   review before evidence is created. This gives a practical bridge before true
+   streaming.
 3. **Completed bounded context MVP** — exact duplicate transcript chunks are dropped,
    older stable turns are summarized into bounded context, and next-question planning
    uses summary + recent turns + evidence rather than the full transcript.
