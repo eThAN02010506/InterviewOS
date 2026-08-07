@@ -135,6 +135,12 @@ After candidate preparation, run an interactive mock interview:
 3. `POST /api/mock-interviews/{session_id}/answers` with its `question_id` and answer
 4. Repeat until `mock_session.status` is `completed`
 
+Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
+{session_id}/transcribe` runs the audio through the configured LAN ASR and
+returns plain text (a pure transcription — it does not touch live state or
+persist the recording). The UI's "语音回答" button records, transcribes into
+the answer box, and lets the candidate edit before submitting.
+
 Each answer receives validated 0–1 scores for content, technical depth, structure,
 and impact. The average becomes evidence confidence for the question competency;
 observed and missing signals remain attached to the persisted answer and evidence.

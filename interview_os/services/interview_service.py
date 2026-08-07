@@ -370,6 +370,50 @@ class InterviewService:
         )
         return state, transcript
 
+    async def transcribe_mock_spoken_answer(
+        self, session_id: str, content: bytes, filename: str
+    ) -> str:
+        """Transcribe a spoken mock-interview answer to text.
+
+        A pure transcription: it does not touch live state, does not persist the
+        audio, and does not change mock state — the caller fills the answer into
+        the mock answer field. Ownership is enforced by ``_get_runtime``.
+        """
+        await self._get_runtime(session_id)
+        if self.asr_client is None:
+            raise WorkflowExecutionError("ASR client is not configured")
+        content_type = (
+            "audio/wav"
+            if filename.lower().endswith(".wav")
+            else "audio/webm"
+            if filename.lower().endswith(".webm")
+            else "application/octet-stream"
+        )
+        started = perf_counter()
+        try:
+            transcript = await self.asr_client.transcribe(
+                content,
+                filename=filename,
+                content_type=content_type,
+                language="zh",
+            )
+        except ASRError as exc:
+            self._record_debug(
+                "mock_asr_transcription_failed",
+                session_id,
+                level=DebugLevel.ERROR,
+                detail=str(exc),
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            raise WorkflowExecutionError(str(exc)) from exc
+        self._record_debug(
+            "mock_asr_transcription_completed",
+            session_id,
+            detail=f"bytes={len(content)}; chars={len(transcript)}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return transcript
+
     async def plan_live_next_question(self, session_id: str) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):

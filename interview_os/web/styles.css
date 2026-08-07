@@ -387,6 +387,8 @@ dialog form { padding: 26px; }
 .session-recording { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; font-size: 11px; color: var(--muted); }
 .session-recording[hidden] { display: none; }
 .session-recording .error { color: #d64545; }
+.mock-voice-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 10px; }
+.mock-voice-note { font-size: 11px; color: var(--muted); }
 .manual-transcript { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 9px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .manual-transcript textarea { min-height: 72px; }
 .transcript-stream { max-height: 540px; overflow-y: auto; }
