@@ -111,6 +111,14 @@ class Storage:
             if record is None:
                 session.add(InterviewSession(id=session_id, **values))
             else:
+                # Writing is owner-scoped too: never overwrite another account's
+                # session row even if a caller holds a valid session_id. Reads
+                # already filter by owner; without this guard a mismatched-owner
+                # write would silently clobber the real owner's state.
+                if record.owner_id != owner_id:
+                    raise PermissionError(
+                        f"Session {session_id} belongs to a different account"
+                    )
                 for key, value in values.items():
                     setattr(record, key, value)
             await session.commit()

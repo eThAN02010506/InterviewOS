@@ -28,6 +28,7 @@ async def candidate_prep(req: CandidatePrepRequest, service: Service):
         interviewer_name=req.interviewer_name,
         interviewer_position=req.interviewer_position,
         interviewer_public_info=req.interviewer_public_info,
+        authorized_public_research=req.authorized_public_research,
     )
     return WorkflowResponse(session_id=req.session_id, state=state.model_dump(mode="json"))
 
@@ -40,5 +41,6 @@ async def enterprise_design(req: EnterpriseDesignRequest, service: Service):
         job_description=req.job_description,
         company_name=req.company_name,
         company_context=req.company_context,
+        authorized_public_research=req.authorized_public_research,
     )
     return WorkflowResponse(session_id=req.session_id, state=state.model_dump(mode="json"))

@@ -541,6 +541,7 @@ async def test_research_recent_employers_populates_sources_and_fact_cards(tmp_pa
     ]
     runtime = await service._get_runtime(session_id)
     runtime.state.candidate = state.candidate
+    runtime.state.autopilot.authorized_public_research = True
     await service._persist(session_id, runtime.state)
 
     result = await service.research_recent_employers(session_id)
@@ -611,4 +612,23 @@ async def test_recent_employers_sorts_recent_first_when_unrelated(tmp_path):
     # even though neither name overlaps the target company. This failed before
     # the 4-digit year capture fix because recency never triggered.
     assert picked == ["RecentCo"]
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_past_employer_research_requires_explicit_consent(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer-consent.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    session_id, state = await service.create_session()
+    state.candidate.experience = [
+        {"company": "ZUORA", "role": "SRM", "duration": "2018-2022", "summary": "ta"}
+    ]
+    runtime = await service._get_runtime(session_id)
+    runtime.state.candidate = state.candidate
+    # No explicit research authorization -> research is blocked.
+    await service._persist(session_id, runtime.state)
+    result = await service.research_recent_employers(session_id)
+    assert result.past_employer_sources == []
+    assert result.past_employer_research_status == "consent_required"
     await storage.close()

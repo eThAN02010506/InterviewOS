@@ -1260,22 +1260,38 @@ class InterviewService:
         tenures, and (3) names/summaries that plausibly relate to the current
         target company. Returns employer names in research priority order.
         """
+        raw_lines = state.candidate.raw_resume_text.splitlines()
+
+        def _date_for(company: str) -> str:
+            """Find a date line for a company in the raw resume text."""
+            for line in raw_lines:
+                if company.lower() in line.lower() and re.search(
+                    r"(?:19|20)\d{2}[-/.]\d{1,2}\s+(?:to|至)", line
+                ):
+                    return line.strip()
+            return ""
+
         employers: list[dict[str, Any]] = []
         experience = state.candidate.experience or []
         if experience:
-            employers = [
-                {
-                    "company": str(e.get("company", "")).strip(),
-                    "role": str(e.get("role", "")).strip(),
-                    "start": str(e.get("duration") or e.get("date_range") or ""),
-                    "summary": str(e.get("summary", "")).strip(),
-                }
-                for e in experience
-                if str(e.get("company", "")).strip()
-            ]
+            for e in experience:
+                company = str(e.get("company", "")).strip()
+                if not company:
+                    continue
+                start = str(e.get("duration") or e.get("date_range") or "").strip()
+                if not re.search(r"(?:19|20)\d{2}", start):
+                    start = _date_for(company) or start
+                employers.append(
+                    {
+                        "company": company,
+                        "role": str(e.get("role", "")).strip(),
+                        "start": start,
+                        "summary": str(e.get("summary", "")).strip(),
+                    }
+                )
         if not employers:
             # Fall back to parsing raw text lines "YYYY-MM to COMPANY".
-            for line in state.candidate.raw_resume_text.splitlines():
+            for line in raw_lines:
                 match = re.search(
                     r"(?:19|20)\d{2}[-/.]\d{1,2}\s+(?:to|至)\s+([A-Za-z一-鿿][A-Za-z一-鿿0-9 &,.]+?)"
                     r"(?:\s+(?:19|20)\d{2}[-/.]\d{1,2})?$",
@@ -1295,6 +1311,16 @@ class InterviewService:
             start = entry.get("start") or ""
             years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", start)]
             if not years:
+                # A dateless entry may still be a recent employer (LLM wrote
+                # "3 years" instead of a date range). Keep it, lowest priority.
+                name_tokens = set(re.findall(r"[A-Za-z0-9]+", company.lower()))
+                name_terms = set(re.findall(r"[一-鿿]{2,}", company))
+                entry["_recent"] = False
+                entry["_tenure"] = 0
+                entry["_related"] = bool(
+                    (name_tokens & current_tokens) or (name_terms & current_terms)
+                )
+                candidates.append(entry)
                 continue
             recent = bool(max(years) >= (datetime.now(timezone.utc).year - 5))  # within ~5 yrs
             tenure_span = max(years) - min(years)
@@ -1330,8 +1356,10 @@ class InterviewService:
         Used inside a running workflow where the session lock is already held.
         Returns an empty string when research is not allowed or yields nothing.
         """
-        research_allowed = not state.autopilot.enabled or state.autopilot.authorized_public_research
-        if not research_allowed:
+        # Past-employer research touches sensitive candidate data, so it requires
+        # explicit public-research authorization (no implicit consent in
+        # interactive mode).
+        if not state.autopilot.authorized_public_research:
             return ""
         employers = self._recent_employers(state, limit=2)
         collected: list[dict[str, Any]] = []
@@ -1389,8 +1417,7 @@ class InterviewService:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             state = runtime.state
-            research_allowed = not state.autopilot.enabled or state.autopilot.authorized_public_research
-            if not research_allowed:
+            if not state.autopilot.authorized_public_research:
                 state.past_employer_research_status = "consent_required"
                 await self._persist(session_id, state)
                 return state
@@ -1456,6 +1483,7 @@ class InterviewService:
         interviewer_name: str = "",
         interviewer_position: str = "",
         interviewer_public_info: str = "",
+        authorized_public_research: bool = False,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         steps: list[tuple[str, str]] = [
@@ -1488,6 +1516,7 @@ class InterviewService:
             company_name=company_name,
             interviewer=interviewer,
             parallel_prefix=4 if interviewer else 3,
+            authorized_public_research=authorized_public_research,
         )
 
     async def run_enterprise_design(
@@ -1498,6 +1527,7 @@ class InterviewService:
         job_description: str,
         company_name: str,
         company_context: str = "",
+        authorized_public_research: bool = False,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         steps = [
@@ -1513,6 +1543,7 @@ class InterviewService:
             steps,
             company_name=company_name,
             parallel_prefix=3,
+            authorized_public_research=authorized_public_research,
         )
 
     async def start_mock_interview(self, session_id: str) -> InterviewState:
@@ -1813,6 +1844,7 @@ class InterviewService:
         company_name: str | None = None,
         interviewer: InterviewerProfile | None = None,
         parallel_prefix: int = 0,
+        authorized_public_research: bool = False,
     ) -> InterviewState:
         workflow_started = perf_counter()
         async with self._lock_for(session_id):
@@ -1824,6 +1856,11 @@ class InterviewService:
                 runtime.state.company.name = company_name
             if interviewer is not None:
                 runtime.state.interviewer = interviewer
+            # Record explicit public-research authorization so the past-employer
+            # search respects it even in the non-autopilot workflow paths.
+            runtime.state.autopilot.authorized_public_research = (
+                authorized_public_research
+            )
             runtime.state.workflow = WorkflowProgress(
                 name=name,
                 status=WorkflowStatus.RUNNING,

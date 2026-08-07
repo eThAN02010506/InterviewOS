@@ -69,6 +69,7 @@ class CandidatePrepRequest(BaseModel):
     interviewer_name: str = ""
     interviewer_position: str = ""
     interviewer_public_info: str = ""
+    authorized_public_research: bool = False
 
 
 class EnterpriseDesignRequest(BaseModel):
@@ -77,6 +78,7 @@ class EnterpriseDesignRequest(BaseModel):
     job_description: str = Field(min_length=1)
     company_name: str = Field(min_length=1)
     company_context: str = ""
+    authorized_public_research: bool = False
 
 
 class AutopilotRequest(BaseModel):

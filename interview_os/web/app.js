@@ -53,7 +53,10 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith('/api/auth/')) { state.token = ''; localStorage.removeItem('interviewos.token'); showLogin(); }
+    // Login/register/logout 401s are expected (wrong password) and must not
+    // clear the stored token; every other 401 means the session expired.
+    const authEndpoint = /^\/api\/auth\/(login|register|logout)$/.test(path);
+    if (response.status === 401 && !authEndpoint) { state.token = ''; localStorage.removeItem('interviewos.token'); showLogin(); }
     throw new Error(data.detail || `请求失败 (${response.status})`);
   }
   return data;
@@ -619,8 +622,9 @@ async function uploadSessionAudio() {
   sessionChunks = [];
   try {
     const wav = await encodeBlobAsWav(blob);
+    const isWav = wav.type === 'audio/wav';
     const form = new FormData();
-    form.append('file', wav, `session-${state.sessionId.slice(0, 8)}.wav`);
+    form.append('file', wav, `session-${state.sessionId.slice(0, 8)}.${isWav ? 'wav' : 'webm'}`);
     await api(`/api/live-interviews/${state.sessionId}/audio/final`, {method: 'POST', body: form});
     toast('全场录音已保存');
   } catch (error) { toast(`全场录音保存失败：${error.message}`, true); }
