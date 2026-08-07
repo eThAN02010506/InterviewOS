@@ -1650,8 +1650,9 @@ class InterviewService:
         return runtime.state
 
     async def advance_mock_interview(self, session_id: str) -> InterviewState:
-        """Advance to the next question, or present a follow-up when the latest
-        main answer left missing signals. Refills the question cache when low."""
+        """Advance to the next question, or offer a follow-up when the latest
+        main answer left missing signals. Advancing may skip the current
+        question (the interviewer stays in control); refills when low."""
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
@@ -1661,35 +1662,27 @@ class InterviewService:
             if mock_session.current_question_index >= len(questions):
                 raise MockInterviewStateError("Mock interview has no remaining questions")
             question = questions[mock_session.current_question_index]
-            last_for_question = next(
-                (
-                    item
-                    for item in reversed(mock_session.responses)
-                    if item.question_id == question.id
-                ),
-                None,
-            )
             if mock_session.pending_follow_up:
-                # Only skip the follow-up if it was answered; otherwise require it.
-                follow_answered = last_for_question is not None and last_for_question.is_follow_up
-                if not follow_answered:
-                    raise MockInterviewStateError(
-                        "请先回答当前的证据追问，或直接结束面试"
-                    )
+                # A follow-up is pending; advancing skips it and moves on.
                 mock_session.pending_follow_up = ""
                 mock_session.pending_parent_question_id = None
                 mock_session.current_question_index += 1
             else:
-                if last_for_question is None:
-                    raise MockInterviewStateError(
-                        "请先回答当前问题，再进入下一题"
-                    )
-                last_main = last_for_question if not last_for_question.is_follow_up else None
+                last_main = next(
+                    (
+                        item
+                        for item in reversed(mock_session.responses)
+                        if item.question_id == question.id and not item.is_follow_up
+                    ),
+                    None,
+                )
                 if (
                     last_main is not None
                     and last_main.evaluation.missing_signals
                     and question.follow_ups
                 ):
+                    # First advance after a main answer offers the follow-up
+                    # (the user can skip it by advancing again).
                     mock_session.pending_follow_up = question.follow_ups[0]
                     mock_session.pending_parent_question_id = question.id
                     runtime.state.next_action = "Answer the evidence-seeking follow-up question"
