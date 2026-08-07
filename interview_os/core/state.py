@@ -536,6 +536,15 @@ class LiveInterviewSession(BaseModel):
     audio_saved_at: datetime | None = None
 
 
+def _structured_employment(state: InterviewState) -> list[str]:
+    """Render structured employment sections for the evidence context."""
+    return [
+        f"- {s.institution} | {s.title} | {s.date_range} | {s.description}"
+        for s in state.resume_review.structured
+        if s.category == "employment" and (s.institution or s.title)
+    ]
+
+
 class InterviewState(BaseModel):
     candidate: CandidateProfile = Field(default_factory=CandidateProfile)
     resume_review: ResumeReview = Field(default_factory=ResumeReview)
@@ -545,6 +554,9 @@ class InterviewState(BaseModel):
     interviewer: InterviewerProfile = Field(default_factory=InterviewerProfile)
     entity_resolutions: list[EntityResolution] = Field(default_factory=list)
     fact_cards: list[FactCard] = Field(default_factory=list)
+    past_employer_sources: list[dict[str, Any]] = Field(default_factory=list)
+    past_employer_research_status: str = "not_requested"
+    past_employer_block: str = ""
     strategy: InterviewStrategy = Field(default_factory=InterviewStrategy)
     blueprint: InterviewBlueprint = Field(default_factory=InterviewBlueprint)
     mock_interview: MockInterviewPlan = Field(default_factory=MockInterviewPlan)
@@ -585,11 +597,26 @@ class InterviewState(BaseModel):
             if claim.status in {ResumeClaimStatus.CONFIRMED, ResumeClaimStatus.MODIFIED}
         ]
 
-    def candidate_evidence_context(self) -> str:
+    def candidate_evidence_context(self, *, structure_required: bool = False) -> str:
+        """Build the candidate's evidence context for generation agents.
+
+        The full raw resume is always included (it is the authoritative history),
+        so a sparse or unconfirmed claim list can never starve the agents of
+        recent employers. Confirmed claims are prepended with a priority label;
+        ``structure_required`` additionally includes the structured employment
+        sections when present (cleaner recency ordering from the LLM pass).
+        """
+        blocks: list[str] = []
         confirmed = self.confirmed_resume_facts()
-        if self.resume_review.claims:
-            return "\n".join(confirmed) or "No resume claims have been confirmed yet."
-        return self.candidate.raw_resume_text
+        if confirmed:
+            blocks.append("已确认的简历事实（最高优先级）：\n" + "\n".join(confirmed))
+        if structure_required:
+            structured = _structured_employment(self)
+            if structured:
+                blocks.append("结构化工作经历（按最近优先）：\n" + "\n".join(structured))
+        if self.candidate.raw_resume_text.strip():
+            blocks.append("完整简历原文（权威履历）：\n" + self.candidate.raw_resume_text.strip())
+        return "\n\n".join(blocks)
 
     def enforce_evaluation_evidence_floor(self) -> None:
         evidence_competencies = {

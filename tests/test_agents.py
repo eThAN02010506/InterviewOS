@@ -76,6 +76,17 @@ class InventedMetricsLLM:
         return []
 
 
+class CapturingStrategyLLM:
+    """Records the strategy prompt so tests can assert its content."""
+
+    def __init__(self):
+        self.last_prompt = ""
+
+    async def chat(self, messages, **kwargs):
+        self.last_prompt = messages[-1]["content"]
+        return '{"summary":"准备策略","key_risks":[],"answer_framework":["先讲最近经历"]}'
+
+
 def test_live_suggestion_migrates_legacy_main_question_type():
     suggestion = QuestionSuggestion.model_validate(
         {
@@ -186,6 +197,22 @@ async def test_strategy_removes_metrics_absent_from_evidence():
     await agent.execute(state)
     assert state.strategy.summary == "候选人有17年经验"
     assert state.strategy.answer_framework == ["说明2015年的真实奖项"]
+
+
+@pytest.mark.asyncio
+async def test_strategy_prompt_contains_recency_instruction_and_employer_block():
+    llm = CapturingStrategyLLM()
+    agent = InterviewStrategyAgent(llm_client=llm)
+    state = InterviewState()
+    state.candidate.raw_resume_text = "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager"
+    state.past_employer_block = "候选人过往雇主调研：\nZuora is a subscription platform."
+    await agent.execute(state)
+    # Recency/size weighting instruction is present.
+    assert "最近的雇主" in llm.last_prompt
+    assert "Fortune 500" in llm.last_prompt
+    # The full resume (recent employer) and the past-employer research block are present.
+    assert "ZUORA" in llm.last_prompt
+    assert "Zuora is a subscription platform" in llm.last_prompt
 
 
 @pytest.mark.asyncio

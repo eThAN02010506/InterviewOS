@@ -94,7 +94,10 @@ STRATEGY_FUSION_PROMPT = (
     "unless the supplied JD explicitly makes it job-relevant and lawful. Never invent a target "
     "market, qualification, or requirement absent from the JD. Mention awards, dates, and named "
     "achievements only when they appear in the structured achievements list; do not infer or "
-    "rename them from the resume excerpt.\n"
+    "rename them from the resume excerpt. "
+    "讲述候选人经历时按以下优先级取舍：先讲最近的雇主（时间上离现在最近）；其次讲知名/规模大的"
+    "公司（如 Fortune 500 或业界知名企业）；久远的小公司经历应略写或一笔带过。时间顺序以简历"
+    "原文为准。\n"
 )
 
 MOCK_QUESTION_PROMPT = (
@@ -105,7 +108,8 @@ MOCK_QUESTION_PROMPT = (
     "Output JSON with a questions list. Each question has: question, competency, "
     "rationale, strong_signals (list), follow_ups (list). Generate 5-8 questions "
     "specific to the candidate's actual experience. Use Chinese for questions, rationale, "
-    "signals, and follow-ups while preserving proper nouns.\n"
+    "signals, and follow-ups while preserving proper nouns. "
+    "问题应优先围绕候选人最近或最重要的雇主经历设计；久远的小公司经历可少问或不问。\n"
 )
 
 ANSWER_COACH_PROMPT = (

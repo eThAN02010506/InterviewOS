@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 import httpx
 
 from interview_os.core.debug import DebugEvent, DebugEventStore
-from interview_os.core.state import InterviewState, ResumeClaim, ResumeClaimStatus
+from interview_os.core.state import (
+    InterviewState,
+    ResumeClaim,
+    ResumeClaimStatus,
+    ResumeStructuredSection,
+)
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.intelligence_service import (
     build_fact_cards,
@@ -83,6 +88,23 @@ def test_fact_cards_preserve_source_and_status():
     assert state.fact_cards[0].status.value == "verified"
     assert state.fact_cards[0].source_urls == ["https://example.com/about"]
     assert state.fact_cards[0].source_quality == "official"
+
+
+def test_fact_cards_include_past_employer_sources():
+    state = InterviewState()
+    state.past_employer_sources = [
+        {
+            "url": "https://zuora.com/about",
+            "snippet": "Zuora is a subscription management platform.",
+            "source_quality": "official",
+            "is_official": True,
+        }
+    ]
+    build_fact_cards(state)
+    assert any(card.category == "past_employer" for card in state.fact_cards)
+    past = next(card for card in state.fact_cards if card.category == "past_employer")
+    assert past.status.value == "verified"
+    assert "subscription management" in past.claim
     assert state.fact_cards[0].source_count == 1
     assert state.fact_cards[0].generated_at is not None
 
@@ -151,6 +173,7 @@ def test_fact_card_decision_flow_marks_accept_reject_and_reset():
 
 def test_only_confirmed_or_modified_resume_claims_reach_agents():
     state = InterviewState()
+    state.candidate.raw_resume_text = "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager\nAPAC talent acquisition"
     state.resume_review.claims = [
         ResumeClaim(category="achievement", statement="待核验 100% 增长"),
         ResumeClaim(
@@ -160,8 +183,50 @@ def test_only_confirmed_or_modified_resume_claims_reach_agents():
         ),
     ]
     context = state.candidate_evidence_context()
-    assert "30%" in context
-    assert "100%" not in context
+    # Confirmed claim is present and labelled with priority.
+    assert "确认后的 30% 增长" in context
+    # Unconfirmed claim is not surfaced as a fact.
+    assert "100% 增长" not in context
+    # The full resume (with the recent employer) is always included, so a sparse
+    # claim list can never starve the agents of recent employers.
+    assert "ZUORA" in context
+
+
+def test_evidence_context_falls_back_to_full_resume_when_claims_unconfirmed():
+    state = InterviewState()
+    state.candidate.raw_resume_text = (
+        "2018-07 to ZUORA 2022-12\n"
+        "Senior Recruiting Manager\n"
+        "2011-03 to Hewlett Packard Enterprise 2016-05\n"
+        "Senior Recruiting Consultant"
+    )
+    state.resume_review.claims = [
+        ResumeClaim(category="employment", statement="2018-07 to ZUORA"),
+    ]
+    context = state.candidate_evidence_context()
+    # No confirmed facts, but the full resume is still present (no placeholder).
+    assert "No resume claims have been confirmed yet." not in context
+    assert "ZUORA" in context
+    assert "Hewlett Packard Enterprise" in context
+
+
+def test_evidence_context_includes_structured_employment_when_requested():
+    state = InterviewState()
+    state.candidate.raw_resume_text = "2020-01 to HPE 2023-06\nSenior Engineer"
+    state.resume_review.structured = [
+        ResumeStructuredSection(
+            category="employment",
+            institution="HPE",
+            title="Senior Engineer",
+            date_range="2020-2023",
+            description="led platform team",
+        )
+    ]
+    context = state.candidate_evidence_context(structure_required=True)
+    assert "HPE" in context
+    assert "led platform team" in context
+    # Without structure_required, structured sections are omitted.
+    assert "led platform team" not in state.candidate_evidence_context()
 
 
 def test_debug_store_redacts_secrets_and_resume_contacts():

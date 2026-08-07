@@ -73,7 +73,11 @@ def review_job_description(raw_text: str, inferred: list[str]) -> JobDescription
 
 
 def sync_entity_resolutions(state: InterviewState) -> None:
-    sources = [*state.company.public_sources, *state.interviewer.public_expressions]
+    sources = [
+        *state.company.public_sources,
+        *state.interviewer.public_expressions,
+        *state.past_employer_sources,
+    ]
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for source in sources:
         if source.get("identity_match") != "corroborated_alias":
@@ -110,10 +114,12 @@ def sync_entity_resolutions(state: InterviewState) -> None:
 def build_fact_cards(state: InterviewState) -> None:
     cards: list[FactCard] = []
     indexed: dict[tuple[str, str], FactCard] = {}
-    batches = (
+    batches: list[tuple[str, str, list[dict[str, Any]]]] = [
         ("company", state.company.name, state.company.public_sources),
         ("interviewer", state.interviewer.name, state.interviewer.public_expressions),
-    )
+    ]
+    if state.past_employer_sources:
+        batches.append(("past_employer", "候选人过往雇主", state.past_employer_sources))
     for category, subject, sources in batches:
         for source in sources:
             url = str(source.get("url", "")).strip()

@@ -86,7 +86,12 @@ from interview_os.services.intelligence_service import (
 from interview_os.services.resume_llm import structure_resume_with_llm
 from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.asr import ASRClient, ASRError
-from interview_os.tools.web_search import SearchProvider
+from interview_os.tools.web_search import (
+    SearchProvider,
+    filter_entity_results,
+    format_search_results,
+    merge_search_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1248,6 +1253,194 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
             return message
 
+    @staticmethod
+    def _employer_key(entry: dict[str, Any]) -> int:
+        """Sort key for employers: recency wins, then tenure length.
+
+        Higher = more important to research. Uses the start year (or start date)
+        when present; entries without dates sort lowest.
+        """
+        raw = str(entry.get("start") or entry.get("date_range") or entry.get("duration") or "")
+        match = re.search(r"(?:19|20)(\d{2})", raw)
+        if match:
+            return int(match.group(1)) * 1000
+        # Fall back to duration strings like "2018-2022" or "5 年".
+        duration = str(entry.get("duration") or "")
+        years = re.findall(r"\d{4}", duration)
+        if years:
+            return int(max(years)) * 1000
+        return 0
+
+    def _recent_employers(self, state: InterviewState, limit: int = 2) -> list[str]:
+        """Pick the past employers worth researching.
+
+        Selection favors: (1) employers within the last ~5 years, (2) long
+        tenures, and (3) names/summaries that plausibly relate to the current
+        target company. Returns employer names in research priority order.
+        """
+        employers: list[dict[str, Any]] = []
+        experience = state.candidate.experience or []
+        if experience:
+            employers = [
+                {
+                    "company": str(e.get("company", "")).strip(),
+                    "role": str(e.get("role", "")).strip(),
+                    "start": str(e.get("duration") or e.get("date_range") or ""),
+                    "summary": str(e.get("summary", "")).strip(),
+                }
+                for e in experience
+                if str(e.get("company", "")).strip()
+            ]
+        if not employers:
+            # Fall back to parsing raw text lines "YYYY-MM to COMPANY".
+            for line in state.candidate.raw_resume_text.splitlines():
+                match = re.search(
+                    r"(?:19|20)\d{2}[-/.]\d{1,2}\s+(?:to|至)\s+([A-Za-z一-鿿][A-Za-z一-鿿0-9 &,.]+?)"
+                    r"(?:\s+(?:19|20)\d{2}[-/.]\d{1,2})?$",
+                    line.strip(),
+                )
+                if match:
+                    company = match.group(1).strip()
+                    if company and len(company) >= 2:
+                        employers.append({"company": company, "start": line.strip()})
+        # Filter: within ~5 years OR long tenure OR name overlap with target company.
+        current = state.company.name or ""
+        current_tokens = set(re.findall(r"[A-Za-z0-9]+", current.lower()))
+        current_terms = set(re.findall(r"[一-鿿]{2,}", current))
+        candidates: list[dict[str, Any]] = []
+        for entry in employers:
+            company = entry["company"]
+            start = entry.get("start") or ""
+            years = [int(y) for y in re.findall(r"(?:19|20)(\d{2})", start)]
+            end_years = [int(y) for y in re.findall(r"(?:19|20)(\d{2})", start)]
+            if not years and not end_years:
+                continue
+            recent = bool(years and max(years) >= (2026 - 6))  # started within ~5-6 yrs
+            tenure_span = (max(end_years) - min(years)) if (years and end_years) else 0
+            long_tenure = tenure_span >= 3
+            name_tokens = set(re.findall(r"[A-Za-z0-9]+", company.lower()))
+            name_terms = set(re.findall(r"[一-鿿]{2,}", company))
+            related = bool(
+                (name_tokens & current_tokens)
+                or (name_terms & current_terms)
+            )
+            if recent or long_tenure or related:
+                entry["_recent"] = recent
+                entry["_tenure"] = tenure_span
+                entry["_related"] = related
+                candidates.append(entry)
+        # Priority: recent and related > long tenure > recency alone.
+        def priority(entry: dict[str, Any]) -> tuple[int, int]:
+            p = 0
+            if entry["_recent"]:
+                p += 4
+            if entry["_related"]:
+                p += 2
+            if entry["_tenure"] >= 3:
+                p += 1
+            return (p, entry["_tenure"])
+
+        candidates.sort(key=priority, reverse=True)
+        return [entry["company"] for entry in candidates[:limit]]
+
+    async def _research_employers_inline(self, state: InterviewState) -> str:
+        """Research recent past employers and return a prompt block (no persist).
+
+        Used inside a running workflow where the session lock is already held.
+        Returns an empty string when research is not allowed or yields nothing.
+        """
+        research_allowed = not state.autopilot.enabled or state.autopilot.authorized_public_research
+        if not research_allowed:
+            return ""
+        employers = self._recent_employers(state, limit=2)
+        collected: list[dict[str, Any]] = []
+        for company in employers:
+            collected.extend(
+                await self._search_employer(
+                    company, corroborating_entity=state.interviewer.name
+                )
+            )
+        if not collected:
+            return ""
+        block = format_search_results(
+            merge_search_results(state.past_employer_sources, collected, limit=8)
+        )
+        state.past_employer_sources = merge_search_results(
+            state.past_employer_sources, collected, limit=8
+        )
+        return "候选人过往雇主调研：\n" + block
+
+    async def _search_employer(
+        self, company: str, *, corroborating_entity: str = ""
+    ) -> list[dict[str, Any]]:
+        """Search one past employer; returns raw source dicts (empty on failure)."""
+        provider = self.search_provider
+        if provider is None:
+            return []
+        queries = [
+            f'"{company}" official product engineering technology company culture hiring news',
+            f'"{company}" 公司 官网 产品 招聘',
+        ]
+        results: list[Any] = []
+        for query in queries:
+            try:
+                batch = await provider.search(query, limit=5, search_depth="basic")
+            except Exception as exc:  # noqa: BLE001 - provider may be disabled
+                logger.warning("Past-employer search failed for %s: %s", company, exc)
+                continue
+            batch_dicts: list[dict[str, Any]] = []
+            for item in batch:
+                if isinstance(item, dict):
+                    batch_dicts.append(item)
+                else:
+                    batch_dicts.append(item.model_dump(mode="json"))
+            filtered = filter_entity_results(
+                batch_dicts, entity=company, corroborating_entity=corroborating_entity
+            )
+            if filtered:
+                results = merge_search_results(results, filtered, limit=8)
+                break
+        return results
+
+    async def research_recent_employers(self, session_id: str) -> InterviewState:
+        """Search the candidate's recent/important past employers and persist sources.
+
+        Runs inside the session lock; stores merged sources, sets the research
+        status, rebuilds fact cards/entity resolutions, and persists. Search is
+        gated by the same public-research consent as company research.
+        """
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            state = runtime.state
+            research_allowed = not state.autopilot.enabled or state.autopilot.authorized_public_research
+            if not research_allowed:
+                state.past_employer_research_status = "consent_required"
+                await self._persist(session_id, state)
+                return state
+            employers = self._recent_employers(state, limit=2)
+            collected: list[dict[str, Any]] = []
+            for company in employers:
+                sources = await self._search_employer(
+                    company, corroborating_entity=state.interviewer.name
+                )
+                collected.extend(sources)
+            state.past_employer_sources = merge_search_results(
+                state.past_employer_sources, collected, limit=8
+            )
+            state.past_employer_research_status = (
+                "completed" if state.past_employer_sources else "no_results"
+            )
+            self._sync_intelligence(state)
+            await self._persist(session_id, state)
+        self._record_debug(
+            "past_employer_research",
+            session_id,
+            detail=(
+                f"employers={employers}; sources={len(state.past_employer_sources)}"
+            ),
+        )
+        return runtime.state
+
     async def analyze_interviewer(
         self,
         session_id: str,
@@ -1674,6 +1867,16 @@ class InterviewService:
                     self._sync_intelligence(runtime.state)
                     self._refresh_live_question_usage(runtime.state)
                     await self._persist(session_id, runtime.state)
+                    # After candidate/job/company analysis, research the
+                    # candidate's recent/important past employers so strategy and
+                    # design agents can reference what those companies do.
+                    if any(
+                        agent_name == "candidate_agent" for agent_name, _ in initial
+                    ):
+                        block = await self._research_employers_inline(runtime.state)
+                        if block:
+                            runtime.state.past_employer_block = block
+                            await self._persist(session_id, runtime.state)
                 for index, (agent_name, instruction) in enumerate(
                     steps[start_index:], start=start_index + 1
                 ):

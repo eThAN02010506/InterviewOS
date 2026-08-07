@@ -30,10 +30,15 @@ class InterviewStrategyAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
+        employer_block = (
+            f"\n{state.past_employer_block}" if state.past_employer_block else ""
+        )
         prompt = STRATEGY_FUSION_PROMPT.format(
             candidate_profile=(
                 f"Candidate name: {state.candidate.name}\n"
-                f"Confirmed resume facts only:\n{state.candidate_evidence_context()[:12000]}"
+                "Candidate evidence (confirmed claims + full resume):\n"
+                f"{state.candidate_evidence_context(structure_required=True)[:12000]}"
+                f"{employer_block}"
             ),
             job_requirements=(
                 state.job.model_dump_json()
@@ -103,7 +108,7 @@ class InterviewStrategyAgent(Agent):
         """Drop strategy statements containing metrics absent from supplied evidence."""
         evidence = "\n".join(
             (
-                state.candidate_evidence_context(),
+                state.candidate_evidence_context(structure_required=True),
                 state.job.raw_description,
                 " ".join(str(item.get("snippet", "")) for item in state.company.public_sources),
                 " ".join(

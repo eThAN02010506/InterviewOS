@@ -78,10 +78,17 @@ The system is built around a few product rules:
   use them.
 - Search conclusions are organized into fact cards with source URLs and status:
   verified, inferred, conflicting, or needs review. The UI groups cards by conflict,
-  company, interviewer, technology, and public-opinion categories. Each card shows
-  source count, best source quality, provider fetch time, cache-hit status,
-  filtering reason, and generation time. Users can confirm a card for later
-  context, reject it, or reset it to inferred review state.
+  company, interviewer, past-employer, technology, and public-opinion categories.
+  Each card shows source count, best source quality, provider fetch time,
+  cache-hit status, filtering reason, and generation time. Users can confirm a
+  card for later context, reject it, or reset it to inferred review state.
+- The candidate's past employers are researched too: the most recent / longest-tenured /
+  name-related employers from the resume are searched publicly (respecting the same
+  research consent gate) so the strategy, interview design, and mock questions can
+  reference what those companies actually do. Results appear as "过往雇主" fact cards.
+  Strategy generation always includes the full resume text (not just confirmed
+  claims), so a sparse confirmation list can never hide recent employers, and the
+  generation prompts weight recent / large employers ahead of old small ones.
 - Secrets and sensitive resume/transcript content must not appear in logs, SQLite
   exports, settings responses, or the Debug Console.
 

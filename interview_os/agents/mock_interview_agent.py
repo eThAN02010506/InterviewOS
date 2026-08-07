@@ -29,8 +29,13 @@ class MockInterviewAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
+        employer_block = (
+            f"\n{state.past_employer_block}" if state.past_employer_block else ""
+        )
         prompt = MOCK_QUESTION_PROMPT.format(
-            candidate_background=state.candidate_evidence_context(),
+            candidate_background=(
+                state.candidate_evidence_context(structure_required=True) + employer_block
+            ),
             job_requirement=state.job_review.model_dump_json(),
             interviewer_preference=str(state.interviewer.likely_preferences),
         )

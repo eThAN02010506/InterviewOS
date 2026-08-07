@@ -25,17 +25,21 @@ class InterviewDesignAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        confirmed_facts = state.candidate_evidence_context()
+        confirmed_facts = state.candidate_evidence_context(structure_required=True)
         candidate_section = (
             f"Confirmed candidate facts: {confirmed_facts}\n"
             if confirmed_facts.strip()
             else "Confirmed candidate facts: none provided. Design generic rounds from the "
             "job competencies; do not leave rounds empty.\n"
         )
+        employer_block = (
+            f"\n{state.past_employer_block}" if state.past_employer_block else ""
+        )
         context = (
             f"Position: {state.job.title}\n"
             f"Job review with explicit/inferred labels: {state.job_review.model_dump_json()}\n"
             f"{candidate_section}"
+            f"{employer_block}"
             f"Company DNA: {state.company.dna}\n"
             f"Company preferences: {state.company.preferences}"
         )
@@ -46,7 +50,9 @@ class InterviewDesignAgent(Agent):
             "and follow_ups (list). Map every question to a job competency. Use Chinese for "
             "round names, goals, questions, criteria, rationale, signals, and follow-ups. "
             "Produce at least one round with questions. If no candidate resume is available, "
-            "design rounds from the posted requirements and competencies alone."
+            "design rounds from the posted requirements and competencies alone. "
+            "设计问题时按以下优先级取舍候选人经历：先问最近的雇主；其次知名/规模大的公司；"
+            "久远的小公司经历可少问或不问。"
         )
         try:
             state.blueprint = await self.think_structured(

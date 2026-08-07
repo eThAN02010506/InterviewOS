@@ -38,6 +38,22 @@ class FakeSearchProvider(SearchProvider):
         ]
 
 
+class EmployerSearchProvider(SearchProvider):
+    """Returns a ZUORA source for employer queries, generic otherwise."""
+
+    async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
+        if "zuora" in query.lower():
+            return [
+                SearchResult(
+                    title="Zuora — subscription management platform",
+                    url="https://zuora.com/about",
+                    snippet="Zuora is a pioneer in subscription management software.",
+                    source="fake",
+                )
+            ]
+        return []
+
+
 class WorkflowMockLLM:
     async def chat(self, messages, **kwargs):
         prompt = messages[-1]["content"]
@@ -502,4 +518,68 @@ async def test_candidate_prep_survives_invalid_strategy_output(tmp_path):
     assert state.workflow.status.value == "completed"
     assert state.strategy.summary  # generic fallback summary
     assert state.mock_interview.questions  # mock questions still generated
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_research_recent_employers_populates_sources_and_fact_cards(tmp_path):
+    from interview_os.services.intelligence_service import build_fact_cards
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    session_id, state = await service.create_session()
+    # Provide a recent employer via structured experience.
+    state.candidate.raw_resume_text = "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager\nLed APAC talent acquisition"
+    state.candidate.experience = [
+        {
+            "company": "ZUORA",
+            "role": "Senior Recruiting Manager",
+            "duration": "2018-2022",
+            "summary": "Led APAC talent acquisition",
+        }
+    ]
+    runtime = await service._get_runtime(session_id)
+    runtime.state.candidate = state.candidate
+    await service._persist(session_id, runtime.state)
+
+    result = await service.research_recent_employers(session_id)
+    assert result.past_employer_sources
+    assert result.past_employer_research_status == "completed"
+    build_fact_cards(result)
+    assert any(card.category == "past_employer" for card in result.fact_cards)
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_employers_prioritizes_recent_and_related(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer-pick.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    _, state = await service.create_session()
+    state.company.name = "Acme Tech"
+    state.candidate.experience = [
+        {
+            "company": "Zuora",
+            "role": "SRM",
+            "duration": "2018-2022",
+            "summary": "subscription software",
+        },
+        {
+            "company": "Old Consulting",
+            "role": "Consultant",
+            "duration": "2005-2007",
+            "summary": "recruiting",
+        },
+        {
+            "company": "Acme Tech",
+            "role": "Engineer",
+            "duration": "2010-2014",
+            "summary": "platform",
+        },
+    ]
+    picked = service._recent_employers(state, limit=2)
+    # Recent (Zuora) and name-related (Acme Tech) win over the old small one.
+    assert "Zuora" in picked
+    assert "Old Consulting" not in picked
     await storage.close()
