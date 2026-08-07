@@ -26,6 +26,12 @@ Open `http://127.0.0.1:8000` for the local product UI. It includes candidate
 preparation, enterprise interview design, interactive mock interviews, runtime
 settings, and the Debug Console.
 
+Login is required before using the app: register a local account (username +
+password, hashed with PBKDF2) and sign in. Session data is isolated per account —
+an account only ever sees its own sessions, and a cross-account session lookup
+returns 404 rather than leaking existence. Existing sessions created before
+accounts existed are backfilled to a sentinel `local` owner and remain reachable.
+
 The interviewer workspace includes a **Live Interview Copilot**. With explicit
 consent, it processes typed or recorded interview turns and prepares the next
 follow-up or main question. It is a decision-support surface: the interviewer

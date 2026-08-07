@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from interview_os.api import auth
 from interview_os.api.routes import (
     analysis,
     autopilot,
@@ -110,6 +111,7 @@ def create_app(
             omni_client=omni_client,
             resume_llm_client=resume_llm_client,
         )
+        application.state.storage = storage
         saved_mode = (saved_live_audio or {}).get("mode", "asr_text")
         if isinstance(saved_mode, str):
             try:
@@ -147,6 +149,7 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     application.include_router(interviews.router, prefix="/api/interviews", tags=["interviews"])
     application.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
     application.include_router(autopilot.router, prefix="/api/autopilot", tags=["autopilot"])

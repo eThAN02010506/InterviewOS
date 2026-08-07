@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -87,6 +88,15 @@ from interview_os.tools.web_search import SearchProvider
 
 logger = logging.getLogger(__name__)
 
+# The owning account for the current request. Routes set this (via the
+# get_interview_service dependency) from the bearer token; anonymous requests
+# fall back to the legacy "local" owner so pre-account sessions stay reachable.
+_owner_ctx: ContextVar[str] = ContextVar("interview_owner", default="local")
+
+
+def current_owner() -> str:
+    return _owner_ctx.get()
+
 
 class SessionNotFoundError(LookupError):
     pass
@@ -135,8 +145,8 @@ class InterviewService:
         self.resume_llm_client = resume_llm_client
         self.live_audio_mode = "asr_text"  # "asr_text" | "audio_direct"
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
-        self._runtimes: dict[str, AgentRuntime] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._runtimes: dict[tuple[str, str], AgentRuntime] = {}
+        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.resume_processor = ResumeProcessor()
 
     def set_live_audio_mode(self, mode: str) -> None:
@@ -679,7 +689,7 @@ class InterviewService:
 
     async def _score_live_record_task(self, session_id: str, record_id: UUID) -> None:
         """Background coroutine: score a confirmed live answer and write it back."""
-        runtime = self._runtimes.get(session_id)
+        runtime = self._runtimes.get((current_owner(), session_id))
         if runtime is None:
             logger.warning(
                 "Dropping background live scoring for %s: runtime not cached", session_id
@@ -1003,6 +1013,7 @@ class InterviewService:
     async def create_session(
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""
     ) -> tuple[str, InterviewState]:
+        owner = current_owner()
         session_id = str(uuid4())
         runtime = create_runtime(
             self.llm_client, self.search_provider, self.debug_events, session_id
@@ -1010,14 +1021,17 @@ class InterviewService:
         runtime.state.candidate.name = candidate_name
         runtime.state.job.title = job_title
         runtime.state.company.name = company_name
-        self._runtimes[session_id] = runtime
-        self._locks[session_id] = asyncio.Lock()
+        self._runtimes[(owner, session_id)] = runtime
+        self._locks[(owner, session_id)] = asyncio.Lock()
         await self._persist(session_id, runtime.state)
         self._record_debug("session_created", session_id)
         return session_id, runtime.state
 
     async def get_state(self, session_id: str) -> InterviewState:
         return (await self._get_runtime(session_id)).state
+
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        return await self.storage.list_sessions(owner_id=current_owner())
 
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "candidate_agent", text)
@@ -2167,10 +2181,11 @@ class InterviewService:
             return message
 
     async def _get_runtime(self, session_id: str) -> AgentRuntime:
-        cached = self._runtimes.get(session_id)
+        owner = current_owner()
+        cached = self._runtimes.get((owner, session_id))
         if cached is not None:
             return cached
-        state = await self.storage.get_session_state(session_id)
+        state = await self.storage.get_session_state(session_id, owner_id=owner)
         if state is None:
             raise SessionNotFoundError(session_id)
         runtime = create_runtime(
@@ -2194,20 +2209,33 @@ class InterviewService:
         self._refresh_live_question_usage(runtime.state)
         if runtime.state.evaluation.finalized_at:
             runtime.state.enforce_evaluation_evidence_floor()
-        self._runtimes[session_id] = runtime
-        self._locks.setdefault(session_id, asyncio.Lock())
+        self._runtimes[(owner, session_id)] = runtime
+        self._locks.setdefault((owner, session_id), asyncio.Lock())
         await self._persist(session_id, runtime.state)
         return runtime
 
     def _lock_for(self, session_id: str) -> asyncio.Lock:
-        return self._locks.setdefault(session_id, asyncio.Lock())
+        owner = current_owner()
+        return self._locks.setdefault((owner, session_id), asyncio.Lock())
 
     async def _persist(self, session_id: str, state: InterviewState) -> None:
         self._refresh_live_action_card(state)
-        await self.storage.save_session(session_id, state.model_dump(mode="json"))
+        await self.storage.save_session(
+            session_id, state.model_dump(mode="json"), owner_id=current_owner()
+        )
 
-    def get_cached_runtime(self, session_id: str) -> AgentRuntime | None:
-        return self._runtimes.get(session_id)
+    def get_cached_runtime(self, session_id: str, *, owner_id: str | None = None) -> AgentRuntime | None:
+        """Return a cached runtime for a session.
+
+        The debug console (localhost-only) inspects any session, so by default
+        this scans all owners. Owner-scoped callers can pass ``owner_id``.
+        """
+        if owner_id is not None:
+            return self._runtimes.get((owner_id, session_id))
+        for (owner, sid), runtime in self._runtimes.items():
+            if sid == session_id:
+                return runtime
+        return None
 
     def _record_debug(
         self,

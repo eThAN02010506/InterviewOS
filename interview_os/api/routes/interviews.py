@@ -33,6 +33,11 @@ async def start_session(req: StartSessionRequest, service: Service):
     )
 
 
+@router.get("/sessions", response_model=list[dict])
+async def list_sessions(service: Service):
+    return await service.list_sessions()
+
+
 @router.get("/sessions/{session_id}", response_model=InterviewSessionResponse)
 async def get_session(session_id: str, service: Service):
     state = await service.get_state(session_id)

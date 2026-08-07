@@ -1,6 +1,7 @@
 const state = {
   sessionId: localStorage.getItem('interviewos.session') || '',
   role: localStorage.getItem('interviewos.role') || 'candidate',
+  token: localStorage.getItem('interviewos.token') || '',
   session: null,
   view: '',
   settings: null
@@ -42,10 +43,14 @@ const formatDateTime = value => {
 };
 
 async function api(path, options = {}) {
-  const headers = options.body instanceof FormData ? {...(options.headers || {})} : {'Content-Type':'application/json', ...(options.headers || {})};
+  const authHeaders = state.token ? {Authorization: `Bearer ${state.token}`} : {};
+  const headers = options.body instanceof FormData ? {...authHeaders, ...(options.headers || {})} : {'Content-Type':'application/json', ...authHeaders, ...(options.headers || {})};
   const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/api/auth/')) { state.token = ''; localStorage.removeItem('interviewos.token'); showLogin(); }
+    throw new Error(data.detail || `请求失败 (${response.status})`);
+  }
   return data;
 }
 
@@ -122,14 +127,57 @@ async function checkHealth() {
 }
 
 async function loadSessions() {
+  if (!state.token) { showLogin(); return; }
   try {
-    const data = await api('/api/debug/sessions'); const select = $('session-select');
-    select.innerHTML = '<option value="">选择会话</option>' + data.sessions.map(s => `<option value="${esc(s.id)}">${esc(s.candidate_name || '未命名')} · ${esc(s.job_title || '未指定岗位')}</option>`).join('');
-    if (state.sessionId && data.sessions.some(s => s.id === state.sessionId)) select.value = state.sessionId;
-    else if (data.sessions[0]) select.value = state.sessionId = data.sessions[0].id;
+    const sessions = await api('/api/interviews/sessions'); const select = $('session-select');
+    select.innerHTML = '<option value="">选择会话</option>' + sessions.map(s => `<option value="${esc(s.id)}">${esc(s.candidate_name || '未命名')} · ${esc(s.job_title || '未指定岗位')}</option>`).join('');
+    if (state.sessionId && sessions.some(s => s.id === state.sessionId)) select.value = state.sessionId;
+    else if (sessions[0]) select.value = state.sessionId = sessions[0].id;
     if (state.sessionId) await loadSession();
   } catch (error) { toast(error.message, true); }
 }
+
+function showLogin() {
+  const dialog = $('login-dialog'); if (!dialog) return;
+  dialog.showModal();
+}
+
+function hideLogin() { $('login-dialog')?.close(); }
+
+function logout() {
+  if (state.token) { api('/api/auth/logout', {method: 'POST'}).catch(() => {}); }
+  state.token = ''; state.sessionId = ''; state.session = null;
+  localStorage.removeItem('interviewos.token');
+  localStorage.removeItem('interviewos.session');
+  $('user-chip').textContent = '';
+  showLogin();
+}
+
+$('logout-btn').onclick = logout;
+$('close-login-dialog').onclick = () => hideLogin();
+let loginMode = 'login';
+$('login-toggle').onclick = () => {
+  loginMode = loginMode === 'login' ? 'register' : 'login';
+  $('login-title').textContent = loginMode === 'login' ? '登录' : '注册账号';
+  $('login-submit').textContent = loginMode === 'login' ? '登录' : '注册';
+  $('login-toggle').textContent = loginMode === 'login' ? '注册账号' : '返回登录';
+};
+$('login-form').onsubmit = async e => {
+  e.preventDefault();
+  const username = $('login-username').value.trim();
+  const password = $('login-password').value;
+  if (!username || !password) return;
+  const button = $('login-submit'); busy(e.currentTarget, true);
+  try {
+    const data = await api(`/api/auth/${loginMode}`, {method: 'POST', body: JSON.stringify({username, password})});
+    state.token = data.token; localStorage.setItem('interviewos.token', data.token);
+    $('user-chip').textContent = data.username;
+    $('login-username').value = ''; $('login-password').value = '';
+    hideLogin(); await loadSessions();
+    toast(loginMode === 'register' ? '账号已创建并登录' : '已登录');
+  } catch (error) { toast(error.message, true); }
+  finally { busy(e.currentTarget, false); }
+};
 
 async function loadSession() {
   if (!state.sessionId) { state.session = null; renderState(); return; }
@@ -738,4 +786,5 @@ const requestedView = (location.hash || '').slice(1);
 if (navigation.interviewer.some(([view]) => view === requestedView)) state.role = 'interviewer';
 if (navigation.candidate.some(([view]) => view === requestedView)) state.role = 'candidate';
 setView(viewMeta[requestedView] ? requestedView : `${state.role}-home`);
-checkHealth(); loadSessions();
+checkHealth();
+if (!state.token) { showLogin(); } else { loadSessions(); }
