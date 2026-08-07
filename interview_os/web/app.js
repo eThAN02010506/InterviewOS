@@ -256,13 +256,19 @@ function renderLive() {
     const audioFile = live?.audio_file;
     const recordingStatus = $('session-recording-status');
     const downloadBtn = $('session-audio-download');
+    const isError = recordingStatus?.classList.contains('error');
     if (audioFile && state.sessionId) {
       sessionRecording.hidden = false;
       recordingStatus.textContent = '全场录音已保存';
+      recordingStatus.classList.remove('error');
       downloadBtn.hidden = false;
     } else if (sessionRecordingActive) {
       sessionRecording.hidden = false;
       recordingStatus.textContent = '全场录音中…';
+      recordingStatus.classList.remove('error');
+      downloadBtn.hidden = true;
+    } else if (isError) {
+      sessionRecording.hidden = false;
       downloadBtn.hidden = true;
     } else {
       sessionRecording.hidden = true;
@@ -569,7 +575,10 @@ $('transcript-form').onsubmit=e=>{e.preventDefault();submitTranscript();};
 $('import-transcript').onclick=submitTranscript;
 
 function startSessionRecorder() {
-  if (sessionRecorder || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return;
+  if (sessionRecorder || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showSessionRecordingError('此浏览器不支持全场录音');
+    return;
+  }
   navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
     const preferred = liveAudioType();
     sessionRecorder = new MediaRecorder(stream, preferred ? {mimeType: preferred} : undefined);
@@ -578,7 +587,14 @@ function startSessionRecorder() {
     sessionRecorder.onstop = () => { sessionRecorder = null; };
     sessionRecorder.start(1000);
     sessionRecordingActive = true;
-  }).catch(() => { /* whole-session recording is best-effort */ });
+    renderLive();
+  }).catch(() => { showSessionRecordingError('无法访问麦克风，未在录制全场录音（转写不受影响）'); renderLive(); });
+}
+
+function showSessionRecordingError(message) {
+  sessionRecordingActive = false;
+  const status = $('session-recording-status');
+  if (status) { status.textContent = message; status.classList.add('error'); }
 }
 
 function stopSessionRecorder() {
