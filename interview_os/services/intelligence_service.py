@@ -159,7 +159,7 @@ def build_fact_cards(state: InterviewState) -> None:
                 )
                 continue
             card = FactCard(
-                category=_category_for(category, claim),
+                category=category if category == "past_employer" else _category_for(category, claim),
                 subject=subject,
                 claim=claim,
                 status=FactStatus.VERIFIED if verified else FactStatus.INFERRED,

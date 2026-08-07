@@ -105,6 +105,23 @@ def test_fact_cards_include_past_employer_sources():
     past = next(card for card in state.fact_cards if card.category == "past_employer")
     assert past.status.value == "verified"
     assert "subscription management" in past.claim
+
+
+def test_past_employer_cards_stay_grouped_despite_technology_keywords():
+    state = InterviewState()
+    state.past_employer_sources = [
+        {
+            "url": "https://hpe.com/about",
+            "snippet": "HPE is an enterprise technology company with engineering depth.",
+            "source_quality": "official",
+            "is_official": True,
+        }
+    ]
+    build_fact_cards(state)
+    # Even though the snippet contains "technology"/"engineering", the card must
+    # remain in the past_employer group, not drift to the technology group.
+    assert any(card.category == "past_employer" for card in state.fact_cards)
+    assert not any(card.category == "technology" for card in state.fact_cards)
     assert state.fact_cards[0].source_count == 1
     assert state.fact_cards[0].generated_at is not None
 

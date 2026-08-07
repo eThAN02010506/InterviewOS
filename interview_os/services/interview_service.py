@@ -1253,24 +1253,6 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
             return message
 
-    @staticmethod
-    def _employer_key(entry: dict[str, Any]) -> int:
-        """Sort key for employers: recency wins, then tenure length.
-
-        Higher = more important to research. Uses the start year (or start date)
-        when present; entries without dates sort lowest.
-        """
-        raw = str(entry.get("start") or entry.get("date_range") or entry.get("duration") or "")
-        match = re.search(r"(?:19|20)(\d{2})", raw)
-        if match:
-            return int(match.group(1)) * 1000
-        # Fall back to duration strings like "2018-2022" or "5 年".
-        duration = str(entry.get("duration") or "")
-        years = re.findall(r"\d{4}", duration)
-        if years:
-            return int(max(years)) * 1000
-        return 0
-
     def _recent_employers(self, state: InterviewState, limit: int = 2) -> list[str]:
         """Pick the past employers worth researching.
 
@@ -1315,7 +1297,7 @@ class InterviewService:
             end_years = [int(y) for y in re.findall(r"(?:19|20)(\d{2})", start)]
             if not years and not end_years:
                 continue
-            recent = bool(years and max(years) >= (2026 - 6))  # started within ~5-6 yrs
+            recent = bool(years and max(years) >= (datetime.now(timezone.utc).year - 5))  # started within ~5 yrs
             tenure_span = (max(end_years) - min(years)) if (years and end_years) else 0
             long_tenure = tenure_span >= 3
             name_tokens = set(re.findall(r"[A-Za-z0-9]+", company.lower()))
@@ -1362,13 +1344,9 @@ class InterviewService:
             )
         if not collected:
             return ""
-        block = format_search_results(
-            merge_search_results(state.past_employer_sources, collected, limit=8)
-        )
-        state.past_employer_sources = merge_search_results(
-            state.past_employer_sources, collected, limit=8
-        )
-        return "候选人过往雇主调研：\n" + block
+        merged = merge_search_results(state.past_employer_sources, collected, limit=8)
+        state.past_employer_sources = merged
+        return "候选人过往雇主调研：\n" + format_search_results(merged)
 
     async def _search_employer(
         self, company: str, *, corroborating_entity: str = ""
