@@ -790,3 +790,28 @@ async def test_follow_up_answer_clears_pending_and_advances(tmp_path):
     assert not state.mock_session.pending_follow_up
     assert state.mock_session.current_question_index >= 1
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_previous_mock_question_navigates_back(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'prev.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    # Advance to the second question.
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.current_question_index == 1
+    # Go back to the first.
+    state = await service.previous_mock_question(session_id)
+    assert state.mock_session.current_question_index == 0
+    # Going back at the first question raises.
+    with pytest.raises(MockInterviewStateError):
+        await service.previous_mock_question(session_id)
+    await storage.close()

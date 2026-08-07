@@ -1705,6 +1705,23 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
         return runtime.state
 
+    async def previous_mock_question(self, session_id: str) -> InterviewState:
+        """Go back to the previous question (no-op at the first question)."""
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            mock_session = runtime.state.mock_session
+            if mock_session.status != MockSessionStatus.ACTIVE:
+                raise MockInterviewStateError("Mock interview is not active")
+            if mock_session.current_question_index <= 0:
+                raise MockInterviewStateError("已回到第一题")
+            # Clear any follow-up state so the previous question renders cleanly.
+            mock_session.pending_follow_up = ""
+            mock_session.pending_parent_question_id = None
+            mock_session.current_question_index -= 1
+            runtime.state.next_action = "Answer the current mock interview question"
+            await self._persist(session_id, runtime.state)
+        return runtime.state
+
     async def finish_mock_interview(self, session_id: str) -> InterviewState:
         """End the mock interview manually and run the evaluation when answers exist."""
         runtime = await self._get_runtime(session_id)

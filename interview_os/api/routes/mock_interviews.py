@@ -64,6 +64,12 @@ async def next_mock_question(session_id: str, service: Service):
     return _response(session_id, state, service)
 
 
+@router.post("/{session_id}/previous", response_model=MockSessionResponse)
+async def previous_mock_question(session_id: str, service: Service):
+    state = await service.previous_mock_question(session_id)
+    return _response(session_id, state, service)
+
+
 @router.post("/{session_id}/finish", response_model=MockSessionResponse)
 async def finish_mock_interview(session_id: str, service: Service):
     state = await service.finish_mock_interview(session_id)
