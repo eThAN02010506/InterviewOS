@@ -460,28 +460,27 @@ function renderBlueprint() {
 
 function renderMock() {
   const plan=state.session?.mock_interview?.questions||[]; const session=state.session?.mock_session; const index=session?.current_question_index||0;
-  const answered=session?.responses?.length||0; const pending=Math.max(0,plan.length-index);
-  $('mock-progress').textContent=`已答 ${answered} 题 · 待答 ${pending}`; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
+  $('mock-progress').textContent=''; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
   const current=session?.status==='active'?plan[index]:null; const questionText=session?.pending_follow_up||current?.question; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none';
   const framework=$('mock-framework'); const frameworkText=$('mock-framework-text');
   const lastResp = session?.responses?.at(-1);
   const justAnswered = !!(current && lastResp && lastResp.question_id === current.id && !session?.pending_follow_up);
+  const currentAnswered = current && lastResp && lastResp.question_id === current.id;
   $('answer-form').style.display = current && !justAnswered ? 'block' : 'none';
   if (framework) { const hasFw = current && current.answer_framework && !justAnswered; framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
   const actions=$('mock-actions');
   if (actions) {
-    // 结束面试 is always available during an active session, even if the
-    // question pool is momentarily exhausted (refill pending) or the current
-    // question is unanswered.
-    const finishBtn=$('mock-finish');
-    if (finishBtn) finishBtn.style.display = session?.status==='active' ? 'inline-block' : 'none';
-    const showActions = session?.status==='active' && justAnswered && !session?.pending_follow_up;
-    const nextBtn=$('mock-next'); const retryBtn=$('mock-retry');
-    if (nextBtn) nextBtn.style.display = showActions ? 'inline-block' : 'none';
-    if (retryBtn) retryBtn.style.display = showActions ? 'inline-block' : 'none';
-    actions.classList.toggle('hidden', !showActions && !(session?.status==='active'));
-    if (showActions && retryBtn) retryBtn.disabled = !(state.session?.mock_session?.responses?.length);
+    // 下一题/结束 are always available during an active session so the user
+    // can skip forward at any point; 重新来 only appears once the current
+    // question has been answered.
+    const finishBtn=$('mock-finish'); const nextBtn=$('mock-next'); const retryBtn=$('mock-retry');
+    const isActive = session?.status==='active';
+    if (finishBtn) finishBtn.style.display = isActive ? 'inline-block' : 'none';
+    if (nextBtn) nextBtn.style.display = isActive ? 'inline-block' : 'none';
+    if (retryBtn) retryBtn.style.display = (isActive && currentAnswered) ? 'inline-block' : 'none';
+    actions.classList.toggle('hidden', !isActive);
+    if (isActive && retryBtn) retryBtn.disabled = false;
   }
   const last=session?.responses?.at(-1); const node=$('coach-result');
   const showEval = last && current && last.question_id === current.id;
