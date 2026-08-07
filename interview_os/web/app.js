@@ -464,7 +464,8 @@ function renderMock() {
   $('mock-progress').textContent=`已答 ${answered} 题 · 待答 ${pending}`; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
   const current=session?.status==='active'?plan[index]:null; const questionText=session?.pending_follow_up||current?.question; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none';
   const framework=$('mock-framework'); const frameworkText=$('mock-framework-text');
-  const justAnswered = session?.responses?.length > 0 && !session?.pending_follow_up;
+  const lastResp = session?.responses?.at(-1);
+  const justAnswered = !!(current && lastResp && lastResp.question_id === current.id && !session?.pending_follow_up);
   $('answer-form').style.display = current && !justAnswered ? 'block' : 'none';
   if (framework) { const hasFw = current && current.answer_framework && !justAnswered; framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
@@ -478,7 +479,8 @@ function renderMock() {
     }
   }
   const last=session?.responses?.at(-1); const node=$('coach-result');
-  if (!last) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
+  const showEval = last && current && last.question_id === current.id;
+  if (!showEval) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
   const e=last.evaluation; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div>${list('改进建议',e.feedback)}<div class="result-block"><h4>优化回答</h4><p>${esc(e.improved_answer)}</p></div>`;
 }
 
@@ -576,7 +578,7 @@ $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api
 let mockRetry=false;
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value,retry:mockRetry})});$('mock-answer').value='';mockRetry=false;await loadSession();toast('回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 $('mock-retry').onclick=()=>{mockRetry=true;$('mock-answer').value='';const actions=$('mock-actions');if(actions)actions.classList.add('hidden');$('answer-form').style.display='block';renderMock();};
-$('mock-next').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
+$('mock-next').onclick=async()=>{if(!await ensureSession())return;mockRetry=false;try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
 $('mock-finish').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/finish`,{method:'POST'});await loadSession();toast('面试已结束');}catch(error){toast(error.message,true)}};
 let mockVoiceRecorder=null;
 let mockVoiceChunks=[];

@@ -1661,19 +1661,30 @@ class InterviewService:
             if mock_session.current_question_index >= len(questions):
                 raise MockInterviewStateError("Mock interview has no remaining questions")
             question = questions[mock_session.current_question_index]
+            last_for_question = next(
+                (
+                    item
+                    for item in reversed(mock_session.responses)
+                    if item.question_id == question.id
+                ),
+                None,
+            )
             if mock_session.pending_follow_up:
+                # Only skip the follow-up if it was answered; otherwise require it.
+                follow_answered = last_for_question is not None and last_for_question.is_follow_up
+                if not follow_answered:
+                    raise MockInterviewStateError(
+                        "请先回答当前的证据追问，或直接结束面试"
+                    )
                 mock_session.pending_follow_up = ""
                 mock_session.pending_parent_question_id = None
                 mock_session.current_question_index += 1
             else:
-                last_main = next(
-                    (
-                        item
-                        for item in reversed(mock_session.responses)
-                        if item.question_id == question.id and not item.is_follow_up
-                    ),
-                    None,
-                )
+                if last_for_question is None:
+                    raise MockInterviewStateError(
+                        "请先回答当前问题，再进入下一题"
+                    )
+                last_main = last_for_question if not last_for_question.is_follow_up else None
                 if (
                     last_main is not None
                     and last_main.evaluation.missing_signals
@@ -1718,11 +1729,14 @@ class InterviewService:
         ):
             mock_session.refill_in_flight = True
             self._record_debug("mock_refill_scheduled", session_id)
-            self._background.schedule(self._refill_mock_questions_task(session_id))
+            owner = current_owner()
+            self._background.schedule(
+                self._refill_mock_questions_task(session_id, owner=owner)
+            )
 
-    async def _refill_mock_questions_task(self, session_id: str) -> None:
+    async def _refill_mock_questions_task(self, session_id: str, *, owner: str) -> None:
         """Background: generate more mock questions when the cache runs low."""
-        runtime = self._runtimes.get((current_owner(), session_id))
+        runtime = self._runtimes.get((owner, session_id))
         if runtime is None:
             return
         agent = runtime.get_agent("mock_interview_agent")
@@ -1739,7 +1753,7 @@ class InterviewService:
             logger.error("Mock question refill failed for %s: %s", session_id, exc)
             new_questions = []
         async with self._lock_for(session_id):
-            current = self._runtimes.get((current_owner(), session_id))
+            current = self._runtimes.get((owner, session_id))
             if current is None:
                 return
             mock_session = current.state.mock_session

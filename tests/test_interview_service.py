@@ -738,3 +738,26 @@ async def test_current_mock_question_includes_answer_framework(tmp_path):
     assert question is not None
     assert question.answer_framework
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_advance_requires_answering_current_question(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'advance-guard.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    # Advancing before answering the current question is rejected.
+    with pytest.raises(MockInterviewStateError):
+        await service.advance_mock_interview(session_id)
+    # After answering, advance works.
+    question = service.current_mock_question(state)
+    await service.submit_mock_answer(session_id, question.id, "A clear answer")
+    await service.advance_mock_interview(session_id)
+    await storage.close()
