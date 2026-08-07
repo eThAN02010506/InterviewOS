@@ -5,9 +5,22 @@ import json
 import re
 from typing import TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class FrameworkItem(BaseModel):
+    question_index: int
+    answer_framework: str
+
+
+class FrameworkMap(BaseModel):
+    frameworks: list[FrameworkItem] = Field(default_factory=list)
+
+    def index(self) -> dict[int, str]:
+        return {item.question_index: item.answer_framework for item in self.frameworks}
+
 
 
 def parse_model_output(raw: str, model: type[ModelT]) -> ModelT:

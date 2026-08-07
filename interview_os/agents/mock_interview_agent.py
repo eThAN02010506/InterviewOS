@@ -16,9 +16,11 @@ from interview_os.core.state import (
     MockInterviewPlan,
 )
 from interview_os.models.prompt_templates import (
+    MOCK_FRAMEWORK_PROMPT,
     MOCK_QUESTION_PROMPT,
     MOCK_REFILL_PROMPT,
 )
+from interview_os.models.structured import FrameworkMap
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +50,41 @@ class MockInterviewAgent(Agent):
 
     @staticmethod
     def deterministic_framework(state: InterviewState, competency: str) -> str:
-        base = "、".join(state.strategy.answer_framework) or (
-            "先说结论 → 讲行动与权衡 → 给出可量化结果"
-        )
-        return (
-            f"结合你简历中与「{competency or '岗位核心能力'}」最相关的真实经历，"
-            f"按“{base}”组织回答，重点突出你的个人角色、取舍与可验证的结果。"
-        )
+        """Build a per-question reference-answer hint from the resume materials.
+
+        Picks 2-3 distinct, competency-relevant angles from the strategy's
+        answer framework, the candidate's unique advantages, and strengths, so
+        different questions get different concrete pointers instead of one
+        repeated template. Rendered as a compact bulleted list.
+        """
+        competency = competency or "岗位核心能力"
+
+        # Pool of candidate-specific material lines.
+        materials: list[str] = [
+            line.strip()
+            for line in state.strategy.answer_framework
+            if line.strip()
+        ]
+        materials += [f"突出你的优势：{a}" for a in state.candidate.unique_advantages]
+        materials += [f"体现你的擅长：{s}" for s in state.candidate.strengths]
+
+        # Match materials whose text plausibly relates to this competency.
+        def matches(text: str) -> bool:
+            hay = text.lower()
+            key = competency.lower()
+            return key in hay or any(
+                word in hay
+                for word in ("团队", "项目", "技术", "数据", "指标", "性能", "架构")
+                if word in competency
+            )
+
+        matched = [m for m in materials if matches(m)]
+        if not matched:
+            matched = materials[:3]
+        # Prefer the most specific: skip the generic opener if something richer.
+        chosen = matched[:3]
+        items = ["先点明该能力对应的真实经历与你的角色", *chosen]
+        return "建议这样组织：\n" + "\n".join(f"· {item}" for item in items)
 
     def _expand_pool(self, state: InterviewState) -> None:
         """Build the initial question pool from likely_questions + competencies."""
@@ -81,7 +111,7 @@ class MockInterviewAgent(Agent):
                     rationale="来自准备策略中的可能问题",
                     strong_signals=["具体情境", "个人行动", "量化结果"],
                     follow_ups=["你个人具体负责什么？", "结果如何衡量？"],
-                    answer_framework=self.deterministic_framework(state, competency),
+                    answer_framework="",
                     source="likely",
                 )
             )
@@ -109,13 +139,44 @@ class MockInterviewAgent(Agent):
                         rationale="基于岗位能力生成的通用练习问题",
                         strong_signals=["具体情境", "个人行动", "量化结果", "复盘与取舍"],
                         follow_ups=["你个人具体负责什么？", "结果如何衡量？"],
-                        answer_framework=self.deterministic_framework(state, competency),
+                        answer_framework="",
                         source="competency",
                     )
             )
             seen.add(q_text)
-        # 3. Backfill any question missing an answer framework.
-        for q in current:
+        # Answer frameworks are filled by _generate_frameworks (per-question LLM
+        # pass, deterministic backfill), so leave them empty here.
+
+    async def _generate_frameworks(self, state: InterviewState) -> None:
+        """Fill answer_framework for every pool question lacking one.
+
+        Uses one batched LLM call keyed by question index so each question gets
+        its own tailored reference-answer hint. Deterministic_framework backfills
+        anything the LLM misses so no question ships empty.
+        """
+        pending = [q for q in state.mock_interview.questions if not q.answer_framework]
+        if not pending or self.llm_client is None:
+            return
+        employer_block = (
+            f"\n{state.past_employer_block}" if state.past_employer_block else ""
+        )
+        numbered = "\n".join(
+            f"{i}. [{q.competency}] {q.question}" for i, q in enumerate(pending)
+        )
+        prompt = MOCK_FRAMEWORK_PROMPT.format(
+            candidate_background=(
+                state.candidate_evidence_context(structure_required=True) + employer_block
+            ),
+            job_requirement=state.job_review.model_dump_json(),
+            questions=numbered,
+        )
+        raw = await self.think(prompt, context=state.summary())
+        parsed = self._parse_structured(raw, FrameworkMap)
+        if parsed is not None:
+            for index, framework in parsed.index().items():
+                if 0 <= index < len(pending) and framework:
+                    pending[index].answer_framework = framework.strip()
+        for q in state.mock_interview.questions:
             if not q.answer_framework:
                 q.answer_framework = self.deterministic_framework(state, q.competency)
 
@@ -215,4 +276,5 @@ class MockInterviewAgent(Agent):
                 ]
             )
         self._expand_pool(state)
+        await self._generate_frameworks(state)
         return self.make_response(state.mock_interview.model_dump_json(indent=2))

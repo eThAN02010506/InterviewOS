@@ -129,6 +129,21 @@ MOCK_REFILL_PROMPT = (
     "重点强调哪些信号，一句话讲清。\n"
 )
 
+MOCK_FRAMEWORK_PROMPT = (
+    "为下列每一道模拟面试题生成对应的参考答案提示框架。\n\n"
+    "候选人背景:\n{candidate_background}\n\n"
+    "岗位要求:\n{job_requirement}\n\n"
+    "题目列表:\n{questions}\n\n"
+    "逐题输出一个框架。每题的 answer_framework 必须: "
+    "指明应调用候选人简历中哪段最相关的真实经历(尽量引用具体公司/项目/数字), "
+    "给出组织回答的结构(如 情境→行动→量化结果→复盘), "
+    "指出针对这道题要重点强调的信号。用中文, 3 至 5 个分点 (用“·”), 简洁, "
+    "不要写完整回答, 只写提示。\n"
+    "仅输出 JSON, 格式为 "
+    '{{"frameworks": [{{"question_index": 0, "answer_framework": "…"}}, ...]}}, '
+    "每一道题恰好一条, question_index 对应题目列表中的序号。\n"
+)
+
 ANSWER_COACH_PROMPT = (
     "Analyze this interview answer and provide coaching.\n\n"
     "Question: {question}\n"

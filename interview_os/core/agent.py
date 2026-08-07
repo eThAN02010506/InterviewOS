@@ -91,32 +91,45 @@ class Agent(ABC):
         last_error: Exception | None = None
         for attempt in (1, 2):
             raw = await self.think(prompt, context=context, max_tokens=max_tokens)
-            try:
-                return parse_model_output(raw, model)
-            except (ValueError, TypeError) as exc:
-                last_error = exc
-                if self.debug_events is not None:
-                    self.debug_events.record(
-                        DebugEvent(
-                            level=DebugLevel.WARNING,
-                            category="model",
-                            action=(
-                                "structured_output_retry"
-                                if attempt == 1
-                                else "structured_output_fallback"
-                            ),
-                            session_id=self.session_id,
-                            agent=self.name,
-                            detail=(
-                                f"Retrying invalid {model.__name__} output"
-                                if attempt == 1
-                                else f"Invalid {model.__name__} output; caller should fall back"
-                            ),
-                        )
+            parsed = self._parse_structured(raw, model)
+            if parsed is not None:
+                return parsed
+            last_error = ValueError(f"Invalid {model.__name__} output")
+            if self.debug_events is not None:
+                self.debug_events.record(
+                    DebugEvent(
+                        level=DebugLevel.WARNING,
+                        category="model",
+                        action=(
+                            "structured_output_retry"
+                            if attempt == 1
+                            else "structured_output_fallback"
+                        ),
+                        session_id=self.session_id,
+                        agent=self.name,
+                        detail=(
+                            f"Retrying invalid {model.__name__} output"
+                            if attempt == 1
+                            else f"Invalid {model.__name__} output; caller should fall back"
+                        ),
                     )
+                )
         if last_error is not None:
             raise last_error
         raise RuntimeError(f"Unreachable: {model.__name__} parsing failed")
+
+    def _parse_structured(
+        self, raw: str, model: type[StructuredModelT]
+    ) -> StructuredModelT | None:
+        """Parse raw LLM output once without raising; returns None on failure.
+
+        Used by optional generation passes (e.g. per-question answer frameworks)
+        that have a deterministic fallback and should not pay a retry cost.
+        """
+        try:
+            return parse_model_output(raw, model)
+        except (ValueError, TypeError):
+            return None
 
     def make_response(self, content: str, recipient: str = "runtime") -> Message:
         return Message(

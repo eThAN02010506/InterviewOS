@@ -41,6 +41,13 @@ class WorkflowLLM:
             return '{"overall":"Meets the bar","strengths":["Clear design"],"improvements":[],"action_plan":["Continue practice"],"interviewer_notes":[],"recommendation_reasoning":"Evidence supports hire."}'
         if "return exactly one json object matching the questionsuggestion schema" in prompt:
             return '{"suggested_question":"你如何验证这个架构权衡？","question_type":"follow_up","competency":"System Design","rationale":"需要补充验证方法","evidence_gap":"量化验证","expected_signals":["指标","压测"],"confidence":0.8,"alternatives":["失败时如何回滚？"]}'
+        if "参考答案提示框架" in prompt:
+            return ('{"frameworks":['
+                    '{"question_index":0,"answer_framework":"用 STAR 讲 2024 事故复盘"},'
+                    '{"question_index":1,"answer_framework":"用 SLO 故事量化平台健康"},'
+                    '{"question_index":2,"answer_framework":"讲清取舍并给量化结果"},'
+                    '{"question_index":3,"answer_framework":"引用 ZUORA 账单平台扩展经历"},'
+                    '{"question_index":4,"answer_framework":"突出团队从 4 人扩展到 15 人的领导力"}]}')
         raise AssertionError(prompt)
 
     async def embed(self, text):
