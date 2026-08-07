@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.core.debug import DebugEventStore, DebugLevel
+from interview_os.core.state import InterviewState
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.interview_service import InterviewService
 
@@ -55,12 +56,20 @@ async def debug_events(
 
 @router.get("/sessions", dependencies=[Depends(require_local_request)])
 async def debug_sessions(service: Service, limit: int = Query(default=50, ge=1, le=200)):
-    return {"sessions": await service.storage.list_sessions(limit)}
+    # The debug console is the localhost ops surface: show every account's
+    # sessions, not just the current request's owner.
+    return {"sessions": await service.storage.list_sessions(limit, owner_id=None)}
 
 
 @router.get("/sessions/{session_id}", dependencies=[Depends(require_local_request)])
 async def debug_session(session_id: str, service: Service):
-    state = await service.get_state(session_id)
+    # Debug inspects any account's session directly (owner=None), bypassing the
+    # per-request owner scope. Missing sessions 404 rather than returning an
+    # empty state.
+    raw = await service.storage.get_session_state(session_id, owner_id=None)
+    if raw is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    state = InterviewState.model_validate(raw)
     runtime = service.get_cached_runtime(session_id)
     messages = runtime.get_message_log() if runtime else []
     return {

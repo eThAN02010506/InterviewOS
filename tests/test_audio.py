@@ -123,6 +123,24 @@ def test_audio_requires_consent(tmp_path):
         assert resp.status_code == 409
 
 
+def test_upload_webm_preserves_encoding(tmp_path):
+    with TestClient(_make_app(tmp_path, tmp_path / "recordings")) as client:
+        token = _register(client, "alice")
+        sid = _start_consented_session(client, token)
+        resp = client.post(
+            f"/api/live-interviews/{sid}/audio/final",
+            files={"file": ("session.webm", b"WEBM-FAKE", "audio/webm")},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        live = resp.json()["state"]["live_interview"]
+        assert live["audio_file"] == f"{sid}.webm"
+        dl = client.get(f"/api/live-interviews/{sid}/audio", headers=_auth(token))
+        assert dl.status_code == 200
+        assert dl.content == b"WEBM-FAKE"
+        assert dl.headers["content-type"] == "audio/webm"
+
+
 def test_audio_invalid_session_id_422(tmp_path):
     with TestClient(_make_app(tmp_path, tmp_path / "recordings")) as client:
         token = _register(client, "alice")

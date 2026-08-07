@@ -111,6 +111,9 @@ def test_sessions_isolated_between_accounts(tmp_path):
         )
         # Anonymous (legacy 'local' owner) cannot see Alice's session
         assert client.get(f"/api/interviews/sessions/{sid}").status_code == 404
+        # The localhost debug console still sees every account's sessions.
+        debug = client.get("/api/debug/sessions")
+        assert any(s["id"] == sid for s in debug.json()["sessions"])
 
 
 def test_invalid_token_rejected(tmp_path):

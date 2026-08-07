@@ -116,29 +116,31 @@ class Storage:
             await session.commit()
 
     async def get_session_state(
-        self, session_id: str, *, owner_id: str = LEGACY_OWNER
+        self, session_id: str, *, owner_id: str | None = LEGACY_OWNER
     ) -> dict[str, Any] | None:
+        """Return a session's state blob, scoped to ``owner_id`` when given.
+
+        ``owner_id=None`` disables the ownership filter (used by the localhost
+        debug console to inspect any session).
+        """
         async with self.session_factory() as session:
-            record = await session.execute(
-                select(InterviewSession).where(
-                    InterviewSession.id == session_id,
-                    InterviewSession.owner_id == owner_id,
-                )
-            )
+            query = select(InterviewSession).where(InterviewSession.id == session_id)
+            if owner_id is not None:
+                query = query.where(InterviewSession.owner_id == owner_id)
+            record = await session.execute(query)
             row = record.scalar_one_or_none()
             return json.loads(row.state_json) if row is not None else None
 
     async def list_sessions(
-        self, limit: int = 50, *, owner_id: str = LEGACY_OWNER
+        self, limit: int = 50, *, owner_id: str | None = LEGACY_OWNER
     ) -> list[dict[str, Any]]:
+        """List sessions, scoped to ``owner_id`` when given (``None`` = all)."""
         bounded_limit = max(1, min(limit, 200))
         async with self.session_factory() as session:
-            result = await session.execute(
-                select(InterviewSession)
-                .where(InterviewSession.owner_id == owner_id)
-                .order_by(InterviewSession.updated_at.desc())
-                .limit(bounded_limit)
-            )
+            query = select(InterviewSession).order_by(InterviewSession.updated_at.desc())
+            if owner_id is not None:
+                query = query.where(InterviewSession.owner_id == owner_id)
+            result = await session.execute(query.limit(bounded_limit))
             return [
                 {
                     "id": record.id,

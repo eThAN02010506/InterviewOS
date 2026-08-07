@@ -1037,25 +1037,34 @@ class InterviewService:
     async def list_sessions(self) -> list[dict[str, Any]]:
         return await self.storage.list_sessions(owner_id=current_owner())
 
-    async def save_live_audio(self, session_id: str, content: bytes) -> InterviewState:
+    async def save_live_audio(
+        self, session_id: str, content: bytes, *, extension: str = "wav"
+    ) -> InterviewState:
         """Persist a whole-session audio file for a live interview.
 
-        Writes the bytes to ``data/recordings/{session_id}.wav`` (atomic
-        temp+rename) and records the filename on the session state, which is
-        persisted with the rest of the blob. Ownership is enforced by
-        ``_get_runtime`` (owner-scoped), so a foreign session raises 404.
+        Writes the bytes to ``data/recordings/{session_id}.{extension}`` (atomic
+        temp+rename) and records the real filename on the session state, which
+        is persisted with the rest of the blob. The extension reflects the
+        uploaded encoding (wav from the normal path, webm from a best-effort
+        pagehide upload) so the stored file's type matches its bytes.
+        Ownership is enforced by ``_get_runtime`` (owner-scoped), so a foreign
+        session raises 404.
         """
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             live = runtime.state.live_interview
             if not live.consent_confirmed:
                 raise LiveInterviewStateError("未确认知情同意前无法保存全场录音")
+            ext = (extension or "wav").lstrip(".").lower()
+            if ext not in {"wav", "webm", "m4a"}:
+                ext = "wav"
             self._recordings_dir.mkdir(parents=True, exist_ok=True)
-            target = self._recordings_dir / f"{session_id}.wav"
-            temp = self._recordings_dir / f"{session_id}.wav.tmp"
+            filename = f"{session_id}.{ext}"
+            target = self._recordings_dir / filename
+            temp = self._recordings_dir / f"{session_id}.{ext}.tmp"
             temp.write_bytes(content)
             os.replace(temp, target)
-            live.audio_file = f"{session_id}.wav"
+            live.audio_file = filename
             live.audio_size_bytes = len(content)
             live.audio_saved_at = datetime.now(timezone.utc)
             await self._persist(session_id, runtime.state)
@@ -1070,10 +1079,15 @@ class InterviewService:
         """Return the on-disk path of a session's recording, if present.
 
         The caller (owner-scoped route) already validated ownership via
-        ``get_state``; this returns ``None`` when no recording exists.
+        ``get_state``; this returns ``None`` when no recording exists. The path
+        is resolved from the stored filename (or a scan for known encodings) so
+        the real bytes are served regardless of extension.
         """
-        path = self._recordings_dir / f"{session_id}.wav"
-        return path if path.exists() else None
+        for ext in ("wav", "webm", "m4a"):
+            candidate = self._recordings_dir / f"{session_id}.{ext}"
+            if candidate.exists():
+                return candidate
+        return None
 
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "candidate_agent", text)
