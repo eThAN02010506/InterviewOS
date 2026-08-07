@@ -284,6 +284,16 @@ The live audio path is switchable between two modes (Settings → 实时音频�
   as `unknown`-speaker "待确认" segments, in `audio_direct` they land with an
   auto-detected speaker.
 
+  The live workspace can also **record the whole interview as one audio file**.
+  With the consent checkbox confirmed, a separate recorder captures the entire
+  session (independent of the per-utterance VAD path, which discards silence
+  gaps) and, on ending the interview, uploads it once to
+  `POST /api/live-interviews/{id}/audio/final`. The WAV is saved under
+  `data/recordings/{session_id}.wav` (a per-session file, never shared across
+  accounts) and can be downloaded back from the live panel. The file lives on
+  this machine only; the recording is opt-in via the same explicit consent that
+  gates transcription.
+
   The direct path's context is **focused and priority-ordered** for speed: it
   carries only the job/covered competencies (the anchor, always kept), the
   recent stable conversation, and the most recent live evidence. Advancement-only

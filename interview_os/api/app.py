@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from interview_os.api import auth
 from interview_os.api.routes import (
     analysis,
+    audio,
     autopilot,
     debug,
     evaluations,
@@ -61,6 +62,7 @@ def create_app(
     asr_client: ASRClient | None = None,
     omni_client: OmniAudioClient | None = None,
     resume_llm_client: Any = None,
+    recordings_dir: Path | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
@@ -110,6 +112,7 @@ def create_app(
             storage, llm_client, active_search_provider, debug_events, asr_client,
             omni_client=omni_client,
             resume_llm_client=resume_llm_client,
+            recordings_dir=recordings_dir,
         )
         application.state.storage = storage
         saved_mode = (saved_live_audio or {}).get("mode", "asr_text")
@@ -166,6 +169,9 @@ def create_app(
     )
     application.include_router(
         live_interviews.router, prefix="/api/live-interviews", tags=["live-interviews"]
+    )
+    application.include_router(
+        audio.router, prefix="/api/live-interviews", tags=["live-interviews-audio"]
     )
     application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

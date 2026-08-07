@@ -31,6 +31,11 @@ let liveVadUtteranceChunks = [];
 let liveVadUtteranceBytes = 0;
 let liveVadFinalizing = false;
 let liveVadTimer = null;
+// Whole-session recorder: captures the entire live interview as one audio file
+// (independent of the per-utterance VAD path, which discards silence gaps).
+let sessionRecorder = null;
+let sessionChunks = [];
+let sessionRecordingActive = false;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const cssEscape = value => globalThis.CSS?.escape ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, '\\$&');
@@ -244,6 +249,23 @@ function renderLive() {
     } else {
       const uploading = liveContinuousUploading ? '，正在转写 1 段' : '';
       $('live-recording-note').textContent = `连续监听已停止：队列 ${liveContinuousQueue.length} 段${uploading}。分段会先标记为“待确认”，请审阅说话人与文本后再归档证据。`;
+    }
+  }
+  const sessionRecording = $('live-session-recording');
+  if (sessionRecording) {
+    const audioFile = live?.audio_file;
+    const recordingStatus = $('session-recording-status');
+    const downloadBtn = $('session-audio-download');
+    if (audioFile && state.sessionId) {
+      sessionRecording.hidden = false;
+      recordingStatus.textContent = '全场录音已保存';
+      downloadBtn.hidden = false;
+    } else if (sessionRecordingActive) {
+      sessionRecording.hidden = false;
+      recordingStatus.textContent = '全场录音中…';
+      downloadBtn.hidden = true;
+    } else {
+      sessionRecording.hidden = true;
     }
   }
   const segments = live?.segments || [];
@@ -546,10 +568,46 @@ async function submitTranscript(){if(!await ensureSession())return;const form=$(
 $('transcript-form').onsubmit=e=>{e.preventDefault();submitTranscript();};
 $('import-transcript').onclick=submitTranscript;
 
-async function startLiveInterview(){if(!await ensureSession())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/start`,{method:'POST',body:JSON.stringify({consent_confirmed:$('live-consent').checked})});state.session=data.state;renderLive();toast('实时面试已开始');}catch(error){toast(error.message,true)}}
+function startSessionRecorder() {
+  if (sessionRecorder || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return;
+  navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
+    const preferred = liveAudioType();
+    sessionRecorder = new MediaRecorder(stream, preferred ? {mimeType: preferred} : undefined);
+    sessionChunks = [];
+    sessionRecorder.ondataavailable = e => { if (e.data.size) sessionChunks.push(e.data); };
+    sessionRecorder.onstop = () => { sessionRecorder = null; };
+    sessionRecorder.start(1000);
+    sessionRecordingActive = true;
+  }).catch(() => { /* whole-session recording is best-effort */ });
+}
+
+function stopSessionRecorder() {
+  const recorder = sessionRecorder;
+  if (!recorder) return;
+  sessionRecordingActive = false;
+  recorder.stop();
+}
+
+async function uploadSessionAudio() {
+  if (!sessionRecordingActive && !sessionChunks.length) return;
+  stopSessionRecorder();
+  if (!sessionChunks.length) return;
+  const type = (sessionRecorder?.mimeType || 'audio/webm').replace('audio/webm;codecs=opus', 'audio/webm');
+  const blob = new Blob(sessionChunks, {type: sessionRecorder?.mimeType || 'audio/webm'});
+  sessionChunks = [];
+  try {
+    const wav = await encodeBlobAsWav(blob);
+    const form = new FormData();
+    form.append('file', wav, `session-${state.sessionId.slice(0, 8)}.wav`);
+    await api(`/api/live-interviews/${state.sessionId}/audio/final`, {method: 'POST', body: form});
+    toast('全场录音已保存');
+  } catch (error) { toast(`全场录音保存失败：${error.message}`, true); }
+}
+
+async function startLiveInterview(){if(!await ensureSession())return;try{const data=await api(`/api/live-interviews/${state.sessionId}/start`,{method:'POST',body:JSON.stringify({consent_confirmed:$('live-consent').checked})});state.session=data.state;renderLive();toast('实时面试已开始');if($('live-consent').checked)startSessionRecorder();}catch(error){toast(error.message,true)}}
 $('live-start').onclick=startLiveInterview;
 $('live-pause').onclick=async()=>{const next=state.session?.live_interview?.status==='paused'?'active':'paused';try{const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:next})});state.session=data.state;renderLive();toast(next==='paused'?'实时会话已暂停':'实时会话已恢复');}catch(error){toast(error.message,true)}};
-$('live-finish').onclick=async()=>{try{if(liveContinuousMode||liveContinuousQueue.length||liveContinuousUploading){toast('请先停止连续监听并等待转写队列处理完成，再结束会话',true);renderLive();return;}if(liveRecorder&&liveRecorder.state==='recording')liveRecorder.stop();const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:'completed'})});state.session=data.state;renderLive();toast('实时面试已结束，请审阅转写');}catch(error){toast(error.message,true)}};
+$('live-finish').onclick=async()=>{try{if(liveContinuousMode||liveContinuousQueue.length||liveContinuousUploading){toast('请先停止连续监听并等待转写队列处理完成，再结束会话',true);renderLive();return;}if(liveRecorder&&liveRecorder.state==='recording')liveRecorder.stop();await uploadSessionAudio();const data=await api(`/api/live-interviews/${state.sessionId}/status`,{method:'POST',body:JSON.stringify({status:'completed'})});state.session=data.state;renderLive();toast('实时面试已结束，请审阅转写');}catch(error){toast(error.message,true)}};
 $('live-text-form').onsubmit=async e=>{e.preventDefault();const text=$('live-text').value.trim();if(!text)return;const form=e.currentTarget;busy(form,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/segments`,{method:'POST',body:JSON.stringify({text,speaker:$('live-speaker').value})});state.session=data.state;$('live-text').value='';renderLive();toast('发言已加入实时对话');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 
 function liveAudioType(){return ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(type=>MediaRecorder.isTypeSupported(type))||'';}
@@ -629,10 +687,11 @@ function stopLiveContinuousVad(){const hadSpeech=liveVadUtteranceChunks.length>0
 function teardownLiveContinuous(){liveContinuousMode=false;if(liveVadTimer){clearInterval(liveVadTimer);liveVadTimer=null;}if(liveVadAudioContext){liveVadAudioContext.close().catch(()=>{});liveVadAudioContext=null;}liveVadAnalyser=null;liveVadData=null;liveVadState='idle';liveVadUtteranceChunks=[];liveVadUtteranceBytes=0;liveVadSpeechStart=0;liveVadLastSpeech=0;liveVadLastFinalizeAt=0;liveVadFinalizing=false;if(liveMediaStream){liveMediaStream.getTracks().forEach(track=>track.stop());}liveMediaStream=null;liveRecorder=null;}
 function liveContinuousUploadMode(){const mode=state.settings?.live_audio?.mode||document.querySelector('#setting-live-audio-mode')?.value||'asr_text';return mode==='audio_direct'?'dialogue':'single';}
 function updateLiveVadNote(){const note=$('live-recording-note');if(!note)return;if(liveVadState==='in-speech'){note.textContent=`正在听取 (${Math.max(0,Math.floor((performance.now()-liveVadSpeechStart)/1000))}s)`;note.classList.add('listening');}else{note.textContent='正在聆听…';note.classList.remove('listening');}if(liveContinuousUploading||liveContinuousQueue.length){note.textContent+=` ｜ 队列 ${liveContinuousQueue.length} 段${liveContinuousUploading?'，正在转写 1 段':''}`;}}
-window.addEventListener('pagehide',()=>{if(liveRecorder?.state==='recording')liveRecorder.stop();});
+window.addEventListener('pagehide',()=>{if(liveRecorder?.state==='recording')liveRecorder.stop();if(sessionRecordingActive||sessionChunks.length){stopSessionRecorder();fetch(`/api/live-interviews/${state.sessionId}/audio/final`,{method:'POST',headers:{Authorization:`Bearer ${state.token}`},body:(()=>{const fd=new FormData();const b=new Blob(sessionChunks,{type:'audio/webm'});sessionChunks=[];fd.append('file',b,`session-${state.sessionId.slice(0,8)}.webm`);return fd;})()}).catch(()=>{});}});
 
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
 $('live-export').onclick=async()=>{if(!state.sessionId){toast('请先创建会话',true);return;}try{const resp=await fetch(`/api/interviews/sessions/${state.sessionId}/transcript`,{headers:{Authorization:`Bearer ${state.token}`}});if(!resp.ok)throw new Error('导出失败');const text=await resp.text();const blob=new Blob([text],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`interview-${state.sessionId.slice(0,8)}.txt`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);toast('转写文本已导出');}catch(error){toast(error.message,true)}};
+$('session-audio-download')?.addEventListener('click',async()=>{if(!state.sessionId)return;try{const resp=await fetch(`/api/live-interviews/${state.sessionId}/audio`,{headers:{Authorization:`Bearer ${state.token}`}});if(!resp.ok)throw new Error('下载失败');const blob=await resp.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`interview-${state.sessionId.slice(0,8)}.wav`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);toast('全场录音已下载');}catch(error){toast(error.message,true)}});
 
 let liveSuggestionStream = null;
 let liveSuggestionAbort = null;

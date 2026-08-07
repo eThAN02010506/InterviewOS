@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
@@ -135,6 +137,7 @@ class InterviewService:
         background: BackgroundTaskManager | None = None,
         omni_client: Any = None,
         resume_llm_client: Any = None,
+        recordings_dir: Path | None = None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -147,6 +150,7 @@ class InterviewService:
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
         self._runtimes: dict[tuple[str, str], AgentRuntime] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._recordings_dir = recordings_dir or Path("data/recordings")
         self.resume_processor = ResumeProcessor()
 
     def set_live_audio_mode(self, mode: str) -> None:
@@ -1032,6 +1036,44 @@ class InterviewService:
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         return await self.storage.list_sessions(owner_id=current_owner())
+
+    async def save_live_audio(self, session_id: str, content: bytes) -> InterviewState:
+        """Persist a whole-session audio file for a live interview.
+
+        Writes the bytes to ``data/recordings/{session_id}.wav`` (atomic
+        temp+rename) and records the filename on the session state, which is
+        persisted with the rest of the blob. Ownership is enforced by
+        ``_get_runtime`` (owner-scoped), so a foreign session raises 404.
+        """
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            live = runtime.state.live_interview
+            if not live.consent_confirmed:
+                raise LiveInterviewStateError("未确认知情同意前无法保存全场录音")
+            self._recordings_dir.mkdir(parents=True, exist_ok=True)
+            target = self._recordings_dir / f"{session_id}.wav"
+            temp = self._recordings_dir / f"{session_id}.wav.tmp"
+            temp.write_bytes(content)
+            os.replace(temp, target)
+            live.audio_file = f"{session_id}.wav"
+            live.audio_size_bytes = len(content)
+            live.audio_saved_at = datetime.now(timezone.utc)
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "live_audio_saved",
+            session_id,
+            detail=f"bytes={len(content)}; file={live.audio_file}",
+        )
+        return runtime.state
+
+    def get_live_audio_path(self, session_id: str) -> Path | None:
+        """Return the on-disk path of a session's recording, if present.
+
+        The caller (owner-scoped route) already validated ownership via
+        ``get_state``; this returns ``None`` when no recording exists.
+        """
+        path = self._recordings_dir / f"{session_id}.wav"
+        return path if path.exists() else None
 
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         return await self._run(session_id, "candidate_agent", text)

@@ -531,6 +531,9 @@ class LiveInterviewSession(BaseModel):
     used_question_ids: list[str] = Field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    audio_file: str = ""
+    audio_size_bytes: int = 0
+    audio_saved_at: datetime | None = None
 
 
 class InterviewState(BaseModel):
