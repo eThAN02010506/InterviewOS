@@ -1293,12 +1293,11 @@ class InterviewService:
         for entry in employers:
             company = entry["company"]
             start = entry.get("start") or ""
-            years = [int(y) for y in re.findall(r"(?:19|20)(\d{2})", start)]
-            end_years = [int(y) for y in re.findall(r"(?:19|20)(\d{2})", start)]
-            if not years and not end_years:
+            years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", start)]
+            if not years:
                 continue
-            recent = bool(years and max(years) >= (datetime.now(timezone.utc).year - 5))  # started within ~5 yrs
-            tenure_span = (max(end_years) - min(years)) if (years and end_years) else 0
+            recent = bool(max(years) >= (datetime.now(timezone.utc).year - 5))  # within ~5 yrs
+            tenure_span = max(years) - min(years)
             long_tenure = tenure_span >= 3
             name_tokens = set(re.findall(r"[A-Za-z0-9]+", company.lower()))
             name_terms = set(re.findall(r"[一-鿿]{2,}", company))
@@ -1398,6 +1397,12 @@ class InterviewService:
             employers = self._recent_employers(state, limit=2)
             collected: list[dict[str, Any]] = []
             for company in employers:
+                if any(
+                    company.lower() in str(source.get("title", "")).lower()
+                    or company.lower() in str(source.get("snippet", "")).lower()
+                    for source in state.past_employer_sources
+                ):
+                    continue  # already researched by the inline workflow path
                 sources = await self._search_employer(
                     company, corroborating_entity=state.interviewer.name
                 )

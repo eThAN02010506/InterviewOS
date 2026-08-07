@@ -583,3 +583,32 @@ async def test_recent_employers_prioritizes_recent_and_related(tmp_path):
     assert "Zuora" in picked
     assert "Old Consulting" not in picked
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_employers_sorts_recent_first_when_unrelated(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer-recency.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    _, state = await service.create_session()
+    # Both unrelated to the target company; recency alone must pick the recent one.
+    state.candidate.experience = [
+        {
+            "company": "RecentCo",
+            "role": "Engineer",
+            "duration": "2021-2024",
+            "summary": "platform work",
+        },
+        {
+            "company": "AncientCo",
+            "role": "Analyst",
+            "duration": "2003-2007",
+            "summary": "operations",
+        },
+    ]
+    picked = service._recent_employers(state, limit=1)
+    # The recent employer (2021-2024) must be selected over the 2003-2007 one,
+    # even though neither name overlaps the target company. This failed before
+    # the 4-digit year capture fix because recency never triggered.
+    assert picked == ["RecentCo"]
+    await storage.close()
