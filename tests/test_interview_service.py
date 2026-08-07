@@ -761,3 +761,32 @@ async def test_advance_can_skip_unanswered_question(tmp_path):
     assert before is not None and after is not None
     assert state.mock_session.current_question_index == 1
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_follow_up_answer_clears_pending_and_advances(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'followup-clear.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    # Answer main -> advance offers follow-up.
+    await service.submit_mock_answer(session_id, question.id, "Main answer")
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.pending_follow_up
+    follow = service.current_mock_question(state)
+    # Answer follow-up -> pending cleared, so the UI shows actions.
+    state = await service.submit_mock_answer(session_id, follow.id, "Follow-up answer")
+    assert not state.mock_session.pending_follow_up
+    # Next advance moves on (does NOT re-offer the follow-up).
+    state = await service.advance_mock_interview(session_id)
+    assert not state.mock_session.pending_follow_up
+    assert state.mock_session.current_question_index >= 1
+    await storage.close()

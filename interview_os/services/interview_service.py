@@ -1645,6 +1645,12 @@ class InterviewService:
                 ) from exc
             record.evaluation = evaluation
             mock_session.responses.append(record)
+            if is_follow_up:
+                # The follow-up was answered: the question is complete. Clear the
+                # pending flag so the UI shows the actions and a later /next
+                # advances instead of re-offering the same follow-up.
+                mock_session.pending_follow_up = ""
+                mock_session.pending_parent_question_id = None
             runtime.state.next_action = "回答已评价：请选择 重新来 / 下一题 / 结束面试"
             await self._persist(session_id, runtime.state)
         return runtime.state
@@ -1668,16 +1674,21 @@ class InterviewService:
                 mock_session.pending_parent_question_id = None
                 mock_session.current_question_index += 1
             else:
-                last_main = next(
+                last_response = next(
                     (
                         item
                         for item in reversed(mock_session.responses)
-                        if item.question_id == question.id and not item.is_follow_up
+                        if item.question_id == question.id
                     ),
                     None,
                 )
+                last_follow_up = (
+                    last_response is not None and last_response.is_follow_up
+                )
+                last_main = last_response if last_response is not None and not last_response.is_follow_up else None
                 if (
-                    last_main is not None
+                    not last_follow_up
+                    and last_main is not None
                     and last_main.evaluation.missing_signals
                     and question.follow_ups
                 ):
@@ -1753,9 +1764,11 @@ class InterviewService:
             mock_session.refill_in_flight = False
             if mock_session.status == MockSessionStatus.ACTIVE and new_questions:
                 existing_ids = {q.id for q in current.state.mock_interview.questions}
+                existing_texts = {q.question.strip() for q in current.state.mock_interview.questions}
                 for q in new_questions:
-                    if q.id not in existing_ids:
+                    if q.id not in existing_ids and q.question.strip() not in existing_texts:
                         current.state.mock_interview.questions.append(q)
+                        existing_texts.add(q.question.strip())
                 self._record_debug(
                     "mock_refill_completed", session_id, detail=f"added={len(new_questions)}"
                 )

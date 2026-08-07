@@ -471,12 +471,17 @@ function renderMock() {
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
   const actions=$('mock-actions');
   if (actions) {
+    // 结束面试 is always available during an active session, even if the
+    // question pool is momentarily exhausted (refill pending) or the current
+    // question is unanswered.
+    const finishBtn=$('mock-finish');
+    if (finishBtn) finishBtn.style.display = session?.status==='active' ? 'inline-block' : 'none';
     const showActions = session?.status==='active' && justAnswered && !session?.pending_follow_up;
-    actions.classList.toggle('hidden', !showActions);
-    if (showActions) {
-      const retryBtn=$('mock-retry');
-      if (retryBtn) retryBtn.disabled = !(state.session?.mock_session?.responses?.length);
-    }
+    const nextBtn=$('mock-next'); const retryBtn=$('mock-retry');
+    if (nextBtn) nextBtn.style.display = showActions ? 'inline-block' : 'none';
+    if (retryBtn) retryBtn.style.display = showActions ? 'inline-block' : 'none';
+    actions.classList.toggle('hidden', !showActions && !(session?.status==='active'));
+    if (showActions && retryBtn) retryBtn.disabled = !(state.session?.mock_session?.responses?.length);
   }
   const last=session?.responses?.at(-1); const node=$('coach-result');
   const showEval = last && current && last.question_id === current.id;
