@@ -106,10 +106,27 @@ MOCK_QUESTION_PROMPT = (
     "Job requirement: {job_requirement}\n"
     "Interviewer preference: {interviewer_preference}\n\n"
     "Output JSON with a questions list. Each question has: question, competency, "
-    "rationale, strong_signals (list), follow_ups (list). Generate 5-8 questions "
-    "specific to the candidate's actual experience. Use Chinese for questions, rationale, "
+    "rationale, strong_signals (list), follow_ups (list), answer_framework. "
+    "Generate 5-8 questions specific to the candidate's actual experience. Use Chinese for questions, rationale, "
     "signals, and follow-ups while preserving proper nouns. "
-    "问题应优先围绕候选人最近或最重要的雇主经历设计；久远的小公司经历可少问或不问。\n"
+    "问题应优先围绕候选人最近或最重要的雇主经历设计；久远的小公司经历可少问或不问。 "
+    "每道题同时给出 answer_framework：结合简历中哪段真实经历、用什么结构组织回答、重点强调哪些信号，"
+    "一句话讲清。\n"
+)
+
+MOCK_REFILL_PROMPT = (
+    "Generate {count} more mock interview questions to continue an in-progress "
+    "interview.\n\n"
+    "Candidate background: {candidate_background}\n"
+    "Job requirement: {job_requirement}\n"
+    "Interviewer preference: {interviewer_preference}\n"
+    "Recent answers already given:\n{recent_answers}\n\n"
+    "Output JSON with a questions list of exactly {count} items. Each question has: "
+    "question, competency, rationale, strong_signals (list), follow_ups (list), "
+    "answer_framework. Prefer competencies and experiences NOT yet covered by the "
+    "recent answers; avoid repeating already-asked questions. Use Chinese. "
+    "每道题同时给出 answer_framework：结合简历中哪段真实经历、用什么结构组织回答、"
+    "重点强调哪些信号，一句话讲清。\n"
 )
 
 ANSWER_COACH_PROMPT = (

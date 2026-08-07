@@ -68,8 +68,10 @@ class WorkflowMockLLM:
             return '{"summary":"Lead with impact","key_risks":["Business context"],"answer_framework":["Problem","Impact","Solution"],"topics_to_emphasize":["Ownership"],"topics_to_avoid":[],"likely_questions":["Why this trade-off?"]}'
         if "interviewer profile" in lowered:
             return '{"name":"Grace","position":"CTO","likely_preferences":["First principles"]}'
+        if "more mock interview questions" in lowered:
+            return '{"questions":[{"question":"Describe a second incident","competency":"System Design","rationale":"Refill","strong_signals":["Metrics"],"follow_ups":[],"answer_framework":"Reference the 2024 incident"},{"question":"How do you measure platform health","competency":"System Design","rationale":"Refill","strong_signals":["SLOs"],"follow_ups":[],"answer_framework":"Use the SLO story"}]}'
         if "mock interview plan" in lowered:
-            return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"]}]}'
+            return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"],"answer_framework":"讲清取舍并给出量化结果"}]}'
         if "analyze this interview answer" in lowered:
             return '{"content":0.8,"technical_depth":0.9,"structure":0.7,"impact":0.6,"feedback":["Add metrics"],"improved_answer":"Improved","observed_signals":["Explained trade-offs"],"missing_signals":["Business impact"]}'
         if "based on the following evidence" in lowered:
@@ -289,11 +291,16 @@ async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     assert question is not None
 
     state = await service.submit_mock_answer(session_id, question.id, "I compared trade-offs")
+    assert state.mock_session.status.value == "active"
+    state = await service.advance_mock_interview(session_id)
     assert state.mock_session.pending_follow_up == "How does it scale?"
+    follow_question = service.current_mock_question(state)
     state = await service.submit_mock_answer(
-        session_id, question.id, "At ten times traffic, p95 stayed below 100 ms"
+        session_id, follow_question.id, "At ten times traffic, p95 stayed below 100 ms"
     )
-
+    # Autopilot completes only when the user ends the interview.
+    assert state.autopilot.status.value != "completed"
+    state = await service.finish_mock_interview(session_id)
     assert state.autopilot.status.value == "completed"
 
 
@@ -425,14 +432,23 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
         session_id, question.id, "I compared options and explained the trade-offs."
     )
     assert state.mock_session.status.value == "active"
+    # The interview does not auto-complete; the user advances, which may present
+    # a follow-up (missing signals) before the next main question.
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.pending_follow_up  # follow-up offered
+    follow_question = service.current_mock_question(state)
+    assert follow_question is not None
     state = await service.submit_mock_answer(
-        session_id, question.id, "At ten times traffic, p95 stayed below 100 ms."
+        session_id, follow_question.id, "At ten times traffic, p95 stayed below 100 ms."
     )
+    assert state.mock_session.status.value == "active"
+    # User ends the interview manually; evaluation runs because answers exist.
+    state = await service.finish_mock_interview(session_id)
     assert state.mock_session.status.value == "completed"
     assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.75)
     assert state.evidence[-1].competency == "System Design"
     assert state.evidence[-1].confidence == pytest.approx(0.75)
-    assert state.next_action == "Generate evidence-based evaluation"
+    assert "evaluation" in state.next_action.lower()
     await storage.close()
 
 
@@ -631,4 +647,94 @@ async def test_past_employer_research_requires_explicit_consent(tmp_path):
     result = await service.research_recent_employers(session_id)
     assert result.past_employer_sources == []
     assert result.past_employer_research_status == "consent_required"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_interview_pool_includes_likely_and_competency(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'pool.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    state = await service.run_candidate_prep(
+        session_id,
+        resume_text="Python systems engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+    )
+    sources = {q.source for q in state.mock_interview.questions}
+    assert "likely" in sources or "competency" in sources
+    assert all(q.answer_framework for q in state.mock_interview.questions)
+    assert len({q.question for q in state.mock_interview.questions}) == len(
+        state.mock_interview.questions
+    )
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_interview_does_not_auto_complete(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'no-complete.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, question.id, "A clear answer")
+    assert state.mock_session.status.value == "active"
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.status.value == "active"
+    # No auto-complete: finish is required.
+    state = await service.finish_mock_interview(session_id)
+    assert state.mock_session.status.value == "completed"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_interview_retry_replaces_without_duplicate_evidence(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'retry.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, question.id, "First attempt")
+    evidence_count = len(state.evidence)
+    # Retry the same question: previous response + its evidence are replaced.
+    state = await service.submit_mock_answer(
+        session_id, question.id, "Improved attempt", retry=True
+    )
+    assert len(state.mock_session.responses) == 1
+    assert state.mock_session.responses[0].answer == "Improved attempt"
+    assert len(state.evidence) == evidence_count  # no duplicate evidence
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_current_mock_question_includes_answer_framework(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'fw.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    assert question is not None
+    assert question.answer_framework
     await storage.close()

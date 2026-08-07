@@ -294,13 +294,16 @@ def test_mock_interview_api_progresses_to_completion(tmp_path):
         )
         started = client.post(f"/api/mock-interviews/{session_id}/start")
         question_id = started.json()["current_question"]["id"]
+        assert started.json()["current_question"]["answer_framework"] is not None
         answered = client.post(
             f"/api/mock-interviews/{session_id}/answers",
             json={"question_id": question_id, "answer": "I explained the design trade-offs."},
         )
     assert answered.status_code == 200
-    assert answered.json()["mock_session"]["status"] == "completed"
-    assert answered.json()["current_question"] is None
+    # The interview does not auto-complete after one answer.
+    assert answered.json()["mock_session"]["status"] == "active"
+    assert answered.json()["current_question"] is not None
+    assert answered.json()["answered_questions"] == 1
 
 
 def test_evaluation_api_generates_dual_side_report(tmp_path):
@@ -356,12 +359,18 @@ def test_mock_interview_asks_followup_before_advancing(tmp_path):
             f"/api/mock-interviews/{session_id}/answers",
             json={"question_id": question_id, "answer": "I made a trade-off."},
         ).json()
-        assert first["current_question"]["question"] == "What evidence supports that trade-off?"
+        assert first["mock_session"]["status"] == "active"
+        # Advancing offers the follow-up because the main answer left signals.
+        advanced = client.post(f"/api/mock-interviews/{session_id}/next").json()
+        assert advanced["current_question"]["question"] == "What evidence supports that trade-off?"
+        follow_id = advanced["current_question"]["id"]
         second = client.post(
             f"/api/mock-interviews/{session_id}/answers",
-            json={"question_id": question_id, "answer": "Latency fell by 30%."},
+            json={"question_id": follow_id, "answer": "Latency fell by 30%."},
         ).json()
-    assert second["mock_session"]["status"] == "completed"
+        finished = client.post(f"/api/mock-interviews/{session_id}/finish").json()
+    assert second["mock_session"]["status"] == "active"
+    assert finished["mock_session"]["status"] == "completed"
     assert second["mock_session"]["responses"][1]["is_follow_up"] is True
 
 
@@ -1255,3 +1264,62 @@ def test_audio_direct_dialogue_mode_single_utterance_creates_segment(tmp_path):
         assert segments[0]["speaker"] == "candidate"
         assert segments[0]["source"] == "audio_direct"
         assert "用压测验证性能提升" in segments[0]["text"]
+
+
+def test_mock_interview_unlimited_flow(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'unlimited.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": session_id,
+                "resume_text": "Python",
+                "job_description": "Platform",
+                "company_name": "Example",
+            },
+        )
+        started = client.post(f"/api/mock-interviews/{session_id}/start").json()
+        qid = started["current_question"]["id"]
+        # Answer and advance repeatedly; the interview never auto-completes.
+        for i in range(4):
+            resp = client.post(
+                f"/api/mock-interviews/{session_id}/answers",
+                json={"question_id": qid, "answer": f"answer {i}"},
+            ).json()
+            assert resp["mock_session"]["status"] == "active"
+            resp = client.post(f"/api/mock-interviews/{session_id}/next").json()
+            assert resp["mock_session"]["status"] == "active"
+            qid = resp["current_question"]["id"]
+        finished = client.post(f"/api/mock-interviews/{session_id}/finish").json()
+        assert finished["mock_session"]["status"] == "completed"
+
+
+def test_mock_interview_retry_endpoint(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'retry-api.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": session_id,
+                "resume_text": "Python",
+                "job_description": "Platform",
+                "company_name": "Example",
+            },
+        )
+        started = client.post(f"/api/mock-interviews/{session_id}/start").json()
+        qid = started["current_question"]["id"]
+        client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": qid, "answer": "first"},
+        )
+        retried = client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": qid, "answer": "better", "retry": True},
+        ).json()
+        responses = retried["mock_session"]["responses"]
+        assert len(responses) == 1
+        assert responses[0]["answer"] == "better"

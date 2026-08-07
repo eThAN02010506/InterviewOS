@@ -34,6 +34,7 @@ from interview_os.core.state import (
     MIN_ANSWER_BOUNDARY_SEGMENTS,
     MIN_COMPETENCY_COVERAGE,
     MIN_EVIDENCE_COUNT,
+    MOCK_CACHE_MIN,
     OMNI_CONTEXT_CHAR_LIMIT,
     QUESTION_USAGE_MAX_ITEMS,
     WEAK_SIGNAL_THRESHOLD,
@@ -1566,10 +1567,16 @@ class InterviewService:
             return runtime.state
 
     async def submit_mock_answer(
-        self, session_id: str, question_id: UUID, answer: str
+        self,
+        session_id: str,
+        question_id: UUID,
+        answer: str,
+        *,
+        retry: bool = False,
     ) -> InterviewState:
+        """Evaluate one mock answer. Does NOT advance the interview — the caller
+        (frontend) chooses 重新来 / 下一题 / 结束面试 afterwards."""
         runtime = await self._get_runtime(session_id)
-        should_auto_evaluate = False
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
             questions = runtime.state.mock_interview.questions
@@ -1584,12 +1591,49 @@ class InterviewService:
                 raise MockInterviewStateError("Answer does not match the current question")
             asked_question = mock_session.pending_follow_up or question.question
 
+            if retry:
+                # Drop the previous answer for this question and its linked
+                # evidence so a retry replaces it instead of duplicating.
+                prior = next(
+                    (
+                        item
+                        for item in reversed(mock_session.responses)
+                        if item.question_id == question.id
+                        and item.question == asked_question
+                    ),
+                    None,
+                )
+                if prior is not None:
+                    mock_session.responses = [
+                        item for item in mock_session.responses if item.id != prior.id
+                    ]
+                    runtime.state.evidence = [
+                        item
+                        for item in runtime.state.evidence
+                        if not (
+                            item.source == EvidenceSource.MOCK_INTERVIEW
+                            and item.source_record_id is not None
+                            and item.source_record_id == prior.id
+                        )
+                    ]
+
+            record = MockAnswerRecord(
+                question_id=question.id,
+                question=asked_question,
+                competency=question.competency,
+                answer=answer,
+                evaluation=AnswerEvaluation(
+                    content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
+                ),
+                is_follow_up=is_follow_up,
+            )
             payload = json.dumps(
                 {
                     "question": asked_question,
                     "answer": answer,
                     "competency": question.competency or "Answer Quality",
                     "evidence_source": "mock_interview",
+                    "record_id": str(record.id),
                 }
             )
             message = await runtime.run("coach_agent", payload)
@@ -1599,37 +1643,116 @@ class InterviewService:
                 raise MockInterviewStateError(
                     "Coach agent did not return a valid answer evaluation"
                 ) from exc
-
-            mock_session.responses.append(
-                MockAnswerRecord(
-                    question_id=question.id,
-                    question=asked_question,
-                    competency=question.competency,
-                    answer=answer,
-                    evaluation=evaluation,
-                    is_follow_up=is_follow_up,
-                )
-            )
-            if not is_follow_up and evaluation.missing_signals and question.follow_ups:
-                mock_session.pending_follow_up = question.follow_ups[0]
-                mock_session.pending_parent_question_id = question.id
-                runtime.state.next_action = "Answer the evidence-seeking follow-up question"
-                await self._persist(session_id, runtime.state)
-                return runtime.state
-            mock_session.pending_follow_up = ""
-            mock_session.pending_parent_question_id = None
-            mock_session.current_question_index += 1
-            if mock_session.current_question_index == len(questions):
-                mock_session.status = MockSessionStatus.COMPLETED
-                mock_session.completed_at = datetime.now(timezone.utc)
-                runtime.state.next_action = "Generate evidence-based evaluation"
-                should_auto_evaluate = runtime.state.autopilot.enabled
-            else:
-                runtime.state.next_action = "Answer the next mock interview question"
+            record.evaluation = evaluation
+            mock_session.responses.append(record)
+            runtime.state.next_action = "回答已评价：请选择 重新来 / 下一题 / 结束面试"
             await self._persist(session_id, runtime.state)
-        if should_auto_evaluate:
+        return runtime.state
+
+    async def advance_mock_interview(self, session_id: str) -> InterviewState:
+        """Advance to the next question, or present a follow-up when the latest
+        main answer left missing signals. Refills the question cache when low."""
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            mock_session = runtime.state.mock_session
+            questions = runtime.state.mock_interview.questions
+            if mock_session.status != MockSessionStatus.ACTIVE:
+                raise MockInterviewStateError("Mock interview is not active")
+            if mock_session.current_question_index >= len(questions):
+                raise MockInterviewStateError("Mock interview has no remaining questions")
+            question = questions[mock_session.current_question_index]
+            if mock_session.pending_follow_up:
+                mock_session.pending_follow_up = ""
+                mock_session.pending_parent_question_id = None
+                mock_session.current_question_index += 1
+            else:
+                last_main = next(
+                    (
+                        item
+                        for item in reversed(mock_session.responses)
+                        if item.question_id == question.id and not item.is_follow_up
+                    ),
+                    None,
+                )
+                if (
+                    last_main is not None
+                    and last_main.evaluation.missing_signals
+                    and question.follow_ups
+                ):
+                    mock_session.pending_follow_up = question.follow_ups[0]
+                    mock_session.pending_parent_question_id = question.id
+                    runtime.state.next_action = "Answer the evidence-seeking follow-up question"
+                    await self._persist(session_id, runtime.state)
+                    return runtime.state
+                mock_session.current_question_index += 1
+            runtime.state.next_action = "Answer the next mock interview question"
+            await self._maybe_refill_mock_questions(session_id, runtime, mock_session, questions)
+            await self._persist(session_id, runtime.state)
+        return runtime.state
+
+    async def finish_mock_interview(self, session_id: str) -> InterviewState:
+        """End the mock interview manually and run the evaluation when answers exist."""
+        runtime = await self._get_runtime(session_id)
+        should_evaluate = False
+        async with self._lock_for(session_id):
+            mock_session = runtime.state.mock_session
+            if mock_session.status != MockSessionStatus.ACTIVE:
+                raise MockInterviewStateError("Mock interview is not active")
+            mock_session.status = MockSessionStatus.COMPLETED
+            mock_session.completed_at = datetime.now(timezone.utc)
+            runtime.state.next_action = "Generate evidence-based evaluation"
+            should_evaluate = bool(mock_session.responses)
+            await self._persist(session_id, runtime.state)
+        if should_evaluate:
             return await self.run_evaluation(session_id)
         return runtime.state
+
+    async def _maybe_refill_mock_questions(
+        self, session_id: str, runtime, mock_session, questions
+    ) -> None:
+        pending = len(questions) - mock_session.current_question_index
+        if (
+            pending < MOCK_CACHE_MIN
+            and not mock_session.refill_in_flight
+            and mock_session.status == MockSessionStatus.ACTIVE
+        ):
+            mock_session.refill_in_flight = True
+            self._record_debug("mock_refill_scheduled", session_id)
+            self._background.schedule(self._refill_mock_questions_task(session_id))
+
+    async def _refill_mock_questions_task(self, session_id: str) -> None:
+        """Background: generate more mock questions when the cache runs low."""
+        runtime = self._runtimes.get((current_owner(), session_id))
+        if runtime is None:
+            return
+        agent = runtime.get_agent("mock_interview_agent")
+        recent = [
+            f"{item.competency}：{item.answer[:120]}" for item in runtime.state.mock_session.responses
+        ]
+        new_questions: list[Any] = []
+        try:
+            if agent is not None and hasattr(agent, "generate_mock_questions"):
+                new_questions = await agent.generate_mock_questions(  # type: ignore[union-attr]
+                    runtime.state, recent_answers=recent
+                )
+        except Exception as exc:  # noqa: BLE001 - background boundary
+            logger.error("Mock question refill failed for %s: %s", session_id, exc)
+            new_questions = []
+        async with self._lock_for(session_id):
+            current = self._runtimes.get((current_owner(), session_id))
+            if current is None:
+                return
+            mock_session = current.state.mock_session
+            mock_session.refill_in_flight = False
+            if mock_session.status == MockSessionStatus.ACTIVE and new_questions:
+                existing_ids = {q.id for q in current.state.mock_interview.questions}
+                for q in new_questions:
+                    if q.id not in existing_ids:
+                        current.state.mock_interview.questions.append(q)
+                self._record_debug(
+                    "mock_refill_completed", session_id, detail=f"added={len(new_questions)}"
+                )
+            await self._persist(session_id, current.state)
 
     async def run_evaluation(self, session_id: str) -> InterviewState:
         runtime = await self._get_runtime(session_id)

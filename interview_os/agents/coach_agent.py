@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
@@ -95,5 +96,11 @@ class CoachAgent(Agent):
                 placeholder.confidence = ev.confidence
                 placeholder.notes = ev.notes
                 return self.make_response(evaluation.model_dump_json())
+            # Mock answers carry their record id so a retry can replace this
+            # evidence row instead of duplicating it.
+            try:
+                ev.source_record_id = UUID(coach_input.record_id)
+            except (ValueError, TypeError):
+                pass
         state.add_evidence(ev)
         return self.make_response(evaluation.model_dump_json())

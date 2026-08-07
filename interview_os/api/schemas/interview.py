@@ -127,12 +127,17 @@ class TranscriptImportRequest(BaseModel):
 class MockAnswerRequest(BaseModel):
     question_id: UUID
     answer: str = Field(min_length=1)
+    retry: bool = False
 
 
 class MockSessionResponse(BaseModel):
     session_id: str
     mock_session: dict[str, Any]
     current_question: dict[str, Any] | None = None
+    pending_questions: int = 0
+    answered_questions: int = 0
+    retry_available: bool = False
+    refill_in_flight: bool = False
 
 
 class LiveInterviewStartRequest(BaseModel):

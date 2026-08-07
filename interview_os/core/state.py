@@ -28,6 +28,11 @@ PLANNER_MAX_TOKENS = 512  # 规划器结构化输出的 max_tokens，避免 deco
 # 音频直连（全模态模型）上下文边界
 OMNI_CONTEXT_CHAR_LIMIT = 2500  # 直连模型一次携带的完整上下文截断字符上限
 
+# 模拟面试题目池/补题缓存
+MOCK_POOL_TARGET = 5  # 初始题目池目标数量
+MOCK_CACHE_MIN = 3  # 待答低于此数触发后台补题
+MOCK_REFILL_BATCH = 2  # 每次补题生成的问题数
+
 # 覆盖引导
 COVERAGE_GUIDANCE_MAX_ITEMS = 8
 WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度低于此值判为信号偏弱
@@ -284,6 +289,8 @@ class InterviewQuestion(BaseModel):
     rationale: str = ""
     strong_signals: list[str] = Field(default_factory=list)
     follow_ups: list[str] = Field(default_factory=list)
+    answer_framework: str = ""
+    source: str = "initial"  # initial | likely | competency | refill
 
 
 class InterviewRound(BaseModel):
@@ -332,6 +339,7 @@ class AnswerEvaluation(BaseModel):
 
 
 class MockAnswerRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
     question_id: UUID
     question: str
     competency: str
@@ -353,6 +361,7 @@ class MockInterviewSession(BaseModel):
     responses: list[MockAnswerRecord] = Field(default_factory=list)
     pending_follow_up: str = ""
     pending_parent_question_id: UUID | None = None
+    refill_in_flight: bool = False
     started_at: datetime | None = None
     completed_at: datetime | None = None
 

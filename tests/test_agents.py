@@ -220,10 +220,12 @@ async def test_mock_agent_degrades_to_current_job_competency_questions():
     agent = MockInterviewAgent(llm_client=InvalidLLM())
     state = InterviewState(job=JobDescription(competencies=["招聘策略", "团队领导力"]))
     await agent.execute(state)
-    assert [question.competency for question in state.mock_interview.questions] == [
-        "招聘策略",
-        "团队领导力",
-    ]
+    questions = state.mock_interview.questions
+    # The pool is padded to MOCK_POOL_TARGET with unique competency questions.
+    assert len(questions) == 5
+    assert {q.competency for q in questions} == {"招聘策略", "团队领导力"}
+    assert len({q.question for q in questions}) == 5  # all distinct
+    assert all(q.answer_framework for q in questions)
 
 
 @pytest.mark.asyncio

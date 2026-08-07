@@ -17,10 +17,24 @@ MAX_MOCK_AUDIO_BYTES = 25 * 1024 * 1024
 
 def _response(session_id: str, state, service: InterviewService) -> MockSessionResponse:
     question = service.current_mock_question(state)
+    session = state.mock_session
+    questions = state.mock_interview.questions
+    index = session.current_question_index
+    pending = max(0, len(questions) - index)
+    retry_available = False
+    if session.status.value == "active" and session.responses and question is not None:
+        last = session.responses[-1]
+        retry_available = (
+            last.question_id == question.id and not session.pending_follow_up
+        )
     return MockSessionResponse(
         session_id=session_id,
-        mock_session=state.mock_session.model_dump(mode="json"),
+        mock_session=session.model_dump(mode="json"),
         current_question=question.model_dump(mode="json") if question else None,
+        pending_questions=pending,
+        answered_questions=len(session.responses),
+        retry_available=retry_available,
+        refill_in_flight=session.refill_in_flight,
     )
 
 
@@ -38,7 +52,21 @@ async def get_mock_interview(session_id: str, service: Service):
 
 @router.post("/{session_id}/answers", response_model=MockSessionResponse)
 async def submit_mock_answer(session_id: str, req: MockAnswerRequest, service: Service):
-    state = await service.submit_mock_answer(session_id, req.question_id, req.answer)
+    state = await service.submit_mock_answer(
+        session_id, req.question_id, req.answer, retry=req.retry
+    )
+    return _response(session_id, state, service)
+
+
+@router.post("/{session_id}/next", response_model=MockSessionResponse)
+async def next_mock_question(session_id: str, service: Service):
+    state = await service.advance_mock_interview(session_id)
+    return _response(session_id, state, service)
+
+
+@router.post("/{session_id}/finish", response_model=MockSessionResponse)
+async def finish_mock_interview(session_id: str, service: Service):
+    state = await service.finish_mock_interview(session_id)
     return _response(session_id, state, service)
 
 
