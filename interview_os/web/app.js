@@ -632,6 +632,7 @@ function updateLiveVadNote(){const note=$('live-recording-note');if(!note)return
 window.addEventListener('pagehide',()=>{if(liveRecorder?.state==='recording')liveRecorder.stop();});
 
 $('live-plan').onclick=async()=>{const button=$('live-plan');busy(button,true);try{const data=await api(`/api/live-interviews/${state.sessionId}/suggestions`,{method:'POST'});state.session=data.state;renderLive();toast('下一问题已准备');}catch(error){toast(error.message,true)}finally{busy(button,false)}};
+$('live-export').onclick=async()=>{if(!state.sessionId){toast('请先创建会话',true);return;}try{const resp=await fetch(`/api/interviews/sessions/${state.sessionId}/transcript`,{headers:{Authorization:`Bearer ${state.token}`}});if(!resp.ok)throw new Error('导出失败');const text=await resp.text();const blob=new Blob([text],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`interview-${state.sessionId.slice(0,8)}.txt`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);toast('转写文本已导出');}catch(error){toast(error.message,true)}};
 
 let liveSuggestionStream = null;
 let liveSuggestionAbort = null;

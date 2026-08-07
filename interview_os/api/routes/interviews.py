@@ -5,6 +5,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import PlainTextResponse
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
@@ -12,6 +13,7 @@ from interview_os.api.schemas.interview import (
     StartSessionRequest,
 )
 from interview_os.services.interview_service import InterviewService
+from interview_os.services.transcript_export import render_transcript
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,4 +49,12 @@ async def get_session(session_id: str, service: Service):
         job_title=state.job.title,
         status="active",
         state=state.model_dump(mode="json"),
+    )
+
+
+@router.get("/sessions/{session_id}/transcript")
+async def get_transcript(session_id: str, service: Service):
+    state = await service.get_state(session_id)
+    return PlainTextResponse(
+        render_transcript(state), media_type="text/plain; charset=utf-8"
     )
