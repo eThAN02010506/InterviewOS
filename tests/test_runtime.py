@@ -78,6 +78,9 @@ async def test_local_llm_chat_stream_yields_delta_content():
     async for piece in client.chat_stream([{"role": "user", "content": "hi"}]):
         chunks.append(piece)
     assert chunks == ["你", "好"]
+    metrics = client.settings_status()["metrics"]
+    assert metrics["prompt_tokens"] > 0
+    assert metrics["completion_tokens"] > 0
     await client.close()
 
 
@@ -99,6 +102,7 @@ async def test_local_llm_chat_stream_failure_raises_redacted_error():
     with pytest.raises(LLMStreamError, match="Local model stream failed"):
         async for _ in client.chat_stream([{"role": "user", "content": "hi"}]):
             pass
+    assert client.settings_status()["metrics"]["prompt_tokens"] == 0
     await client.close()
 
 

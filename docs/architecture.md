@@ -135,6 +135,10 @@ contains the internal error or incomplete suggestion. Raw browser `fetch` calls 
 as ordinary API requests; disconnecting closes the response generator and upstream
 HTTP stream. Suggestion write-back rechecks that the live session is still active,
 discarding completions that arrive after pause or finish.
+Because many compatible streaming servers omit final usage metadata, the text
+adapter estimates prompt tokens once the upstream accepts the request and estimates
+completion tokens from the assembled stream. Failed connections before response
+acceptance do not inflate prompt-token or cost totals.
 
 ## Agent Communication
 

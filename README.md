@@ -241,7 +241,9 @@ settings store later without changing the settings API.
 
 The UI includes a read-only operational console backed by `/api/debug`. It shows
 bounded Agent lifecycle events, durations, workflow failures, session summaries,
-and a fixed LLM connectivity probe. The console:
+and a fixed LLM connectivity probe. Token and cost totals cover both ordinary and
+streaming text-model calls; when a streaming provider omits usage metadata, the
+accepted prompt and assembled completion are estimated locally. The console:
 
 - accepts requests only from localhost;
 - stores at most `DEBUG_EVENT_CAPACITY` events (500 by default);

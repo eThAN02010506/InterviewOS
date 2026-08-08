@@ -133,6 +133,11 @@ class LocalLLMClient(LLMClient):
                 headers={"Authorization": f"Bearer {self.api_key}"},
             ) as resp:
                 resp.raise_for_status()
+                # OpenAI-compatible streaming servers commonly omit usage.
+                # Count the accepted prompt once and estimate from the exact
+                # serialized message payload used for this request.
+                prompt_text = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+                self._metrics["prompt_tokens"] += _approx_tokens(prompt_text)
                 content = ""
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
