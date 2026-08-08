@@ -170,10 +170,12 @@ deterministic question is inserted immediately while the model refill continues,
 so a slow, failed, or duplicate-only refill cannot leave an active interview
 without a current question. An answered question can only be submitted again
 through explicit retry; the service replaces its response and linked evidence
-instead of silently creating duplicates. Final evaluation transitions through a
+instead of silently creating duplicates. Replacing a main answer also invalidates
+the follow-up responses and evidence derived from that superseded answer. Final evaluation transitions through a
 recoverable `evaluating` state: model failure preserves every answer and returns
 the session to `active`, allowing the user to finish again. Process-local refill
-flags are reset when a runtime is restored after restart.
+flags and an interrupted `evaluating` state are restored to retryable values after
+a process restart.
 
 Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
 {session_id}/transcribe` runs the audio through the configured LAN ASR and
@@ -307,7 +309,8 @@ encoded so model newlines cannot corrupt event framing, and the browser includes
 the current account's bearer token on the raw streaming request. Events distinguish
 incremental `append` from a safe `replace`: if the model disconnects after partial
 output, the UI and persisted suggestion replace it with a generic fallback instead
-of exposing transport details or saving incomplete text. Transcript
+of exposing transport details or saving incomplete text. A completion arriving after
+the live session is paused or ended is discarded instead of entering the review queue. Transcript
 ingestion stays chunked (the LAN ASR has no
 streaming endpoint), but a finished chunk immediately produces a streaming
 suggestion. Verified with the real 8001 model: tokens arrive incrementally and the

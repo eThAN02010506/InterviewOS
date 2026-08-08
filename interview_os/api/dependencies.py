@@ -1,7 +1,8 @@
 """FastAPI dependency providers."""
 from fastapi import HTTPException, Request
 
-from interview_os.services.interview_service import InterviewService, _owner_ctx
+from interview_os.core.request_context import _owner_ctx
+from interview_os.services.interview_service import InterviewService
 
 
 async def get_interview_service(request: Request) -> InterviewService:

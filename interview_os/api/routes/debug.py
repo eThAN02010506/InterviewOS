@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.core.debug import DebugEventStore, DebugLevel
+from interview_os.core.request_context import current_owner
 from interview_os.core.state import InterviewState
 from interview_os.models.local_llm import LocalLLMClient
-from interview_os.services.interview_service import InterviewService, current_owner
+from interview_os.services.interview_service import InterviewService
 
 router = APIRouter()
 Service = Annotated[InterviewService, Depends(get_interview_service)]
@@ -48,12 +49,11 @@ async def debug_events(
 ):
     store: DebugEventStore = request.app.state.debug_events
     owner = current_owner()
-    owned_session_ids = await service.storage.list_session_ids(owner_id=owner)
     return {
         "events": [
             event.model_dump(mode="json")
             for event in store.list_events(limit=limit, level=level, session_id=session_id)
-            if not event.session_id or event.session_id in owned_session_ids
+            if event.owner_id == owner
         ]
     }
 

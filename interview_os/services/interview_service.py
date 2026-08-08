@@ -8,7 +8,6 @@ import logging
 import os
 import re
 from collections.abc import AsyncIterator
-from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -19,6 +18,7 @@ from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.evidence import Evidence, EvidenceSource
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
+from interview_os.core.request_context import current_owner
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
     ACTION_CARD_SOURCE_REFS_MAX,
@@ -96,16 +96,6 @@ from interview_os.tools.web_search import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The owning account for the current request. Routes set this (via the
-# get_interview_service dependency) from the bearer token; anonymous requests
-# fall back to the legacy "local" owner so pre-account sessions stay reachable.
-_owner_ctx: ContextVar[str] = ContextVar("interview_owner", default="local")
-
-
-def current_owner() -> str:
-    return _owner_ctx.get()
-
 
 class SessionNotFoundError(LookupError):
     pass
@@ -928,6 +918,10 @@ class InterviewService:
             confidence=0.7,
         )
         async with self._lock_for(session_id):
+            if runtime.state.live_interview.status != LiveInterviewStatus.ACTIVE:
+                # A stream/audio request may finish after the interviewer ends or
+                # pauses the session. Do not append a stale suggestion afterward.
+                return
             runtime.state.live_interview.suggestions.append(suggestion)
             self._refresh_live_question_usage(runtime.state)
             self._refresh_live_action_card(runtime.state)
@@ -1580,6 +1574,8 @@ class InterviewService:
                 return runtime.state
             if runtime.state.mock_session.status == MockSessionStatus.COMPLETED:
                 raise MockInterviewStateError("Mock interview is already completed")
+            if runtime.state.mock_session.status != MockSessionStatus.IDLE:
+                raise MockInterviewStateError("Mock interview cannot restart while evaluating")
             runtime.state.mock_session = MockInterviewSession(
                 status=MockSessionStatus.ACTIVE,
                 started_at=datetime.now(timezone.utc),
@@ -1654,8 +1650,20 @@ class InterviewService:
             if retry and prior is not None:
                 # Drop the previous answer for this question and its linked
                 # evidence so a retry replaces it instead of duplicating.
+                replaced_records = [prior]
+                if not prior.is_follow_up:
+                    # Follow-up answers were elicited from the old main answer;
+                    # retaining them would leave stale evidence in the report.
+                    replaced_records.extend(
+                        item
+                        for item in mock_session.responses
+                        if item.question_id == question.id and item.is_follow_up
+                    )
+                    mock_session.pending_follow_up = ""
+                    mock_session.pending_parent_question_id = None
+                replaced_ids = {item.id for item in replaced_records}
                 mock_session.responses = [
-                    item for item in mock_session.responses if item.id != prior.id
+                    item for item in mock_session.responses if item.id not in replaced_ids
                 ]
                 runtime.state.evidence = [
                     item
@@ -1663,7 +1671,7 @@ class InterviewService:
                     if not (
                         item.source == EvidenceSource.MOCK_INTERVIEW
                         and item.source_record_id is not None
-                        and item.source_record_id == prior.id
+                        and item.source_record_id in replaced_ids
                     )
                 ]
 
@@ -2767,6 +2775,12 @@ class InterviewService:
         runtime.state = InterviewState.model_validate(state)
         # In-process refill tasks do not survive a service restart.
         runtime.state.mock_session.refill_in_flight = False
+        if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:
+            # The evaluation coroutine was process-local. Restore a retryable
+            # state rather than leaving the session permanently in-flight.
+            runtime.state.mock_session.status = MockSessionStatus.ACTIVE
+            runtime.state.mock_session.completed_at = None
+            runtime.state.next_action = "Evaluation was interrupted; retry ending the interview"
         if not runtime.state.job_review.requirements and (
             runtime.state.job.raw_description or runtime.state.job.title
         ):

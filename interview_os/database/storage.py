@@ -161,14 +161,6 @@ class Storage:
                 for record in result.scalars()
             ]
 
-    async def list_session_ids(self, *, owner_id: str) -> set[str]:
-        """Return all session IDs for one owner for authorization filtering."""
-        async with self.session_factory() as session:
-            result = await session.execute(
-                select(InterviewSession.id).where(InterviewSession.owner_id == owner_id)
-            )
-            return set(result.scalars())
-
     async def save_evidence(self, session_id: str, evidence: dict[str, Any]) -> None:
         async with self.session_factory() as session:
             record = EvidenceRecord(session_id=session_id, **evidence)

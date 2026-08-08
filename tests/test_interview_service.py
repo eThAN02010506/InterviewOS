@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from interview_os.core.state import MockSessionStatus
+from interview_os.core.state import LiveInterviewStatus, MockSessionStatus
 from interview_os.database.storage import Storage
 from interview_os.services.interview_service import (
     EvaluationStateError,
@@ -898,6 +898,41 @@ async def test_follow_up_retry_targets_explicit_response(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_retrying_main_answer_removes_dependent_follow_up_evidence(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'main-retry-children.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id, resume_text="Python", job_description="Platform", company_name="Example"
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, question.id, "Old main answer")
+    main_record = state.mock_session.responses[-1]
+    state = await service.advance_mock_interview(session_id)
+    follow = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, follow.id, "Old follow-up answer")
+    assert len(state.mock_session.responses) == 2
+    assert len(state.evidence) == 2
+
+    state = await service.submit_mock_answer(
+        session_id,
+        question.id,
+        "New main answer",
+        retry=True,
+        retry_response_id=main_record.id,
+    )
+
+    assert len(state.mock_session.responses) == 1
+    assert state.mock_session.responses[0].answer == "New main answer"
+    assert not state.mock_session.responses[0].is_follow_up
+    assert len(state.evidence) == 1
+    assert state.evidence[0].source_record_id == state.mock_session.responses[0].id
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_finish_mock_interview_recovers_when_evaluation_fails(tmp_path, monkeypatch):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'finish-retry.db'}")
     await storage.init_db()
@@ -1025,4 +1060,37 @@ async def test_runtime_reload_clears_orphaned_mock_refill_flag(tmp_path):
     restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
     loaded = await restored.get_state(session_id)
     assert loaded.mock_session.refill_in_flight is False
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reload_recovers_interrupted_mock_evaluation(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'evaluation-restart.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.mock_session.status = MockSessionStatus.EVALUATING
+    await service._persist(session_id, state)
+
+    restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    loaded = await restored.get_state(session_id)
+
+    assert loaded.mock_session.status == MockSessionStatus.ACTIVE
+    assert "retry" in loaded.next_action.lower()
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_suggestion_is_not_injected_after_live_session_ends(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'stale-live-suggestion.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.start_live_interview(session_id, consent_confirmed=True)
+    runtime = await service._get_runtime(session_id)
+    runtime.state.live_interview.status = LiveInterviewStatus.COMPLETED
+
+    await service._inject_audio_direct_suggestion(session_id, runtime, "Stale question")
+
+    assert runtime.state.live_interview.suggestions == []
     await storage.close()

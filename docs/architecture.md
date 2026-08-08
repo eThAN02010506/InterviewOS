@@ -69,13 +69,15 @@ question pool is append-only and refilled in bounded batches while the current
 question index acts as a navigation cursor. Only the current question ID can be
 answered; an already answered question requires explicit retry bound to the exact
 response ID, which replaces its response and linked evidence without confusing a
-follow-up with its parent. `CoachAgent` returns a bounded `AnswerEvaluation`;
+follow-up with its parent. Retrying a main response invalidates child follow-ups and
+their evidence because they were elicited from the superseded answer. `CoachAgent` returns a bounded `AnswerEvaluation`;
 its four-score average becomes evidence confidence.
 
 Model refills run outside the session lock and append under the lock. A unique local
 question bridges an exhausted pool immediately, and persisted in-flight flags are
 cleared when a runtime is restored because process-local tasks cannot survive a
-restart. State grows linearly with the number of questions actually visited and is
+restart. The same restoration changes an orphaned `evaluating` state back to `active`
+so finalization can be retried. State grows linearly with the number of questions actually visited and is
 bounded operationally by the user-controlled interview duration rather than by an
 initial fixed plan.
 
@@ -110,8 +112,9 @@ API additionally rejects non-loopback clients.
 `DebugEventStore` is an in-memory ring buffer with O(1) append and O(capacity)
 filtered reads. `AgentRuntime` records lifecycle timing without duplicating prompts.
 Debug endpoints are read-only except for a fixed `/models` connectivity probe and
-reject non-loopback clients. Session lists, session details, and session-bound events
-are additionally filtered by the authenticated owner; localhost is not an authorization
+reject non-loopback clients. Every event captures the request owner when it is written,
+including search and background events without a session ID; event reads, session
+lists, and session details are filtered by that owner. Localhost is not an authorization
 boundary. The console is observability, not a remote execution surface.
 
 ## Streaming Suggestions
@@ -123,7 +126,8 @@ suggestion after the stream completes. A transport failure after partial output 
 a redacted deterministic replacement, so neither browser text nor persisted state
 contains the internal error or incomplete suggestion. Raw browser `fetch` calls include the same bearer token
 as ordinary API requests; disconnecting closes the response generator and upstream
-HTTP stream.
+HTTP stream. Suggestion write-back rechecks that the live session is still active,
+discarding completions that arrive after pause or finish.
 
 ## Agent Communication
 

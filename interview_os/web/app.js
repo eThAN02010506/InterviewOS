@@ -462,11 +462,12 @@ function renderBlueprint() {
 
 function renderMock() {
   const plan=state.session?.mock_interview?.questions||[]; const session=state.session?.mock_session; const index=session?.current_question_index||0;
-  $('mock-progress').textContent=''; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
+  $('mock-progress').textContent=''; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='evaluating'?'正在生成报告':session?.status==='completed'?'本轮已完成':'准备开始';
   const current=session?.status==='active'?plan[index]:null; const questionText=session?.pending_follow_up||current?.question; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none';
   const framework=$('mock-framework'); const frameworkText=$('mock-framework-text');
   const currentResponses = current ? [...(session?.responses||[])].reverse().filter(response => response.question_id === current.id) : [];
   const currentResponse = session?.pending_follow_up ? currentResponses.find(response => response.question === questionText) : currentResponses[0];
+  if (mockRetry && (!currentResponse || currentResponse.id !== mockRetryResponseId)) { mockRetry=false; mockRetryResponseId=''; }
   const justAnswered = !!currentResponse;
   const currentAnswered = !!currentResponse;
   const isRetrying = !!(mockRetry && currentResponse);

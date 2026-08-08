@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from interview_os.api.app import create_app
+from interview_os.core.debug import DebugEvent
 from interview_os.database.storage import Storage, hash_password, verify_password
 from interview_os.services.settings_service import LocalSettingsStore
 
@@ -125,9 +126,19 @@ def test_sessions_isolated_between_accounts(tmp_path):
         bob_sid = client.post(
             "/api/interviews/sessions", json={}, headers=_auth(bob)
         ).json()["id"]
+        bob_user_id = client.get("/api/auth/me", headers=_auth(bob)).json()["id"]
+        client.app.state.debug_events.record(
+            DebugEvent(
+                category="search",
+                action="provider_request",
+                owner_id=bob_user_id,
+                detail="bob-private-query",
+            )
+        )
         alice_events = client.get("/api/debug/events", headers=_auth(alice)).json()["events"]
         assert any(event["session_id"] == sid for event in alice_events)
         assert all(event["session_id"] != bob_sid for event in alice_events)
+        assert all(event["detail"] != "bob-private-query" for event in alice_events)
 
 
 def test_invalid_token_rejected(tmp_path):

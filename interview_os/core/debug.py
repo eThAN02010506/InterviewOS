@@ -15,6 +15,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from interview_os.core.request_context import current_owner
+
 
 class DebugLevel(str, Enum):
     INFO = "info"
@@ -28,6 +30,7 @@ class DebugEvent(BaseModel):
     level: DebugLevel = DebugLevel.INFO
     category: str
     action: str
+    owner_id: str = ""
     session_id: str = ""
     agent: str = ""
     duration_ms: float | None = None
@@ -54,6 +57,7 @@ class DebugEventStore:
     def record(self, event: DebugEvent) -> None:
         event = event.model_copy(
             update={
+                "owner_id": event.owner_id or current_owner(),
                 "detail": _redact_text(event.detail),
                 "metadata": _redact_value(event.metadata),
             }

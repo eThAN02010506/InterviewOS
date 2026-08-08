@@ -4,6 +4,7 @@ from starlette.requests import Request
 
 from interview_os.api.routes.debug import require_local_request
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
+from interview_os.core.request_context import _owner_ctx
 
 
 def test_debug_event_store_is_bounded_and_newest_first():
@@ -21,6 +22,17 @@ def test_debug_event_store_filters_by_session():
     store.record(DebugEvent(category="test", action="a", session_id="one"))
     store.record(DebugEvent(category="test", action="b", session_id="two"))
     assert [event.action for event in store.list_events(session_id="one")] == ["a"]
+
+
+def test_debug_store_captures_request_owner_for_sessionless_events():
+    store = DebugEventStore()
+    token = _owner_ctx.set("account-a")
+    try:
+        store.record(DebugEvent(category="search", action="provider_request"))
+    finally:
+        _owner_ctx.reset(token)
+
+    assert store.list_events()[0].owner_id == "account-a"
 
 
 def test_debug_console_rejects_remote_clients():
