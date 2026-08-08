@@ -1,14 +1,17 @@
 import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
+from interview_os.core.state import MockSessionStatus
 from interview_os.database.storage import Storage
 from interview_os.services.interview_service import (
     EvaluationStateError,
     InterviewService,
     MockInterviewStateError,
     SessionNotFoundError,
+    WorkflowExecutionError,
 )
 from interview_os.tools.web_search import SearchProvider, SearchResult
 
@@ -859,6 +862,68 @@ async def test_follow_up_answer_clears_pending_and_advances(tmp_path):
     state = await service.advance_mock_interview(session_id)
     assert not state.mock_session.pending_follow_up
     assert state.mock_session.current_question_index >= 1
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_follow_up_retry_targets_explicit_response(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'followup-retry.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id, resume_text="Python", job_description="Platform", company_name="Example"
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    await service.submit_mock_answer(session_id, question.id, "Main answer")
+    state = await service.advance_mock_interview(session_id)
+    follow = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, follow.id, "First follow-up")
+    follow_record = state.mock_session.responses[-1]
+
+    state = await service.submit_mock_answer(
+        session_id,
+        question.id,
+        "Improved follow-up",
+        retry=True,
+        retry_response_id=follow_record.id,
+    )
+
+    matching = [item for item in state.mock_session.responses if item.is_follow_up]
+    assert len(matching) == 1
+    assert matching[0].answer == "Improved follow-up"
+    assert state.mock_session.responses[0].answer == "Main answer"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_finish_mock_interview_recovers_when_evaluation_fails(tmp_path, monkeypatch):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'finish-retry.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id, resume_text="Python", job_description="Platform", company_name="Example"
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    await service.submit_mock_answer(session_id, question.id, "Answer")
+    monkeypatch.setattr(
+        service,
+        "run_evaluation",
+        AsyncMock(side_effect=WorkflowExecutionError("model unavailable")),
+    )
+
+    with pytest.raises(WorkflowExecutionError, match="model unavailable"):
+        await service.finish_mock_interview(session_id)
+    recovered = await service.get_state(session_id)
+    assert recovered.mock_session.status == MockSessionStatus.ACTIVE
+    assert recovered.mock_session.responses
+
+    monkeypatch.setattr(service, "run_evaluation", AsyncMock(return_value=recovered))
+    completed = await service.finish_mock_interview(session_id)
+    assert completed.mock_session.status == MockSessionStatus.COMPLETED
     await storage.close()
 
 

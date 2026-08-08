@@ -53,7 +53,11 @@ async def get_mock_interview(session_id: str, service: Service):
 @router.post("/{session_id}/answers", response_model=MockSessionResponse)
 async def submit_mock_answer(session_id: str, req: MockAnswerRequest, service: Service):
     state = await service.submit_mock_answer(
-        session_id, req.question_id, req.answer, retry=req.retry
+        session_id,
+        req.question_id,
+        req.answer,
+        retry=req.retry,
+        retry_response_id=req.retry_response_id,
     )
     return _response(session_id, state, service)
 

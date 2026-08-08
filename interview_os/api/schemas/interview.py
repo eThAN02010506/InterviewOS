@@ -128,6 +128,7 @@ class MockAnswerRequest(BaseModel):
     question_id: UUID
     answer: str = Field(min_length=1)
     retry: bool = False
+    retry_response_id: UUID | None = None
 
 
 class MockSessionResponse(BaseModel):

@@ -1586,6 +1586,7 @@ class InterviewService:
         answer: str,
         *,
         retry: bool = False,
+        retry_response_id: UUID | None = None,
     ) -> InterviewState:
         """Evaluate one mock answer. Does NOT advance the interview — the caller
         (frontend) chooses 重新来 / 下一题 / 结束面试 afterwards."""
@@ -1598,13 +1599,37 @@ class InterviewService:
             if mock_session.current_question_index >= len(questions):
                 raise MockInterviewStateError("Mock interview has no remaining questions")
             question = questions[mock_session.current_question_index]
-            is_follow_up = bool(mock_session.pending_follow_up)
+            if retry_response_id is not None and not retry:
+                raise MockInterviewStateError("retry_response_id requires retry=true")
+            retry_target = (
+                next(
+                    (
+                        item
+                        for item in mock_session.responses
+                        if item.id == retry_response_id and item.question_id == question.id
+                    ),
+                    None,
+                )
+                if retry_response_id is not None
+                else None
+            )
+            if retry_response_id is not None and retry_target is None:
+                raise MockInterviewStateError("Retry response does not belong to the current question")
+            is_follow_up = (
+                retry_target.is_follow_up
+                if retry_target is not None
+                else bool(mock_session.pending_follow_up)
+            )
             expected_id = mock_session.pending_parent_question_id or question.id
             if expected_id != question_id:
                 raise MockInterviewStateError("Answer does not match the current question")
-            asked_question = mock_session.pending_follow_up or question.question
+            asked_question = (
+                retry_target.question
+                if retry_target is not None
+                else mock_session.pending_follow_up or question.question
+            )
 
-            prior = next(
+            prior = retry_target or next(
                 (
                     item
                     for item in reversed(mock_session.responses)
@@ -1754,15 +1779,35 @@ class InterviewService:
         should_evaluate = False
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
+            if mock_session.status == MockSessionStatus.EVALUATING:
+                raise MockInterviewStateError("Mock interview evaluation is already running")
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
-            mock_session.status = MockSessionStatus.COMPLETED
-            mock_session.completed_at = datetime.now(timezone.utc)
-            runtime.state.next_action = "Generate evidence-based evaluation"
             should_evaluate = bool(mock_session.responses)
+            if should_evaluate:
+                mock_session.status = MockSessionStatus.EVALUATING
+                runtime.state.next_action = "Generate evidence-based evaluation"
+            else:
+                mock_session.status = MockSessionStatus.COMPLETED
+                mock_session.completed_at = datetime.now(timezone.utc)
+                runtime.state.next_action = "Mock interview completed without answers"
             await self._persist(session_id, runtime.state)
         if should_evaluate:
-            return await self.run_evaluation(session_id)
+            try:
+                state = await self.run_evaluation(session_id)
+            except Exception:
+                # Keep all answers and make the normal finish action retryable.
+                async with self._lock_for(session_id):
+                    runtime.state.mock_session.status = MockSessionStatus.ACTIVE
+                    runtime.state.mock_session.completed_at = None
+                    runtime.state.next_action = "Final evaluation failed; retry ending the interview"
+                    await self._persist(session_id, runtime.state)
+                raise
+            async with self._lock_for(session_id):
+                state.mock_session.status = MockSessionStatus.COMPLETED
+                state.mock_session.completed_at = datetime.now(timezone.utc)
+                await self._persist(session_id, state)
+            return state
         return runtime.state
 
     async def _maybe_refill_mock_questions(

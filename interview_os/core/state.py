@@ -352,6 +352,7 @@ class MockAnswerRecord(BaseModel):
 class MockSessionStatus(str, Enum):
     IDLE = "idle"
     ACTIVE = "active"
+    EVALUATING = "evaluating"
     COMPLETED = "completed"
 
 

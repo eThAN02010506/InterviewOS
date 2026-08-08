@@ -62,11 +62,14 @@ remain attributed, and absence from the public web is not treated as falsehood.
 
 ## Mock Interview State Machine
 
-`MockInterviewSession` transitions from `idle` to `active` to `completed`. Its
+`MockInterviewSession` transitions from `idle` to `active`, through `evaluating`
+when answers require a final report, and finally to `completed`. Evaluation failure
+returns it to `active` without dropping responses, so finish is safely retryable. Its
 question pool is append-only and refilled in bounded batches while the current
 question index acts as a navigation cursor. Only the current question ID can be
-answered; an already answered question requires explicit retry, which replaces its
-response and linked evidence. `CoachAgent` returns a bounded `AnswerEvaluation`;
+answered; an already answered question requires explicit retry bound to the exact
+response ID, which replaces its response and linked evidence without confusing a
+follow-up with its parent. `CoachAgent` returns a bounded `AnswerEvaluation`;
 its four-score average becomes evidence confidence.
 
 Model refills run outside the session lock and append under the lock. A unique local

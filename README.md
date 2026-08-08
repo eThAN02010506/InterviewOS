@@ -148,9 +148,9 @@ After candidate preparation, run an interactive mock interview:
    `answer_framework` — a reference hint about which resume experience to tell,
    what structure to follow, and which signals to emphasize, generated per
    question by the model).
-3. `POST /api/mock-interviews/{session_id}/answers` with its `question_id`,
-   answer, and optional `retry: true` to re-answer the same question (replaces
-   the previous evaluation instead of duplicating evidence).
+3. `POST /api/mock-interviews/{session_id}/answers` with its `question_id` and
+   answer. A retry also sends `retry: true` plus the exact `retry_response_id`,
+   so retrying a follow-up replaces that follow-up rather than its parent answer.
 4. `POST /api/mock-interviews/{session_id}/next` advances to the next question
    (or offers an evidence-seeking follow-up when signals are missing; advancing
    may skip an unanswered question — the interviewer stays in control).
@@ -170,8 +170,10 @@ deterministic question is inserted immediately while the model refill continues,
 so a slow, failed, or duplicate-only refill cannot leave an active interview
 without a current question. An answered question can only be submitted again
 through explicit retry; the service replaces its response and linked evidence
-instead of silently creating duplicates. Process-local refill flags are reset
-when a runtime is restored after restart.
+instead of silently creating duplicates. Final evaluation transitions through a
+recoverable `evaluating` state: model failure preserves every answer and returns
+the session to `active`, allowing the user to finish again. Process-local refill
+flags are reset when a runtime is restored after restart.
 
 Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
 {session_id}/transcribe` runs the audio through the configured LAN ASR and
