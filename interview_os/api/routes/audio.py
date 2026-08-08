@@ -46,9 +46,13 @@ async def get_session_audio(session_id: str, service: Service):
     if not _SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id")
     # Ownership is enforced by get_state (404 for a foreign session).
-    await service.get_state(session_id)
-    path = service.get_live_audio_path(session_id)
+    state = await service.get_state(session_id)
+    path = service.get_live_audio_path(session_id, state.live_interview.audio_file)
     if path is None:
         raise HTTPException(status_code=404, detail="No recording for this session")
-    media_type = "audio/webm" if path.suffix == ".webm" else "audio/wav"
+    media_type = {
+        ".webm": "audio/webm",
+        ".m4a": "audio/mp4",
+        ".wav": "audio/wav",
+    }[path.suffix]
     return FileResponse(path, media_type=media_type, filename=path.name)

@@ -44,6 +44,11 @@ chooses, edits, skips, or postpones every suggested question. See the
 [product requirements](docs/product_requirements.md) for scope, privacy rules,
 delivery phases, and acceptance criteria.
 
+Whole-session audio has one authoritative file per session. If the browser's
+page-exit fallback replaces a normal WAV save with WebM or M4A, the persisted
+filename controls downloads and superseded encodings are removed after the new
+state is durable; download media types continue to match the stored encoding.
+
 ## Development Working Agreement
 
 This project is being developed as a usable local product rather than a throwaway

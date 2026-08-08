@@ -1126,6 +1126,19 @@ class InterviewService:
             live.audio_size_bytes = len(content)
             live.audio_saved_at = datetime.now(timezone.utc)
             await self._persist(session_id, runtime.state)
+            # A pagehide fallback can upload WebM after the normal WAV save.
+            # Keep one authoritative recording per session so stale encodings
+            # cannot be downloaded later or retained beyond the current copy.
+            for old_ext in {"wav", "webm", "m4a"} - {ext}:
+                stale = self._recordings_dir / f"{session_id}.{old_ext}"
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not remove superseded session recording %s: %s",
+                        stale.name,
+                        type(exc).__name__,
+                    )
         self._record_debug(
             "live_audio_saved",
             session_id,
@@ -1133,19 +1146,18 @@ class InterviewService:
         )
         return runtime.state
 
-    def get_live_audio_path(self, session_id: str) -> Path | None:
+    def get_live_audio_path(self, session_id: str, stored_filename: str = "") -> Path | None:
         """Return the on-disk path of a session's recording, if present.
 
         The caller (owner-scoped route) already validated ownership via
-        ``get_state``; this returns ``None`` when no recording exists. The path
-        is resolved from the stored filename (or a scan for known encodings) so
-        the real bytes are served regardless of extension.
+        ``get_state``. Only the filename persisted in that owner-scoped state is
+        accepted; scanning by session id could serve a superseded recording.
         """
-        for ext in ("wav", "webm", "m4a"):
-            candidate = self._recordings_dir / f"{session_id}.{ext}"
-            if candidate.exists():
-                return candidate
-        return None
+        allowed_names = {f"{session_id}.{ext}" for ext in ("wav", "webm", "m4a")}
+        if stored_filename not in allowed_names:
+            return None
+        candidate = self._recordings_dir / stored_filename
+        return candidate if candidate.is_file() else None
 
     async def analyze_resume(self, session_id: str, text: str) -> Message:
         runtime = await self._get_runtime(session_id)

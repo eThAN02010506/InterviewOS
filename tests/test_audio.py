@@ -141,6 +141,48 @@ def test_upload_webm_preserves_encoding(tmp_path):
         assert dl.headers["content-type"] == "audio/webm"
 
 
+def test_replacement_audio_removes_and_never_serves_stale_encoding(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    with TestClient(_make_app(tmp_path, recordings_dir)) as client:
+        token = _register(client, "alice")
+        sid = _start_consented_session(client, token)
+        first = client.post(
+            f"/api/live-interviews/{sid}/audio/final",
+            files={"file": ("session.wav", _FAKE_WAV, "audio/wav")},
+            headers=_auth(token),
+        )
+        assert first.status_code == 200
+
+        replacement = b"WEBM-NEWEST"
+        second = client.post(
+            f"/api/live-interviews/{sid}/audio/final",
+            files={"file": ("session.webm", replacement, "audio/webm")},
+            headers=_auth(token),
+        )
+        assert second.status_code == 200
+        assert not (recordings_dir / f"{sid}.wav").exists()
+        assert (recordings_dir / f"{sid}.webm").exists()
+
+        downloaded = client.get(f"/api/live-interviews/{sid}/audio", headers=_auth(token))
+        assert downloaded.content == replacement
+        assert downloaded.headers["content-type"] == "audio/webm"
+
+
+def test_m4a_download_uses_mp4_audio_media_type(tmp_path):
+    with TestClient(_make_app(tmp_path, tmp_path / "recordings")) as client:
+        token = _register(client, "alice")
+        sid = _start_consented_session(client, token)
+        uploaded = client.post(
+            f"/api/live-interviews/{sid}/audio/final",
+            files={"file": ("session.m4a", b"M4A-FAKE", "audio/mp4")},
+            headers=_auth(token),
+        )
+        assert uploaded.status_code == 200
+        downloaded = client.get(f"/api/live-interviews/{sid}/audio", headers=_auth(token))
+        assert downloaded.content == b"M4A-FAKE"
+        assert downloaded.headers["content-type"] == "audio/mp4"
+
+
 def test_audio_invalid_session_id_422(tmp_path):
     with TestClient(_make_app(tmp_path, tmp_path / "recordings")) as client:
         token = _register(client, "alice")
