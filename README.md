@@ -30,7 +30,10 @@ Login is required before using the app: register a local account (username +
 password, hashed with PBKDF2) and sign in. Session data is isolated per account —
 an account only ever sees its own sessions, and a cross-account session lookup
 returns 404 rather than leaking existence. Existing sessions created before
-accounts existed are backfilled to a sentinel `local` owner and remain reachable.
+accounts existed are backfilled to a sentinel `local` owner; the first real account
+registered after upgrade atomically claims those legacy sessions. Business,
+settings, and localhost Debug APIs all require authentication. Tests can explicitly
+set `INTERVIEW_OS_REQUIRE_AUTH=0`; the production default is enabled.
 
 The interviewer workspace includes a **Live Interview Copilot**. With explicit
 consent, it processes typed or recorded interview turns and prepares the next
@@ -69,8 +72,11 @@ The system is built around a few product rules:
   identity corrections require user confirmation before changing the canonical
   entity. The confirmation dialog also allows a user-edited canonical name instead
   of forcing the searched alias.
-- Resume parsing can identify suspicious or incomplete claims; downstream Agents
-  should rely on confirmed or explicitly accepted facts.
+- Resume parsing can identify suspicious or incomplete claims. Once review items
+  exist, downstream preparation Agents receive only confirmed or user-modified
+  claims. A directly pasted resume with no review record is labelled as unverified
+  candidate self-report and may guide preparation, but cannot become evaluation
+  evidence.
 - JD quality matters. A title-only JD is treated as insufficient context, and the
   UI should ask for responsibilities, requirements, and team background while
   separating explicit requirements from AI assumptions. Inferred requirements can
@@ -82,15 +88,13 @@ The system is built around a few product rules:
   Each card shows source count, best source quality, provider fetch time,
   cache-hit status, filtering reason, and generation time. Users can confirm a
   card for later context, reject it, or reset it to inferred review state.
-- The candidate's past employers are researched too: the most recent / longest-tenured /
-  name-related employers from the resume are searched publicly (respecting the same
-  research consent gate) so the strategy, interview design, and mock questions can
-  reference what those companies actually do. Results appear as "过往雇主" fact cards.
-  Strategy generation always includes the full resume text (not just confirmed
-  claims), so a sparse confirmation list can never hide recent employers, and the
-  generation prompts weight recent / large employers ahead of old small ones.
-- Secrets and sensitive resume/transcript content must not appear in logs, SQLite
-  exports, settings responses, or the Debug Console.
+- The candidate's past employers are researched too, but reviewed resumes expose
+  only employer names present in confirmed/modified claims and still require the
+  public-research consent gate. Direct pasted workflows without review data treat
+  employer names as unverified self-report. Results appear as "过往雇主" fact cards.
+- Secrets must not appear in SQLite, API responses, logs, or the Debug Console.
+  Resume and transcript content necessarily lives in the owner-scoped local session
+  database; it must not be copied into logs or Debug events.
 
 The API now persists session state in SQLite. A minimal analysis flow is:
 
@@ -203,9 +207,9 @@ SearXNG remains available for a fully self-hosted deployment and requires its JS
 response format to be enabled. Search results retain their title, URL, snippet,
 and provider so the analysis can be traced back to public sources.
 
-Runtime search and Local LLM settings can also be changed at
-`http://127.0.0.1:8000/api/settings/ui`. Secrets are write-only and are never
-returned to the browser. UI changes take effect immediately for existing sessions;
+Runtime search and Local LLM settings are changed from the authenticated Settings
+workspace in the main UI. Secrets are write-only and are never returned to the
+browser. UI changes take effect immediately for existing sessions;
 settings are stored in a local permission-restricted file and environment variables
 can still provide startup defaults.
 

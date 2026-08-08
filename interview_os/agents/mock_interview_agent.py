@@ -65,8 +65,9 @@ class MockInterviewAgent(Agent):
             for line in state.strategy.answer_framework
             if line.strip()
         ]
-        materials += [f"突出你的优势：{a}" for a in state.candidate.unique_advantages]
-        materials += [f"体现你的擅长：{s}" for s in state.candidate.strengths]
+        if not state.resume_review.claims:
+            materials += [f"突出你的优势：{a}" for a in state.candidate.unique_advantages]
+            materials += [f"体现你的擅长：{s}" for s in state.candidate.strengths]
 
         # Match materials whose text plausibly relates to this competency.
         def matches(text: str) -> bool:

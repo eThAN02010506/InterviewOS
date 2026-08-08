@@ -609,22 +609,28 @@ class InterviewState(BaseModel):
     def candidate_evidence_context(self, *, structure_required: bool = False) -> str:
         """Build the candidate's evidence context for generation agents.
 
-        The full raw resume is always included (it is the authoritative history),
-        so a sparse or unconfirmed claim list can never starve the agents of
-        recent employers. Confirmed claims are prepended with a priority label;
-        ``structure_required`` additionally includes the structured employment
-        sections when present (cleaner recency ordering from the LLM pass).
+        Once a resume review exists, only confirmed or user-modified claims are
+        exposed downstream. Before a review exists (for example a direct pasted
+        workflow), raw text is allowed only as explicitly unverified candidate
+        self-report. Final evaluation uses interview evidence, not this context.
         """
         blocks: list[str] = []
         confirmed = self.confirmed_resume_facts()
         if confirmed:
             blocks.append("已确认的简历事实（最高优先级）：\n" + "\n".join(confirmed))
+        if self.resume_review.claims:
+            if not confirmed:
+                blocks.append("尚无已确认的简历事实；请仅根据 JD 生成通用准备内容。")
+            return "\n\n".join(blocks)
         if structure_required:
             structured = _structured_employment(self)
             if structured:
-                blocks.append("结构化工作经历（按最近优先）：\n" + "\n".join(structured))
+                blocks.append("未核验的结构化工作经历：\n" + "\n".join(structured))
         if self.candidate.raw_resume_text.strip():
-            blocks.append("完整简历原文（权威履历）：\n" + self.candidate.raw_resume_text.strip())
+            blocks.append(
+                "候选人简历自述（未核验，只用于面试准备，不得作为事实或评价证据）：\n"
+                + self.candidate.raw_resume_text.strip()
+            )
         return "\n\n".join(blocks)
 
     def enforce_evaluation_evidence_floor(self) -> None:

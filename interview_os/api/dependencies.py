@@ -9,10 +9,9 @@ async def get_interview_service(request: Request) -> InterviewService:
 
     The service is a singleton; the owner is carried per-request via a
     contextvar so every service call (and background task spawned from it) is
-    scoped to the authenticated account. Requests with no Authorization header
-    fall back to the legacy ``local`` owner so pre-account data stays reachable
-    and anonymous tooling keeps working. A present-but-invalid bearer token is
-    rejected with 401 (it is an explicit, failed auth claim).
+    scoped to the authenticated account. Production routers require auth before
+    reaching this dependency. The ``local`` fallback exists only for explicitly
+    auth-disabled development/test apps; invalid bearer tokens are always rejected.
     """
     auth = request.headers.get("Authorization", "")
     owner: str | None = None

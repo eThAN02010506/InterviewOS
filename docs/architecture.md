@@ -86,10 +86,11 @@ evidence set is rejected before any LLM call.
 
 ## Runtime Settings
 
-The settings API changes a shared mutable search-provider router, so existing and
-future Agent runtimes observe provider changes immediately. API keys are write-only
-and retained in process memory; environment variables are the persistent startup
-source. This avoids storing plaintext credentials in the application database.
+The authenticated settings API changes shared mutable provider clients, so existing
+and future Agent runtimes observe changes immediately. API keys are write-only and
+stored outside SQLite in a permission-restricted, atomically replaced local JSON
+file; environment variables remain startup defaults. Settings responses and Debug
+events expose only configuration status, never secret values.
 
 ## Local Web Application
 
@@ -97,7 +98,9 @@ The product UI is a dependency-free static application served by FastAPI from th
 same origin as the API. This is deliberate: InterviewOS targets local models and
 LAN services, so a separately hosted frontend would complicate connectivity and
 secret handling without adding product value. The UI consumes documented API
-routes and stores only the selected session ID in browser-local storage.
+routes and stores the bearer token, selected role, and selected session ID in
+browser-local storage. Business and settings APIs require authentication; the Debug
+API additionally rejects non-loopback clients.
 
 ## Debug Observability
 

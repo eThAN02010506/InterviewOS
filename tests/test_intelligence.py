@@ -204,12 +204,11 @@ def test_only_confirmed_or_modified_resume_claims_reach_agents():
     assert "确认后的 30% 增长" in context
     # Unconfirmed claim is not surfaced as a fact.
     assert "100% 增长" not in context
-    # The full resume (with the recent employer) is always included, so a sparse
-    # claim list can never starve the agents of recent employers.
-    assert "ZUORA" in context
+    # Once review exists, unconfirmed raw resume content is withheld.
+    assert "ZUORA" not in context
 
 
-def test_evidence_context_falls_back_to_full_resume_when_claims_unconfirmed():
+def test_evidence_context_withholds_raw_resume_when_claims_unconfirmed():
     state = InterviewState()
     state.candidate.raw_resume_text = (
         "2018-07 to ZUORA 2022-12\n"
@@ -221,10 +220,18 @@ def test_evidence_context_falls_back_to_full_resume_when_claims_unconfirmed():
         ResumeClaim(category="employment", statement="2018-07 to ZUORA"),
     ]
     context = state.candidate_evidence_context()
-    # No confirmed facts, but the full resume is still present (no placeholder).
-    assert "No resume claims have been confirmed yet." not in context
-    assert "ZUORA" in context
-    assert "Hewlett Packard Enterprise" in context
+    assert "尚无已确认的简历事实" in context
+    assert "ZUORA" not in context
+    assert "Hewlett Packard Enterprise" not in context
+
+
+def test_raw_resume_is_labelled_unverified_before_review_exists():
+    state = InterviewState()
+    state.candidate.raw_resume_text = "2020-01 to HPE 2023-06\nSenior Engineer"
+    context = state.candidate_evidence_context()
+    assert "未核验" in context
+    assert "不得作为事实或评价证据" in context
+    assert "HPE" in context
 
 
 def test_evidence_context_includes_structured_employment_when_requested():

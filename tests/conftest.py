@@ -14,4 +14,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("INTERVIEW_OS_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    # Most unit tests exercise domain/API behavior without repeating login setup.
+    # Authentication tests opt back into the production boundary explicitly.
+    monkeypatch.setenv("INTERVIEW_OS_REQUIRE_AUTH", "0")
     yield

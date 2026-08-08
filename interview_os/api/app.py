@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -63,8 +63,11 @@ def create_app(
     omni_client: OmniAudioClient | None = None,
     resume_llm_client: Any = None,
     recordings_dir: Path | None = None,
+    require_auth: bool | None = None,
 ) -> FastAPI:
     storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
+    if require_auth is None:
+        require_auth = os.getenv("INTERVIEW_OS_REQUIRE_AUTH", "1") != "0"
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
     settings_store = settings_store or LocalSettingsStore()
     saved_settings = settings_store.load()
@@ -152,26 +155,58 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    protected = [Depends(auth.get_current_user)] if require_auth else []
     application.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-    application.include_router(interviews.router, prefix="/api/interviews", tags=["interviews"])
-    application.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
-    application.include_router(autopilot.router, prefix="/api/autopilot", tags=["autopilot"])
-    application.include_router(settings.router, prefix="/api/settings", tags=["settings"])
-    application.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
     application.include_router(
-        mock_interviews.router, prefix="/api/mock-interviews", tags=["mock-interviews"]
-    )
-    application.include_router(debug.router, prefix="/api/debug", tags=["debug"])
-    application.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
-    application.include_router(evaluations.router, prefix="/api/evaluations", tags=["evaluations"])
-    application.include_router(
-        intelligence.router, prefix="/api/intelligence", tags=["intelligence"]
+        interviews.router, prefix="/api/interviews", tags=["interviews"], dependencies=protected
     )
     application.include_router(
-        live_interviews.router, prefix="/api/live-interviews", tags=["live-interviews"]
+        analysis.router, prefix="/api/analysis", tags=["analysis"], dependencies=protected
     )
     application.include_router(
-        audio.router, prefix="/api/live-interviews", tags=["live-interviews-audio"]
+        autopilot.router, prefix="/api/autopilot", tags=["autopilot"], dependencies=protected
+    )
+    application.include_router(
+        settings.router, prefix="/api/settings", tags=["settings"], dependencies=protected
+    )
+    application.include_router(
+        workflows.router, prefix="/api/workflows", tags=["workflows"], dependencies=protected
+    )
+    application.include_router(
+        mock_interviews.router,
+        prefix="/api/mock-interviews",
+        tags=["mock-interviews"],
+        dependencies=protected,
+    )
+    application.include_router(
+        debug.router, prefix="/api/debug", tags=["debug"], dependencies=protected
+    )
+    application.include_router(
+        resumes.router, prefix="/api/resumes", tags=["resumes"], dependencies=protected
+    )
+    application.include_router(
+        evaluations.router,
+        prefix="/api/evaluations",
+        tags=["evaluations"],
+        dependencies=protected,
+    )
+    application.include_router(
+        intelligence.router,
+        prefix="/api/intelligence",
+        tags=["intelligence"],
+        dependencies=protected,
+    )
+    application.include_router(
+        live_interviews.router,
+        prefix="/api/live-interviews",
+        tags=["live-interviews"],
+        dependencies=protected,
+    )
+    application.include_router(
+        audio.router,
+        prefix="/api/live-interviews",
+        tags=["live-interviews-audio"],
+        dependencies=protected,
     )
     application.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

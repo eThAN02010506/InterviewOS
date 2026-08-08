@@ -1273,6 +1273,8 @@ class InterviewService:
             return ""
 
         employers: list[dict[str, Any]] = []
+        confirmed_context = "\n".join(state.confirmed_resume_facts()).lower()
+        reviewed = bool(state.resume_review.claims)
         experience = state.candidate.experience or []
         if experience:
             for e in experience:
@@ -1290,7 +1292,13 @@ class InterviewService:
                         "summary": str(e.get("summary", "")).strip(),
                     }
                 )
-        if not employers:
+        if reviewed:
+            employers = [
+                entry
+                for entry in employers
+                if entry["company"].lower() in confirmed_context
+            ]
+        if not employers and not reviewed:
             # Fall back to parsing raw text lines "YYYY-MM to COMPANY".
             for line in raw_lines:
                 match = re.search(
@@ -1392,7 +1400,7 @@ class InterviewService:
             try:
                 batch = await provider.search(query, limit=5, search_depth="basic")
             except Exception as exc:  # noqa: BLE001 - provider may be disabled
-                logger.warning("Past-employer search failed for %s: %s", company, exc)
+                logger.warning("Past-employer search failed: %s", exc)
                 continue
             batch_dicts: list[dict[str, Any]] = []
             for item in batch:
@@ -1446,9 +1454,7 @@ class InterviewService:
         self._record_debug(
             "past_employer_research",
             session_id,
-            detail=(
-                f"employers={employers}; sources={len(state.past_employer_sources)}"
-            ),
+            detail=f"employer_count={len(employers)}; sources={len(state.past_employer_sources)}",
         )
         return runtime.state
 

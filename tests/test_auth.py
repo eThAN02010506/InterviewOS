@@ -1,6 +1,7 @@
 """Auth + per-account isolation tests."""
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from interview_os.api.app import create_app
@@ -15,6 +16,7 @@ def _make_app(tmp_path, llm_client=None):
         llm_client=llm_client,
         configure_llm=False,
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+        require_auth=True,
     )
     return app
 
@@ -109,10 +111,10 @@ def test_sessions_isolated_between_accounts(tmp_path):
             client.get(f"/api/interviews/sessions/{sid}", headers=_auth(alice)).status_code
             == 200
         )
-        # Anonymous (legacy 'local' owner) cannot see Alice's session
-        assert client.get(f"/api/interviews/sessions/{sid}").status_code == 404
+        # Production API rejects anonymous access before resolving any owner.
+        assert client.get(f"/api/interviews/sessions/{sid}").status_code == 401
         # The localhost debug console still sees every account's sessions.
-        debug = client.get("/api/debug/sessions")
+        debug = client.get("/api/debug/sessions", headers=_auth(alice))
         assert any(s["id"] == sid for s in debug.json()["sessions"])
 
 
@@ -124,3 +126,28 @@ def test_invalid_token_rejected(tmp_path):
             ).status_code
             == 401
         )
+
+
+def test_business_settings_and_debug_routes_require_login(tmp_path):
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/api/interviews/sessions").status_code == 401
+        assert client.get("/api/settings").status_code == 401
+        assert client.get("/api/debug/status").status_code == 401
+        assert client.get("/health").status_code == 200
+        token = _register(client, "alice")
+        assert client.get("/api/interviews/sessions", headers=_auth(token)).status_code == 200
+        assert client.get("/api/settings", headers=_auth(token)).status_code == 200
+        assert client.get("/api/debug/status", headers=_auth(token)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_first_real_account_claims_legacy_sessions(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'legacy-claim.db'}")
+    await storage.init_db()
+    await storage.save_session("legacy-session", {}, owner_id="local")
+    alice = await storage.create_user("alice", "pw-123456")
+    assert await storage.get_session_state("legacy-session", owner_id=alice.id) == {}
+    bob = await storage.create_user("bob", "pw-123456")
+    await storage.save_session("another-legacy", {}, owner_id="local")
+    assert await storage.get_session_state("another-legacy", owner_id=bob.id) is None
+    await storage.close()

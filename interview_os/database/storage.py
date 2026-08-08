@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, insert, inspect, select
+from sqlalchemy import delete, func, insert, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, async_sessionmaker, create_async_engine
 
 from interview_os.database.schema import (
@@ -173,6 +173,20 @@ class Storage:
         async with self.session_factory() as session:
             user = User(username=username, password_hash=hash_password(password))
             session.add(user)
+            await session.flush()
+            real_user_count = (
+                await session.execute(
+                    select(func.count(User.id)).where(User.username != LEGACY_OWNER)
+                )
+            ).scalar_one()
+            if real_user_count == 1:
+                # Upgrade path: the first real local account takes ownership of
+                # sessions created before authentication existed.
+                await session.execute(
+                    update(InterviewSession)
+                    .where(InterviewSession.owner_id == LEGACY_OWNER)
+                    .values(owner_id=user.id)
+                )
             await session.commit()
             await session.refresh(user)
             return user

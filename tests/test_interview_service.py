@@ -658,6 +658,30 @@ async def test_past_employer_research_requires_explicit_consent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recent_employer_research_uses_only_confirmed_review_claims(tmp_path):
+    from interview_os.core.state import ResumeClaim, ResumeClaimStatus
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer-review.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    _, state = await service.create_session()
+    state.candidate.experience = [
+        {"company": "ZUORA", "duration": "2018-2022", "role": "Manager"},
+        {"company": "UnconfirmedCo", "duration": "2022-2025", "role": "Director"},
+    ]
+    state.resume_review.claims = [
+        ResumeClaim(
+            category="employment",
+            statement="2018-2022 ZUORA Manager",
+            status=ResumeClaimStatus.CONFIRMED,
+        ),
+        ResumeClaim(category="employment", statement="2022-2025 UnconfirmedCo Director"),
+    ]
+    assert service._recent_employers(state, limit=5) == ["ZUORA"]
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_mock_interview_pool_includes_likely_and_competency(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'pool.db'}")
     await storage.init_db()
