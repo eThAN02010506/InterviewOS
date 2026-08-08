@@ -107,6 +107,15 @@ Debug endpoints are read-only except for a fixed `/models` connectivity probe an
 reject non-loopback clients. The console is observability, not a remote execution
 surface.
 
+## Streaming Suggestions
+
+Text and omni model adapters use HTTPX streaming contexts so upstream SSE bytes are
+consumed before the completion finishes. The API relays each token as a JSON-encoded
+SSE data record, preserving embedded newlines, and persists the assembled suggestion
+after the stream completes. Raw browser `fetch` calls include the same bearer token
+as ordinary API requests; disconnecting closes the response generator and upstream
+HTTP stream.
+
 ## Agent Communication
 
 Agents communicate via Messages through the Runtime.

@@ -293,7 +293,11 @@ removes the manual "confirm evidence, then click generate" wait from the hot pat
 Next-question suggestions can also be **streamed** (SSE): the "流式生成" button
 calls `POST /api/live-interviews/{id}/suggestions/stream`, which streams the model
 output token by token so the suggestion card fills in live instead of appearing
-after the full generation. Transcript ingestion stays chunked (the LAN ASR has no
+after the full generation. The text and omni adapters keep an HTTPX streaming
+context open rather than buffering a normal `post()` response; SSE data is JSON
+encoded so model newlines cannot corrupt event framing, and the browser includes
+the current account's bearer token on the raw streaming request. Transcript
+ingestion stays chunked (the LAN ASR has no
 streaming endpoint), but a finished chunk immediately produces a streaming
 suggestion. Verified with the real 8001 model: tokens arrive incrementally and the
 completed suggestion lands in the review queue (~8s full, first token ~1s).

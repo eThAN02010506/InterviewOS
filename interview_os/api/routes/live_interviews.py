@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -195,7 +196,9 @@ async def stream_next_question(session_id: str, service: Service):
 
     async def event_stream():
         async for piece in service.stream_live_suggestion(session_id):
-            yield f"data: {piece}\n\n"
+            # JSON encoding keeps newlines inside one SSE data record and lets the
+            # browser reconstruct token text without corrupting event framing.
+            yield f"data: {json.dumps(piece, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

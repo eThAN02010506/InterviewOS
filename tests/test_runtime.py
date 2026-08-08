@@ -101,3 +101,70 @@ async def test_local_llm_chat_stream_failure_yields_error():
         chunks.append(piece)
     assert chunks and "LLM Error" in chunks[0]
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_chat_stream_yields_before_response_finishes():
+    import asyncio
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    gate = asyncio.Event()
+
+    class GatedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+            await gate.wait()
+            yield b'data: {"choices":[{"delta":{"content":"last"}}]}\n\ndata: [DONE]\n\n'
+
+    def handler(request):
+        return httpx.Response(200, stream=GatedStream())
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="m",
+        transport=httpx.MockTransport(handler),
+    )
+    stream = client.chat_stream([{"role": "user", "content": "hi"}])
+    first = await asyncio.wait_for(anext(stream), timeout=0.2)
+    assert first == "first"
+    assert not gate.is_set()
+    gate.set()
+    assert [piece async for piece in stream] == ["last"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_omni_chat_stream_yields_before_response_finishes():
+    import asyncio
+
+    import httpx
+
+    from interview_os.models.omni_client import OmniAudioClient
+
+    gate = asyncio.Event()
+
+    class GatedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"question"}}]}\n\n'
+            await gate.wait()
+            yield b'data: [DONE]\n\n'
+
+    client = OmniAudioClient(
+        base_url="http://omni.test/v1",
+        model="m",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=GatedStream())
+        ),
+    )
+    stream = await client.suggest_next_question(b"audio", stream=True)
+    assert not isinstance(stream, str)
+    first = await asyncio.wait_for(anext(stream), timeout=0.2)
+    assert first == "question"
+    assert not gate.is_set()
+    gate.set()
+    assert [piece async for piece in stream] == []
+    await client.close()

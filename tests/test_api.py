@@ -1158,6 +1158,34 @@ def test_suggestions_stream_requires_active_live(tmp_path):
         assert resp.status_code == 409
 
 
+def test_suggestions_stream_json_encodes_sse_data(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'stream-json.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        assert started.status_code == 200
+        client.post(
+            f"/api/live-interviews/{session_id}/segments",
+            json={"speaker": "candidate", "text": "我说明了方案取舍。"},
+        )
+        response = client.post(f"/api/live-interviews/{session_id}/suggestions/stream")
+        assert response.status_code == 200
+        data_lines = [line for line in response.text.splitlines() if line.startswith("data: ")]
+        assert data_lines
+        import json
+
+        assert all(isinstance(json.loads(line[6:]), str) for line in data_lines)
+
+
 class _DiarizeOmni:
     """Stub omni client returning a two-speaker dialog split."""
 

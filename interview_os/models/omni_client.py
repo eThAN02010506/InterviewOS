@@ -82,13 +82,14 @@ class OmniAudioClient:
         model: str | None = None,
         name: str = "音频直连",
         mode: str = "asr_text",
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url: str = base_url or os.getenv("OMNI_BASE_URL", DEFAULT_OMNI_BASE_URL).rstrip("/")
         self.api_key: str = api_key or os.getenv("OMNI_API_KEY") or ""
         self.model: str = model or os.getenv("OMNI_MODEL") or DEFAULT_OMNI_MODEL
         self.name: str = name
         self.mode: str = mode if mode in {"asr_text", "audio_direct"} else "asr_text"
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(timeout=120.0, transport=transport)
         self._capability: dict[str, Any] = {}
 
     def configure(
@@ -135,13 +136,12 @@ class OmniAudioClient:
         messages: list[dict[str, Any]],
         *,
         max_tokens: int = 200,
-        stream: bool = False,
     ) -> Any:
         payload = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "stream": stream,
+            "stream": False,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         started = perf_counter()
@@ -181,28 +181,44 @@ class OmniAudioClient:
             messages.append({"role": "user", "content": f"面试背景：{context}"})
         messages.append(self._audio_message(audio_base64, fmt))
         if not stream:
-            response, _ = await self._chat(messages, max_tokens=200, stream=False)
+            response, _ = await self._chat(messages, max_tokens=200)
             data = response.json()
             return data["choices"][0]["message"]["content"]
-        response, _ = await self._chat(messages, max_tokens=200, stream=True)
 
         async def chunks() -> AsyncIterator[str]:
             content = ""
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                    delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
-                    piece = delta.get("content") or ""
-                    if piece:
-                        content += piece
-                        yield piece
-                except ValueError:
-                    continue
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": 200,
+                "stream": True,
+            }
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            try:
+                async with self._client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        event = line[5:].strip()
+                        if event == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(event)
+                            delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                            piece = delta.get("content") or ""
+                            if piece:
+                                content += piece
+                                yield piece
+                        except ValueError:
+                            continue
+            except httpx.HTTPError as exc:
+                logger.error("Omni streaming chat failed: %s", exc)
             if not content:
                 yield "[音频直连模型未返回可用建议]"
 
@@ -232,7 +248,7 @@ class OmniAudioClient:
             self._audio_message(audio_base64, fmt),
         ]
         try:
-            response, _ = await self._chat(messages, max_tokens=600, stream=False)
+            response, _ = await self._chat(messages, max_tokens=600)
             raw = response.json()["choices"][0]["message"]["content"]
         except Exception as exc:  # noqa: BLE001 - report and fall back
             logger.warning("Omni diarize failed: %s", exc)

@@ -757,7 +757,7 @@ async function streamNextSuggestion() {
     node.innerHTML = '<p class="streaming-hint">AI 正在生成下一问…</p><div id="streaming-text" class="streaming-text"></div>';
   }
   try {
-    const resp = await fetch(`/api/live-interviews/${state.sessionId}/suggestions/stream`, {method:'POST', signal: liveSuggestionAbort.signal});
+    const resp = await fetch(`/api/live-interviews/${state.sessionId}/suggestions/stream`, {method:'POST', headers:state.token?{Authorization:`Bearer ${state.token}`}:{}, signal: liveSuggestionAbort.signal});
     if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || '流式建议失败');
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -774,7 +774,8 @@ async function streamNextSuggestion() {
         const event = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
         for (const line of event.split('\n')) {
           if (line.startsWith('data: ')) {
-            const piece = line.slice(6);
+            const encoded = line.slice(6);
+            let piece = ''; try { piece = JSON.parse(encoded); } catch { piece = encoded; }
             full += piece;
             if (box) box.textContent = full;
           }
@@ -785,7 +786,7 @@ async function streamNextSuggestion() {
     // Flush any trailing buffer (partial final event).
     if (buffer.trim()) {
       for (const line of buffer.trim().split('\n')) {
-        if (line.startsWith('data: ')) { full += line.slice(6); }
+        if (line.startsWith('data: ')) { const encoded=line.slice(6);try{full+=JSON.parse(encoded)}catch{full+=encoded} }
       }
       if (box) box.textContent = full;
     }

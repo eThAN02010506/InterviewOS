@@ -122,28 +122,29 @@ class LocalLLMClient(LLMClient):
         started = perf_counter()
         self._metrics["requests"] += 1
         try:
-            resp = await self._client.post(
+            async with self._client.stream(
+                "POST",
                 "/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            resp.raise_for_status()
-            content = ""
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                piece = line[5:].strip()
-                if piece == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(piece)
-                    delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
-                    text = delta.get("content") or ""
-                except (ValueError, TypeError):
-                    continue
-                if text:
-                    content += text
-                    yield text
+            ) as resp:
+                resp.raise_for_status()
+                content = ""
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    piece = line[5:].strip()
+                    if piece == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(piece)
+                        delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                        text = delta.get("content") or ""
+                    except (ValueError, TypeError):
+                        continue
+                    if text:
+                        content += text
+                        yield text
             if content:
                 self._metrics["completion_tokens"] += _approx_tokens(content)
         except httpx.HTTPError as exc:
