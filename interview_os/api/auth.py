@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from interview_os.database.schema import LEGACY_OWNER, User
-from interview_os.database.storage import verify_password
+from interview_os.database.storage import UsernameAlreadyExistsError, verify_password
 
 router = APIRouter()
 
@@ -46,7 +46,10 @@ async def register(request: Request, body: AuthRequest) -> AuthResponse:
     existing = await storage.get_user_by_username(username)
     if existing is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")
-    user = await storage.create_user(username, body.password)
+    try:
+        user = await storage.create_user(username, body.password)
+    except UsernameAlreadyExistsError:
+        raise HTTPException(status_code=409, detail="用户名已存在") from None
     token = await storage.create_token(user.id)
     return AuthResponse(token=token, username=user.username)
 

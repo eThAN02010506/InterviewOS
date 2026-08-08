@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, insert, inspect, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, async_sessionmaker, create_async_engine
 
 from interview_os.database.schema import (
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 _TOKEN_TTL = timedelta(days=30)
 _PBKDF2_ITERATIONS = 600_000
+
+
+class UsernameAlreadyExistsError(RuntimeError):
+    """Raised when the database wins a concurrent username registration race."""
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -172,26 +177,31 @@ class Storage:
     async def create_user(self, username: str, password: str) -> User:
         if username == LEGACY_OWNER:
             raise ValueError("The username 'local' is reserved for legacy data migration")
-        async with self.session_factory() as session:
-            user = User(username=username, password_hash=hash_password(password))
-            session.add(user)
-            await session.flush()
-            real_user_count = (
-                await session.execute(
-                    select(func.count(User.id)).where(User.username != LEGACY_OWNER)
-                )
-            ).scalar_one()
-            if real_user_count == 1:
-                # Upgrade path: the first real local account takes ownership of
-                # sessions created before authentication existed.
-                await session.execute(
-                    update(InterviewSession)
-                    .where(InterviewSession.owner_id == LEGACY_OWNER)
-                    .values(owner_id=user.id)
-                )
-            await session.commit()
-            await session.refresh(user)
-            return user
+        try:
+            async with self.session_factory() as session:
+                user = User(username=username, password_hash=hash_password(password))
+                session.add(user)
+                await session.flush()
+                real_user_count = (
+                    await session.execute(
+                        select(func.count(User.id)).where(User.username != LEGACY_OWNER)
+                    )
+                ).scalar_one()
+                if real_user_count == 1:
+                    # Upgrade path: the first real local account takes ownership of
+                    # sessions created before authentication existed.
+                    await session.execute(
+                        update(InterviewSession)
+                        .where(InterviewSession.owner_id == LEGACY_OWNER)
+                        .values(owner_id=user.id)
+                    )
+                await session.commit()
+                await session.refresh(user)
+                return user
+        except IntegrityError as exc:
+            # The route performs a friendly pre-check, but the unique index is
+            # the authority when simultaneous requests race between check/write.
+            raise UsernameAlreadyExistsError(username) from exc
 
     async def get_user_by_username(self, username: str) -> User | None:
         async with self.session_factory() as session:

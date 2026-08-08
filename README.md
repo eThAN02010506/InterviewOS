@@ -36,6 +36,8 @@ reserved migration username and cannot be registered). Business, settings, and l
 require authentication; Debug session/event views remain scoped to the signed-in
 account. Tests can explicitly
 set `INTERVIEW_OS_REQUIRE_AUTH=0`; the production default is enabled.
+Concurrent registration attempts for the same normalized username are resolved by
+the database unique constraint and consistently returned as HTTP 409 conflicts.
 
 The interviewer workspace includes a **Live Interview Copilot**. With explicit
 consent, it processes typed or recorded interview turns and prepares the next

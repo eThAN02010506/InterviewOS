@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 
 from interview_os.api.app import create_app
 from interview_os.core.debug import DebugEvent
-from interview_os.database.storage import Storage, hash_password, verify_password
+from interview_os.database.storage import (
+    Storage,
+    UsernameAlreadyExistsError,
+    hash_password,
+    verify_password,
+)
 from interview_os.services.settings_service import LocalSettingsStore
 
 
@@ -85,6 +90,29 @@ def test_register_login_me_logout(tmp_path):
         assert client.get("/api/auth/me", headers=_auth(token)).status_code == 401
         # No token -> 401
         assert client.get("/api/auth/me").status_code == 401
+
+
+def test_registration_maps_database_uniqueness_race_to_conflict(tmp_path, monkeypatch):
+    with TestClient(_make_app(tmp_path)) as client:
+        async def lose_concurrent_insert(username, password):
+            raise UsernameAlreadyExistsError(username)
+
+        monkeypatch.setattr(client.app.state.storage, "create_user", lose_concurrent_insert)
+        response = client.post(
+            "/api/auth/register", json={"username": "racing-user", "password": "pw-123456"}
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "用户名已存在"
+
+
+@pytest.mark.asyncio
+async def test_storage_translates_duplicate_username_constraint(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'duplicate-user.db'}")
+    await storage.init_db()
+    await storage.create_user("alice", "pw-123456")
+    with pytest.raises(UsernameAlreadyExistsError):
+        await storage.create_user("alice", "different-password")
+    await storage.close()
 
 
 def test_sessions_isolated_between_accounts(tmp_path):
