@@ -1161,6 +1161,11 @@ class InterviewService:
         structure: str = "rules",
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
+        # Reject an unsafe replacement before parsing the document or sending
+        # its text to an optional structuring model. The second check below is
+        # still required because interview activity may arrive while parsing.
+        async with self._lock_for(session_id):
+            self._assert_candidate_reset_allowed(runtime.state)
         # Parsing and optional LLM structuring are slow and do not touch session
         # state, so keep them outside the per-session mutation lock.
         text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)

@@ -4,7 +4,12 @@ from uuid import uuid4
 
 import pytest
 
-from interview_os.core.state import InterviewQuestion, LiveInterviewStatus, MockSessionStatus
+from interview_os.core.state import (
+    InterviewQuestion,
+    LiveInterviewStatus,
+    MockSessionStatus,
+    TranscriptSegment,
+)
 from interview_os.database.storage import Storage
 from interview_os.services.interview_service import (
     CandidateSessionStateError,
@@ -466,6 +471,27 @@ async def test_workflow_rerun_is_blocked_after_real_interview_activity(tmp_path)
     assert preserved.mock_session.responses[0].id == response_id
     assert preserved.evidence
     assert preserved.candidate.raw_resume_text == "Candidate A"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_upload_rejects_active_session_before_parsing(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-upload-preflight.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.live_interview.segments.append(
+        TranscriptSegment(sequence=1, speaker="candidate", text="Real interview answer")
+    )
+    await service._persist(session_id, state)
+
+    def unexpected_parse(filename, content):
+        raise AssertionError("resume parser must not run for an active interview session")
+
+    service.resume_processor.process = unexpected_parse
+    with pytest.raises(CandidateSessionStateError, match="请新建会话"):
+        await service.upload_resume(session_id, "replacement.pdf", b"private replacement")
+
     await storage.close()
 
 
