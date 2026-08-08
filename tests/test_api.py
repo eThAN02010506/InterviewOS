@@ -232,6 +232,87 @@ def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
     assert (tmp_path / "settings.json").stat().st_mode & 0o777 == 0o600
 
 
+def test_settings_failure_rolls_back_earlier_provider_mutations(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'settings-rollback.db'}")
+    llm = LocalLLMClient(base_url="http://llm.test/v1", api_key="local", model="main")
+    app = create_app(
+        storage=storage,
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        failed = client.put(
+            "/api/settings",
+            json={
+                "search": {"provider": "tavily", "tavily_api_key": "temporary-secret"},
+                "asr": {"base_url": "ftp://invalid-asr"},
+                "persist": False,
+            },
+        )
+        assert failed.status_code == 400
+        current = client.get("/api/settings").json()
+        assert current["search"]["selected"] == "none"
+        assert current["search"]["configured"]["tavily"] is False
+        assert current["asr"]["base_url"] == "http://192.168.1.97:8003"
+
+
+def test_settings_persistence_failure_restores_runtime_configuration(tmp_path):
+    class FailingSettingsStore(LocalSettingsStore):
+        def save(self, payload):
+            raise OSError("private filesystem detail")
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'settings-save-rollback.db'}")
+    llm = LocalLLMClient(base_url="http://llm.test/v1", api_key="local", model="main")
+    app = create_app(
+        storage=storage,
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=FailingSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        failed = client.put(
+            "/api/settings",
+            json={"llm": {"model": "must-not-stick"}, "persist": True},
+        )
+        assert failed.status_code == 500
+        assert failed.json()["detail"] == "设置保存失败，运行时配置未更改"
+        assert client.app.state.llm_client.model == "main"
+
+
+def test_resume_model_settings_split_default_alias_from_primary_llm(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-model-split.db'}")
+    primary = LocalLLMClient(
+        base_url="http://main.test/v1", api_key="main-key", model="main-model"
+    )
+    app = create_app(
+        storage=storage,
+        llm_client=primary,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        assert client.app.state.resume_llm_client is primary
+        updated = client.put(
+            "/api/settings",
+            json={
+                "resume_llm": {
+                    "base_url": "http://resume.test/v1",
+                    "model": "resume-model",
+                },
+                "persist": False,
+            },
+        )
+        assert updated.status_code == 200
+        dedicated = client.app.state.resume_llm_client
+        assert dedicated is not primary
+        assert dedicated.model == "resume-model"
+        assert dedicated.base_url == "http://resume.test/v1"
+        assert primary.model == "main-model"
+        assert primary.base_url == "http://main.test/v1"
+        assert client.app.state.interview_service.resume_llm_client is dedicated
+
+
 def test_candidate_prep_api_returns_structured_workflow(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'workflow-api.db'}")
     app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)

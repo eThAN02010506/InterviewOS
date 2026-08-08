@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -133,6 +134,7 @@ def create_app(
         application.state.asr_client = asr_client
         application.state.omni_client = omni_client
         application.state.resume_llm_client = resume_llm_client
+        application.state.settings_lock = asyncio.Lock()
         yield
         # Background scorers and refill tasks can still be using model clients.
         # Stop them before closing any shared transport, then close each distinct
@@ -141,7 +143,12 @@ def create_app(
             await application.state.interview_service._background.close()
         except Exception as exc:  # noqa: BLE001 - shutdown must continue
             logger.error("Background shutdown failed (%s)", type(exc).__name__)
-        closeables = [llm_client, resume_llm_client, asr_client, omni_client]
+        closeables = [
+            llm_client,
+            application.state.resume_llm_client,
+            asr_client,
+            omni_client,
+        ]
         seen: set[int] = set()
         for client in closeables:
             if client is None or id(client) in seen or not hasattr(client, "close"):

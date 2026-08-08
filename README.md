@@ -233,6 +233,13 @@ browser. UI changes take effect immediately for existing sessions;
 settings are stored in a local permission-restricted file and environment variables
 can still provide startup defaults.
 
+Each settings request is serialized and applied transactionally across search, main
+LLM, ASR, live-audio, and resume-LLM clients. Validation or local persistence
+failure restores the previous runtime configuration. The resume structuring model
+initially reuses the main LLM, but its first dedicated UI update creates a separate
+client so changing resume extraction cannot silently move the primary reasoning
+endpoint.
+
 Runtime secrets are not written to SQLite, returned by the API, or included in the
 Debug Console. A platform keychain or external secret manager can replace the local
 settings store later without changing the settings API.

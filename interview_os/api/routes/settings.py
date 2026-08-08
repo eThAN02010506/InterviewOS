@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,6 +15,7 @@ from interview_os.tools.asr import ASRClient
 from interview_os.tools.web_search import SearchProviderManager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class SearchSettingsUpdate(BaseModel):
@@ -64,6 +66,44 @@ class SettingsUpdate(BaseModel):
     persist: bool = True
 
 
+def _updated_snapshot(current: dict, update: BaseModel) -> dict:
+    """Merge non-null UI fields without changing the live client."""
+    proposed = dict(current)
+    proposed.update(
+        {key: value for key, value in update.model_dump().items() if value is not None}
+    )
+    return proposed
+
+
+async def _restore_runtime_settings(request: Request, snapshots: dict) -> None:
+    """Best-effort rollback for a settings transaction that did not commit."""
+    search: SearchProviderManager = request.app.state.search_manager
+    llm = request.app.state.llm_client
+    asr: ASRClient = request.app.state.asr_client
+    omni = getattr(request.app.state, "omni_client", None)
+    service = request.app.state.interview_service
+    original_resume = snapshots["resume_client"]
+    current_resume = getattr(request.app.state, "resume_llm_client", None)
+
+    search.configure(**snapshots["search"])
+    if isinstance(llm, LocalLLMClient):
+        await llm.reconfigure(**snapshots["llm"])
+    asr.configure(**snapshots["asr"])
+    asr.api_key = snapshots["asr"]["api_key"]
+    if omni is not None and snapshots["live_audio"] is not None:
+        omni.configure(**snapshots["live_audio"])
+        omni.api_key = snapshots["live_audio"]["api_key"]
+        service.set_live_audio_mode(snapshots["live_mode"])
+        omni.mode = snapshots["live_mode"]
+    if current_resume is not original_resume:
+        if current_resume is not None and hasattr(current_resume, "close"):
+            await current_resume.close()
+        request.app.state.resume_llm_client = original_resume
+        service.resume_llm_client = original_resume
+    elif isinstance(original_resume, LocalLLMClient) and original_resume is not llm:
+        await original_resume.reconfigure(**snapshots["resume_llm"])
+
+
 @router.get("")
 async def get_settings(request: Request):
     search: SearchProviderManager = request.app.state.search_manager
@@ -91,47 +131,81 @@ async def update_settings(payload: SettingsUpdate, request: Request):
     asr: ASRClient = request.app.state.asr_client
     store: LocalSettingsStore = request.app.state.settings_store
     omni = getattr(request.app.state, "omni_client", None)
-    try:
-        if payload.search:
-            search.configure(**payload.search.model_dump())
-        if payload.llm:
-            if not isinstance(llm, LocalLLMClient):
-                raise ValueError("The injected LLM client cannot be configured from the UI")
-            await llm.reconfigure(**payload.llm.model_dump())
-        if payload.asr:
-            asr.configure(**payload.asr.model_dump())
-        if payload.live_audio:
-            if omni is None:
-                raise ValueError("Live audio direct is not configured")
-            omni.configure(**payload.live_audio.model_dump())
-            service = request.app.state.interview_service
-            if payload.live_audio.mode is not None:
-                try:
+    async with request.app.state.settings_lock:
+        resume_llm = getattr(request.app.state, "resume_llm_client", None)
+        snapshots = {
+            "search": search.secret_snapshot(),
+            "llm": llm.secret_snapshot() if isinstance(llm, LocalLLMClient) else None,
+            "asr": asr.secret_snapshot(),
+            "live_audio": omni.secret_snapshot() if omni is not None else None,
+            "live_mode": request.app.state.interview_service.live_audio_mode,
+            "resume_client": resume_llm,
+            "resume_llm": (
+                resume_llm.secret_snapshot()
+                if isinstance(resume_llm, LocalLLMClient)
+                else None
+            ),
+        }
+        try:
+            if payload.search:
+                search.configure(**payload.search.model_dump())
+            if payload.llm:
+                if not isinstance(llm, LocalLLMClient):
+                    raise ValueError("The injected LLM client cannot be configured from the UI")
+                await llm.reconfigure(**payload.llm.model_dump())
+            if payload.asr:
+                asr.configure(**payload.asr.model_dump())
+            if payload.live_audio:
+                if omni is None:
+                    raise ValueError("Live audio direct is not configured")
+                omni.configure(**payload.live_audio.model_dump())
+                service = request.app.state.interview_service
+                if payload.live_audio.mode is not None:
                     service.set_live_audio_mode(payload.live_audio.mode)
                     omni.mode = payload.live_audio.mode
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if payload.resume_llm:
-            resume_llm = getattr(request.app.state, "resume_llm_client", None)
-            if not isinstance(resume_llm, LocalLLMClient):
-                raise ValueError("Resume LLM client cannot be configured from the UI")
-            await resume_llm.reconfigure(**payload.resume_llm.model_dump())
-            service = request.app.state.interview_service
-            service.resume_llm_client = resume_llm
-        if payload.persist:
-            saved = {"search": search.secret_snapshot()}
-            if isinstance(llm, LocalLLMClient):
-                saved["llm"] = llm.secret_snapshot()
-            saved["asr"] = asr.secret_snapshot()
-            if omni is not None:
-                saved["live_audio"] = omni.secret_snapshot()
-            resume_llm = getattr(request.app.state, "resume_llm_client", None)
-            if isinstance(resume_llm, LocalLLMClient):
-                saved["resume_llm"] = resume_llm.secret_snapshot()
-            store.save(saved)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return await get_settings(request)
+            if payload.resume_llm:
+                resume_llm = getattr(request.app.state, "resume_llm_client", None)
+                if not isinstance(resume_llm, LocalLLMClient):
+                    raise ValueError("Resume LLM client cannot be configured from the UI")
+                service = request.app.state.interview_service
+                if resume_llm is llm:
+                    # The startup default aliases resume structuring to the main
+                    # model. A dedicated UI update must split that alias instead
+                    # of silently moving the primary reasoning endpoint too.
+                    config = _updated_snapshot(llm.secret_snapshot(), payload.resume_llm)
+                    resume_llm = LocalLLMClient(**config)
+                    request.app.state.resume_llm_client = resume_llm
+                else:
+                    await resume_llm.reconfigure(**payload.resume_llm.model_dump())
+                service.resume_llm_client = resume_llm
+            if payload.persist:
+                saved = {"search": search.secret_snapshot()}
+                if isinstance(llm, LocalLLMClient):
+                    saved["llm"] = llm.secret_snapshot()
+                saved["asr"] = asr.secret_snapshot()
+                if omni is not None:
+                    saved["live_audio"] = omni.secret_snapshot()
+                resume_llm = getattr(request.app.state, "resume_llm_client", None)
+                if isinstance(resume_llm, LocalLLMClient):
+                    saved["resume_llm"] = resume_llm.secret_snapshot()
+                store.save(saved)
+        except Exception as exc:
+            try:
+                await _restore_runtime_settings(request, snapshots)
+            except Exception as restore_exc:  # noqa: BLE001 - preserve original error
+                logger.error("Settings rollback failed (%s)", type(restore_exc).__name__)
+            if isinstance(exc, HTTPException):
+                raise
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if isinstance(exc, OSError):
+                raise HTTPException(
+                    status_code=500, detail="设置保存失败，运行时配置未更改"
+                ) from exc
+            raise
+        # Build the response before releasing the transaction lock so another
+        # settings request cannot make this response describe a later commit.
+        return await get_settings(request)
 
 
 @router.post("/probe-live-audio")

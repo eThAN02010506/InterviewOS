@@ -104,6 +104,14 @@ stored outside SQLite in a permission-restricted, atomically replaced local JSON
 file; environment variables remain startup defaults. Settings responses and Debug
 events expose only configuration status, never secret values.
 
+Updates acquire one application-level async lock and snapshot every mutable provider
+before applying changes. Any validation or persistence error triggers a best-effort
+rollback of all providers, preventing concurrent requests or a late ASR error from
+leaving an earlier search/LLM mutation active. The resume client aliases the main
+LLM only until its first dedicated configuration; that update constructs a separate
+client, atomically swaps the service reference, and participates in rollback and
+shutdown like every other transport.
+
 ## Local Web Application
 
 The product UI is a dependency-free static application served by FastAPI from the
