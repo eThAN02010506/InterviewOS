@@ -4,9 +4,10 @@ from uuid import uuid4
 
 import pytest
 
-from interview_os.core.state import LiveInterviewStatus, MockSessionStatus
+from interview_os.core.state import InterviewQuestion, LiveInterviewStatus, MockSessionStatus
 from interview_os.database.storage import Storage
 from interview_os.services.interview_service import (
+    CandidateSessionStateError,
     EvaluationStateError,
     InterviewService,
     MockInterviewStateError,
@@ -436,6 +437,59 @@ async def test_autopilot_clears_review_and_employer_data_when_resume_changes(tmp
     assert changed.past_employer_sources == []
     assert changed.past_employer_block == ""
     assert "Candidate A" not in changed.candidate_evidence_context()
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_rerun_is_blocked_after_real_interview_activity(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'candidate-lifecycle.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    state = await service.run_candidate_prep(
+        session_id, resume_text="Candidate A", job_description="Platform", company_name="Example"
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, question.id, "Preserved answer")
+    response_id = state.mock_session.responses[0].id
+
+    with pytest.raises(CandidateSessionStateError, match="请新建会话"):
+        await service.run_candidate_prep(
+            session_id,
+            resume_text="Candidate B",
+            job_description="Different role",
+            company_name="Other Company",
+        )
+
+    preserved = await service.get_state(session_id)
+    assert preserved.mock_session.responses[0].id == response_id
+    assert preserved.evidence
+    assert preserved.candidate.raw_resume_text == "Candidate A"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_transition_invalidates_stale_outputs_before_answers(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'candidate-reset.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.candidate.raw_resume_text = "Candidate A"
+    state.strategy.summary = "Old strategy"
+    state.mock_interview.questions = [InterviewQuestion(question="Old question")]
+    state.evaluation.summary = "Old report"
+    await service._persist(session_id, state)
+    runtime = await service._get_runtime(session_id)
+
+    await service._prepare_resume_transition(session_id, runtime, "Candidate B")
+
+    reset = await service.get_state(session_id)
+    assert reset.candidate.raw_resume_text == "Candidate B"
+    assert reset.strategy.summary == ""
+    assert reset.mock_interview.questions == []
+    assert reset.evaluation.summary == ""
+    assert reset.resume_review.claims == []
     await storage.close()
 
 

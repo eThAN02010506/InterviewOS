@@ -34,6 +34,7 @@ from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.models.omni_client import OmniAudioClient
 from interview_os.services.interview_service import (
+    CandidateSessionStateError,
     EvaluationStateError,
     InterviewService,
     LiveInterviewStateError,
@@ -233,6 +234,10 @@ def create_app(
     @application.exception_handler(ResumeReviewStateError)
     async def invalid_resume_review(_: Request, exc: ResumeReviewStateError):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @application.exception_handler(CandidateSessionStateError)
+    async def invalid_candidate_session(_: Request, exc: CandidateSessionStateError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @application.exception_handler(LiveInterviewStateError)
     async def invalid_live_interview(_: Request, exc: LiveInterviewStateError):

@@ -79,6 +79,11 @@ The system is built around a few product rules:
   claims. A directly pasted resume with no review record is labelled as unverified
   candidate self-report and may guide preparation, but cannot become evaluation
   evidence.
+- A session is one candidate evidence boundary. Before any real answer, transcript,
+  evidence, or recording exists, changing the resume invalidates every derived
+  strategy, blueprint, mock plan, and report. After interview activity exists, the
+  service refuses resume replacement or workflow regeneration and asks for a new
+  session rather than silently deleting or mixing candidate data.
 - JD quality matters. A title-only JD is treated as insufficient context, and the
   UI should ask for responsibilities, requirements, and team background while
   separating explicit requirements from AI assumptions. Inferred requirements can

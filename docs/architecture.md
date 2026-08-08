@@ -47,6 +47,13 @@ Free-form LLM text is never treated as a completed workflow result. A missing or
 invalid required result moves `WorkflowProgress` to `failed` with the current step
 and error retained in session state.
 
+Candidate input transitions are centralized before resume analysis and both workflow
+variants. With no substantive interview activity, a new resume atomically invalidates
+all candidate-derived strategy, blueprint, mock, live, evidence, and report state.
+Once answers, transcript segments, evidence, or a recording exists, regeneration is
+rejected with a conflict and the caller must create a new session. Slow document
+parsing and optional LLM structuring run outside the session mutation lock.
+
 ## Controlled Autopilot
 
 `AutopilotState` is the control plane above the reusable domain workflows. It records

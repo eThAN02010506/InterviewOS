@@ -117,6 +117,10 @@ class ResumeReviewStateError(RuntimeError):
     pass
 
 
+class CandidateSessionStateError(RuntimeError):
+    pass
+
+
 class LiveInterviewStateError(RuntimeError):
     pass
 
@@ -1144,6 +1148,8 @@ class InterviewService:
         return None
 
     async def analyze_resume(self, session_id: str, text: str) -> Message:
+        runtime = await self._get_runtime(session_id)
+        await self._prepare_resume_transition(session_id, runtime, text)
         return await self._run(session_id, "candidate_agent", text)
 
     async def upload_resume(
@@ -1155,14 +1161,18 @@ class InterviewService:
         structure: str = "rules",
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
+        # Parsing and optional LLM structuring are slow and do not touch session
+        # state, so keep them outside the per-session mutation lock.
+        text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)
+        structuring_client = self.resume_llm_client or self.llm_client
+        if structure == "llm" and structuring_client is not None:
+            sections = await structure_resume_with_llm(text, structuring_client)
+            if sections:
+                review.structured = sections
+                review.structured_by = "llm"
         async with self._lock_for(session_id):
-            text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)
-            structuring_client = self.resume_llm_client or self.llm_client
-            if structure == "llm" and structuring_client is not None:
-                sections = await structure_resume_with_llm(text, structuring_client)
-                if sections:
-                    review.structured = sections
-                    review.structured_by = "llm"
+            self._assert_candidate_reset_allowed(runtime.state)
+            self._reset_candidate_outputs(runtime.state)
             # A newly uploaded document replaces all candidate-derived state.
             # Keeping the previous parsed profile would mix two resumes before
             # the candidate agent has a chance to analyze the new document.
@@ -1181,6 +1191,64 @@ class InterviewService:
                 f"structured={review.structured_by}",
             )
             return runtime.state
+
+    @staticmethod
+    def _has_substantive_interview_activity(state: InterviewState) -> bool:
+        """Whether resetting candidate inputs would discard real interview data."""
+        return bool(
+            state.mock_session.responses
+            or state.live_interview.segments
+            or state.live_interview_records
+            or state.evidence
+            or state.live_interview.audio_file
+        )
+
+    @classmethod
+    def _assert_candidate_reset_allowed(cls, state: InterviewState) -> None:
+        if cls._has_substantive_interview_activity(state):
+            raise CandidateSessionStateError(
+                "当前会话已有面试回答、转写、证据或录音；请新建会话后再更换简历或重新生成方案"
+            )
+
+    @staticmethod
+    def _reset_candidate_outputs(state: InterviewState) -> None:
+        """Invalidate every artifact derived from candidate input before regeneration."""
+        state.entity_resolutions = []
+        state.fact_cards = []
+        state.past_employer_sources = []
+        state.past_employer_research_status = "not_requested"
+        state.past_employer_block = ""
+        state.strategy = InterviewStrategy()
+        state.blueprint = InterviewBlueprint()
+        state.mock_interview = MockInterviewPlan()
+        state.mock_session = MockInterviewSession()
+        state.evaluation = EvaluationReport()
+        state.feedback = FeedbackReport()
+        state.live_interview_records = []
+        state.live_interview = LiveInterviewSession()
+        state.workflow = WorkflowProgress()
+        state.autopilot = AutopilotState()
+        state.evidence = []
+        state.evaluated_competencies = {}
+        state.missing_signals = []
+        state.conversation_history = []
+        state.current_stage = InterviewStage.NOT_STARTED
+        state.next_action = "Regenerate candidate-dependent interview artifacts"
+
+    async def _prepare_resume_transition(
+        self, session_id: str, runtime: AgentRuntime, resume_text: str
+    ) -> None:
+        """Safely invalidate stale derived state before a workflow consumes a resume."""
+        async with self._lock_for(session_id):
+            self._assert_candidate_reset_allowed(runtime.state)
+            same_resume = runtime.state.candidate.raw_resume_text.strip() == resume_text.strip()
+            self._reset_candidate_outputs(runtime.state)
+            if not same_resume:
+                runtime.state.candidate = CandidateProfile(raw_resume_text=resume_text)
+                runtime.state.resume_review = ResumeReview()
+            else:
+                runtime.state.candidate.raw_resume_text = resume_text
+            await self._persist(session_id, runtime.state)
 
     async def update_resume_claim(
         self,
@@ -1501,8 +1569,11 @@ class InterviewService:
         interviewer_position: str = "",
         interviewer_public_info: str = "",
         authorized_public_research: bool = False,
+        prepare_resume_transition: bool = True,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
+        if prepare_resume_transition:
+            await self._prepare_resume_transition(session_id, runtime, resume_text)
         steps: list[tuple[str, str]] = [
             ("candidate_agent", resume_text),
             ("job_agent", job_description),
@@ -1545,8 +1616,11 @@ class InterviewService:
         company_name: str,
         company_context: str = "",
         authorized_public_research: bool = False,
+        prepare_resume_transition: bool = True,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
+        if prepare_resume_transition:
+            await self._prepare_resume_transition(session_id, runtime, resume_text)
         steps = [
             ("candidate_agent", resume_text),
             ("job_agent", job_description),
@@ -1923,6 +1997,7 @@ class InterviewService:
         runtime = await self._get_runtime(session_id)
         now = datetime.now(timezone.utc)
         async with self._lock_for(session_id):
+            self._assert_candidate_reset_allowed(runtime.state)
             previous_candidate = runtime.state.candidate
             same_resume = previous_candidate.raw_resume_text.strip() == resume_text.strip()
             runtime.state.candidate = (
@@ -1955,9 +2030,12 @@ class InterviewService:
             runtime.state.mock_session = MockInterviewSession()
             runtime.state.evaluation = EvaluationReport()
             runtime.state.feedback = FeedbackReport()
+            runtime.state.live_interview_records = []
+            runtime.state.live_interview = LiveInterviewSession()
             runtime.state.evidence.clear()
             runtime.state.evaluated_competencies.clear()
             runtime.state.missing_signals.clear()
+            runtime.state.conversation_history.clear()
             runtime.state.current_stage = InterviewStage.NOT_STARTED
             runtime.state.autopilot = AutopilotState(
                 enabled=True,
@@ -1979,6 +2057,7 @@ class InterviewService:
                     company_context=company_context,
                     interviewer_name=interviewer_name,
                     interviewer_position=interviewer_position,
+                    prepare_resume_transition=False,
                 )
                 state = await self.start_mock_interview(session_id)
                 state.autopilot.completed_actions = [
@@ -1999,6 +2078,7 @@ class InterviewService:
                     job_description=job_description,
                     company_name=company_name,
                     company_context=company_context,
+                    prepare_resume_transition=False,
                 )
                 state.autopilot.completed_actions = [
                     "resume_analysis",
