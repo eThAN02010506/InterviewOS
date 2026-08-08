@@ -159,7 +159,13 @@ plus job-competency templates, and a background refill keeps ~3 questions
 cached — when fewer than 3 remain, 2 more are generated (grounded in the
 resume and recent answers). The interview ends only when the interviewer
 chooses 结束面试. During the interview 上一题 / 下一题 / 结束面试 stay
-available so the interviewer can navigate freely.
+available so the interviewer can navigate freely. At a pool boundary, a unique
+deterministic question is inserted immediately while the model refill continues,
+so a slow, failed, or duplicate-only refill cannot leave an active interview
+without a current question. An answered question can only be submitted again
+through explicit retry; the service replaces its response and linked evidence
+instead of silently creating duplicates. Process-local refill flags are reset
+when a runtime is restored after restart.
 
 Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
 {session_id}/transcribe` runs the audio through the configured LAN ASR and
@@ -170,6 +176,8 @@ the answer box, and lets the candidate edit before submitting.
 Each answer receives validated 0–1 scores for content, technical depth, structure,
 and impact. The average becomes evidence confidence for the question competency;
 observed and missing signals remain attached to the persisted answer and evidence.
+If no LLM is configured, or the optional per-question framework pass is incomplete,
+every question receives a deterministic candidate-aware answer framework.
 
 When evidence is available, `POST /api/evaluations/{session_id}` runs the final
 evaluation and feedback workflow. Candidate UI presents strengths, improvements,

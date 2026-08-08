@@ -46,6 +46,15 @@ class EmptyPlanLLM:
         return '{"questions":[]}'
 
 
+@pytest.mark.asyncio
+async def test_mock_agent_without_llm_backfills_every_answer_framework():
+    state = InterviewState()
+    state.job.competencies = ["系统设计"]
+    await MockInterviewAgent().execute(state)
+    assert state.mock_interview.questions
+    assert all(question.answer_framework for question in state.mock_interview.questions)
+
+
 class HallucinatedCandidateLLM:
     async def chat(self, messages, **kwargs):
         return (

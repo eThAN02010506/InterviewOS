@@ -155,30 +155,51 @@ class MockInterviewAgent(Agent):
         anything the LLM misses so no question ships empty.
         """
         pending = [q for q in state.mock_interview.questions if not q.answer_framework]
-        if not pending or self.llm_client is None:
+        if not pending:
             return
-        employer_block = (
-            f"\n{state.past_employer_block}" if state.past_employer_block else ""
-        )
-        numbered = "\n".join(
-            f"{i}. [{q.competency}] {q.question}" for i, q in enumerate(pending)
-        )
-        prompt = MOCK_FRAMEWORK_PROMPT.format(
-            candidate_background=(
-                state.candidate_evidence_context(structure_required=True) + employer_block
-            ),
-            job_requirement=state.job_review.model_dump_json(),
-            questions=numbered,
-        )
-        raw = await self.think(prompt, context=state.summary())
-        parsed = self._parse_structured(raw, FrameworkMap)
-        if parsed is not None:
-            for index, framework in parsed.index().items():
-                if 0 <= index < len(pending) and framework:
-                    pending[index].answer_framework = framework.strip()
+        if self.llm_client is not None:
+            employer_block = (
+                f"\n{state.past_employer_block}" if state.past_employer_block else ""
+            )
+            numbered = "\n".join(
+                f"{i}. [{q.competency}] {q.question}" for i, q in enumerate(pending)
+            )
+            prompt = MOCK_FRAMEWORK_PROMPT.format(
+                candidate_background=(
+                    state.candidate_evidence_context(structure_required=True) + employer_block
+                ),
+                job_requirement=state.job_review.model_dump_json(),
+                questions=numbered,
+            )
+            raw = await self.think(prompt, context=state.summary())
+            parsed = self._parse_structured(raw, FrameworkMap)
+            if parsed is not None:
+                for index, framework in parsed.index().items():
+                    if 0 <= index < len(pending) and framework:
+                        pending[index].answer_framework = framework.strip()
         for q in state.mock_interview.questions:
             if not q.answer_framework:
                 q.answer_framework = self.deterministic_framework(state, q.competency)
+
+    @classmethod
+    def deterministic_refill_question(
+        cls, state: InterviewState, *, ordinal: int
+    ) -> InterviewQuestion:
+        """Create one unique local question when the async refill has not landed."""
+        competencies = state.job.competencies or ["岗位核心能力"]
+        competency = competencies[(ordinal - 1) % len(competencies)]
+        return InterviewQuestion(
+            question=(
+                f"继续深入「{competency}」：请补充第 {ordinal} 个不同的真实案例，"
+                "说明你的个人行动、关键取舍和可验证结果。"
+            ),
+            competency=competency,
+            rationale="后台补题尚未完成时的本地连续面试兜底",
+            strong_signals=["具体情境", "个人行动", "关键取舍", "可验证结果"],
+            follow_ups=["这个案例与前面的案例有什么不同？"],
+            answer_framework=cls.deterministic_framework(state, competency),
+            source="refill",
+        )
 
     async def generate_mock_questions(
         self,

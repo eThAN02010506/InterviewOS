@@ -22,10 +22,10 @@ def _response(session_id: str, state, service: InterviewService) -> MockSessionR
     index = session.current_question_index
     pending = max(0, len(questions) - index)
     retry_available = False
-    if session.status.value == "active" and session.responses and question is not None:
-        last = session.responses[-1]
-        retry_available = (
-            last.question_id == question.id and not session.pending_follow_up
+    if session.status.value == "active" and question is not None:
+        retry_available = any(
+            item.question_id == question.id and item.question == question.question
+            for item in session.responses
         )
     return MockSessionResponse(
         session_id=session_id,

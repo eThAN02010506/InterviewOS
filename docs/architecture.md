@@ -62,15 +62,19 @@ remain attributed, and absence from the public web is not treated as falsehood.
 
 ## Mock Interview State Machine
 
-`MockInterviewSession` transitions from `idle` to `active` to `completed`. Only the
-current question ID can be answered, preventing duplicate or out-of-order evidence.
-`CoachAgent` returns a bounded `AnswerEvaluation`; its four-score average becomes
-the confidence of a competency-specific `Evidence` record. Invalid coaching output
-does not advance the question index, so the client can safely retry.
+`MockInterviewSession` transitions from `idle` to `active` to `completed`. Its
+question pool is append-only and refilled in bounded batches while the current
+question index acts as a navigation cursor. Only the current question ID can be
+answered; an already answered question requires explicit retry, which replaces its
+response and linked evidence. `CoachAgent` returns a bounded `AnswerEvaluation`;
+its four-score average becomes evidence confidence.
 
-The session stores one response and one evidence item per answered question, giving
-O(q) time and space over a mock plan of q questions. No transcript or prompt history
-is duplicated into the response record.
+Model refills run outside the session lock and append under the lock. A unique local
+question bridges an exhausted pool immediately, and persisted in-flight flags are
+cleared when a runtime is restored because process-local tasks cannot survive a
+restart. State grows linearly with the number of questions actually visited and is
+bounded operationally by the user-controlled interview duration rather than by an
+initial fixed plan.
 
 ## Final Evaluation
 

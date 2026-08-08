@@ -825,3 +825,79 @@ async def test_previous_mock_question_navigates_back(tmp_path):
     with pytest.raises(MockInterviewStateError):
         await service.previous_mock_question(session_id)
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_answered_previous_question_requires_explicit_retry(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'prev-retry.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    first = service.current_mock_question(state)
+    await service.submit_mock_answer(session_id, first.id, "First answer")
+    # First /next offers a follow-up; second /next skips it and reaches question 2.
+    await service.advance_mock_interview(session_id)
+    state = await service.advance_mock_interview(session_id)
+    second = service.current_mock_question(state)
+    await service.submit_mock_answer(session_id, second.id, "Second answer")
+    state = await service.previous_mock_question(session_id)
+    assert service.current_mock_question(state).id == first.id
+
+    with pytest.raises(MockInterviewStateError, match="retry=true"):
+        await service.submit_mock_answer(session_id, first.id, "Duplicate answer")
+    state = await service.submit_mock_answer(
+        session_id, first.id, "Replacement answer", retry=True
+    )
+    first_responses = [item for item in state.mock_session.responses if item.question_id == first.id]
+    assert len(first_responses) == 1
+    assert first_responses[0].answer == "Replacement answer"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_mock_pool_gets_immediate_unique_fallback(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'pool-boundary.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    original_count = len(state.mock_interview.questions)
+    state.mock_session.current_question_index = original_count - 1
+    await service._persist(session_id, state)
+
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.current_question_index == original_count
+    fallback = service.current_mock_question(state)
+    assert fallback is not None
+    assert fallback.answer_framework
+    assert f"第 {original_count + 1} 个" in fallback.question
+    await service._background.flush()
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reload_clears_orphaned_mock_refill_flag(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'refill-restart.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.mock_session.refill_in_flight = True
+    await service._persist(session_id, state)
+
+    restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    loaded = await restored.get_state(session_id)
+    assert loaded.mock_session.refill_in_flight is False
+    await storage.close()

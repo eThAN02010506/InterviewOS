@@ -463,9 +463,9 @@ function renderMock() {
   $('mock-progress').textContent=''; $('mock-status').textContent=session?.status==='active'?'面试进行中':session?.status==='completed'?'本轮已完成':'准备开始';
   const current=session?.status==='active'?plan[index]:null; const questionText=session?.pending_follow_up||current?.question; $('start-mock').style.display=session?.status==='idle'||!session?'inline-block':'none';
   const framework=$('mock-framework'); const frameworkText=$('mock-framework-text');
-  const lastResp = session?.responses?.at(-1);
-  const justAnswered = !!(current && lastResp && lastResp.question_id === current.id && !session?.pending_follow_up);
-  const currentAnswered = current && lastResp && lastResp.question_id === current.id;
+  const currentResponse = current ? [...(session?.responses||[])].reverse().find(response => response.question_id === current.id && response.question === questionText) : null;
+  const justAnswered = !!currentResponse;
+  const currentAnswered = !!currentResponse;
   $('answer-form').style.display = current && !justAnswered ? 'block' : 'none';
   if (framework) { const hasFw = current && current.answer_framework && !justAnswered; framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
@@ -483,8 +483,8 @@ function renderMock() {
     actions.classList.toggle('hidden', !isActive);
     if (isActive && retryBtn) retryBtn.disabled = false;
   }
-  const last=session?.responses?.at(-1); const node=$('coach-result');
-  const showEval = last && current && last.question_id === current.id;
+  const last=currentResponse; const node=$('coach-result');
+  const showEval = !!last;
   if (!showEval) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
   const e=last.evaluation; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div>${list('改进建议',e.feedback)}<div class="result-block"><h4>优化回答</h4><p>${esc(e.improved_answer)}</p></div>`;
 }

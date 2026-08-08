@@ -1591,31 +1591,34 @@ class InterviewService:
                 raise MockInterviewStateError("Answer does not match the current question")
             asked_question = mock_session.pending_follow_up or question.question
 
-            if retry:
+            prior = next(
+                (
+                    item
+                    for item in reversed(mock_session.responses)
+                    if item.question_id == question.id and item.question == asked_question
+                ),
+                None,
+            )
+            if prior is not None and not retry:
+                raise MockInterviewStateError(
+                    "This question was already answered; submit with retry=true to replace it"
+                )
+
+            if retry and prior is not None:
                 # Drop the previous answer for this question and its linked
                 # evidence so a retry replaces it instead of duplicating.
-                prior = next(
-                    (
-                        item
-                        for item in reversed(mock_session.responses)
-                        if item.question_id == question.id
-                        and item.question == asked_question
-                    ),
-                    None,
-                )
-                if prior is not None:
-                    mock_session.responses = [
-                        item for item in mock_session.responses if item.id != prior.id
-                    ]
-                    runtime.state.evidence = [
-                        item
-                        for item in runtime.state.evidence
-                        if not (
-                            item.source == EvidenceSource.MOCK_INTERVIEW
-                            and item.source_record_id is not None
-                            and item.source_record_id == prior.id
-                        )
-                    ]
+                mock_session.responses = [
+                    item for item in mock_session.responses if item.id != prior.id
+                ]
+                runtime.state.evidence = [
+                    item
+                    for item in runtime.state.evidence
+                    if not (
+                        item.source == EvidenceSource.MOCK_INTERVIEW
+                        and item.source_record_id is not None
+                        and item.source_record_id == prior.id
+                    )
+                ]
 
             record = MockAnswerRecord(
                 question_id=question.id,
@@ -1700,6 +1703,16 @@ class InterviewService:
                     await self._persist(session_id, runtime.state)
                     return runtime.state
                 mock_session.current_question_index += 1
+            if mock_session.current_question_index >= len(questions):
+                # The model refill stays asynchronous, but an active session must
+                # never expose an empty current question at the pool boundary.
+                agent = runtime.get_agent("mock_interview_agent")
+                if agent is not None and hasattr(agent, "deterministic_refill_question"):
+                    questions.append(
+                        agent.deterministic_refill_question(  # type: ignore[union-attr]
+                            runtime.state, ordinal=len(questions) + 1
+                        )
+                    )
             runtime.state.next_action = "Answer the next mock interview question"
             await self._maybe_refill_mock_questions(session_id, runtime, mock_session, questions)
             await self._persist(session_id, runtime.state)
@@ -1782,12 +1795,14 @@ class InterviewService:
             if mock_session.status == MockSessionStatus.ACTIVE and new_questions:
                 existing_ids = {q.id for q in current.state.mock_interview.questions}
                 existing_texts = {q.question.strip() for q in current.state.mock_interview.questions}
+                added = 0
                 for q in new_questions:
                     if q.id not in existing_ids and q.question.strip() not in existing_texts:
                         current.state.mock_interview.questions.append(q)
                         existing_texts.add(q.question.strip())
+                        added += 1
                 self._record_debug(
-                    "mock_refill_completed", session_id, detail=f"added={len(new_questions)}"
+                    "mock_refill_completed", session_id, detail=f"added={added}"
                 )
             await self._persist(session_id, current.state)
 
@@ -2675,6 +2690,8 @@ class InterviewService:
             self.llm_client, self.search_provider, self.debug_events, session_id
         )
         runtime.state = InterviewState.model_validate(state)
+        # In-process refill tasks do not survive a service restart.
+        runtime.state.mock_session.refill_in_flight = False
         if not runtime.state.job_review.requirements and (
             runtime.state.job.raw_description or runtime.state.job.title
         ):
