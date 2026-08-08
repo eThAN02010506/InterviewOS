@@ -1,6 +1,5 @@
 """Seed sample data for development."""
 import asyncio
-import json
 
 from interview_os.database.storage import Storage
 
