@@ -107,8 +107,9 @@ API additionally rejects non-loopback clients.
 `DebugEventStore` is an in-memory ring buffer with O(1) append and O(capacity)
 filtered reads. `AgentRuntime` records lifecycle timing without duplicating prompts.
 Debug endpoints are read-only except for a fixed `/models` connectivity probe and
-reject non-loopback clients. The console is observability, not a remote execution
-surface.
+reject non-loopback clients. Session lists, session details, and session-bound events
+are additionally filtered by the authenticated owner; localhost is not an authorization
+boundary. The console is observability, not a remote execution surface.
 
 ## Streaming Suggestions
 

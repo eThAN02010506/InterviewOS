@@ -113,9 +113,21 @@ def test_sessions_isolated_between_accounts(tmp_path):
         )
         # Production API rejects anonymous access before resolving any owner.
         assert client.get(f"/api/interviews/sessions/{sid}").status_code == 401
-        # The localhost debug console still sees every account's sessions.
+        # Debug is local-only but still account-scoped: Alice sees her session,
+        # while Bob cannot enumerate or inspect it.
         debug = client.get("/api/debug/sessions", headers=_auth(alice))
-        assert any(s["id"] == sid for s in debug.json()["sessions"])
+        assert [s["id"] for s in debug.json()["sessions"]] == [sid]
+        assert client.get("/api/debug/sessions", headers=_auth(bob)).json()["sessions"] == []
+        assert (
+            client.get(f"/api/debug/sessions/{sid}", headers=_auth(bob)).status_code
+            == 404
+        )
+        bob_sid = client.post(
+            "/api/interviews/sessions", json={}, headers=_auth(bob)
+        ).json()["id"]
+        alice_events = client.get("/api/debug/events", headers=_auth(alice)).json()["events"]
+        assert any(event["session_id"] == sid for event in alice_events)
+        assert all(event["session_id"] != bob_sid for event in alice_events)
 
 
 def test_invalid_token_rejected(tmp_path):
@@ -151,3 +163,12 @@ async def test_first_real_account_claims_legacy_sessions(tmp_path):
     await storage.save_session("another-legacy", {}, owner_id="local")
     assert await storage.get_session_state("another-legacy", owner_id=bob.id) is None
     await storage.close()
+
+
+def test_reserved_local_username_cannot_capture_legacy_identity(tmp_path):
+    with TestClient(_make_app(tmp_path)) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "local", "password": "pw-123456"},
+        )
+        assert response.status_code == 422

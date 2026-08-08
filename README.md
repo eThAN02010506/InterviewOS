@@ -31,8 +31,10 @@ password, hashed with PBKDF2) and sign in. Session data is isolated per account 
 an account only ever sees its own sessions, and a cross-account session lookup
 returns 404 rather than leaking existence. Existing sessions created before
 accounts existed are backfilled to a sentinel `local` owner; the first real account
-registered after upgrade atomically claims those legacy sessions. Business,
-settings, and localhost Debug APIs all require authentication. Tests can explicitly
+registered after upgrade atomically claims those legacy sessions (`local` is a
+reserved migration username and cannot be registered). Business, settings, and localhost Debug APIs all
+require authentication; Debug session/event views remain scoped to the signed-in
+account. Tests can explicitly
 set `INTERVIEW_OS_REQUIRE_AUTH=0`; the production default is enabled.
 
 The interviewer workspace includes a **Live Interview Copilot**. With explicit

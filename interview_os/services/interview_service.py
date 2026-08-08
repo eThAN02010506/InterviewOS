@@ -70,6 +70,7 @@ from interview_os.core.state import (
     QuestionSuggestionType,
     RequirementOrigin,
     ResumeClaimStatus,
+    ResumeReview,
     TranscriptSegment,
     TranscriptSpeaker,
     WorkflowProgress,
@@ -1159,8 +1160,14 @@ class InterviewService:
                 if sections:
                     review.structured = sections
                     review.structured_by = "llm"
-            runtime.state.candidate.raw_resume_text = text
+            # A newly uploaded document replaces all candidate-derived state.
+            # Keeping the previous parsed profile would mix two resumes before
+            # the candidate agent has a chance to analyze the new document.
+            runtime.state.candidate = CandidateProfile(raw_resume_text=text)
             runtime.state.resume_review = review
+            runtime.state.past_employer_sources = []
+            runtime.state.past_employer_research_status = "not_requested"
+            runtime.state.past_employer_block = ""
             runtime.state.next_action = "Review resume checks, then continue the interview workflow"
             await self._persist(session_id, runtime.state)
             self._record_debug(
@@ -1861,6 +1868,11 @@ class InterviewService:
                 if same_resume
                 else CandidateProfile(raw_resume_text=resume_text)
             )
+            if not same_resume:
+                # Confirmations belong to a specific resume. Reusing them after
+                # the document changes can leak one candidate's facts into the
+                # next candidate's prompts and public-employer research.
+                runtime.state.resume_review = ResumeReview()
             runtime.state.candidate.raw_resume_text = resume_text
             runtime.state.job = JobDescription()
             runtime.state.job_review = JobDescriptionReview()
@@ -1872,6 +1884,9 @@ class InterviewService:
             )
             runtime.state.entity_resolutions = []
             runtime.state.fact_cards = []
+            runtime.state.past_employer_sources = []
+            runtime.state.past_employer_research_status = "not_requested"
+            runtime.state.past_employer_block = ""
             runtime.state.strategy = InterviewStrategy()
             runtime.state.blueprint = InterviewBlueprint()
             runtime.state.mock_interview = MockInterviewPlan()

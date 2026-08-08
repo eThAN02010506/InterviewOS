@@ -11,7 +11,7 @@ from interview_os.api.dependencies import get_interview_service
 from interview_os.core.debug import DebugEventStore, DebugLevel
 from interview_os.core.state import InterviewState
 from interview_os.models.local_llm import LocalLLMClient
-from interview_os.services.interview_service import InterviewService
+from interview_os.services.interview_service import InterviewService, current_owner
 
 router = APIRouter()
 Service = Annotated[InterviewService, Depends(get_interview_service)]
@@ -41,36 +41,38 @@ async def debug_status(request: Request):
 @router.get("/events", dependencies=[Depends(require_local_request)])
 async def debug_events(
     request: Request,
+    service: Service,
     limit: int = Query(default=100, ge=1, le=500),
     level: DebugLevel | None = None,
     session_id: str = "",
 ):
     store: DebugEventStore = request.app.state.debug_events
+    owner = current_owner()
+    owned_session_ids = await service.storage.list_session_ids(owner_id=owner)
     return {
         "events": [
             event.model_dump(mode="json")
             for event in store.list_events(limit=limit, level=level, session_id=session_id)
+            if not event.session_id or event.session_id in owned_session_ids
         ]
     }
 
 
 @router.get("/sessions", dependencies=[Depends(require_local_request)])
 async def debug_sessions(service: Service, limit: int = Query(default=50, ge=1, le=200)):
-    # The debug console is the localhost ops surface: show every account's
-    # sessions, not just the current request's owner.
-    return {"sessions": await service.storage.list_sessions(limit, owner_id=None)}
+    return {
+        "sessions": await service.storage.list_sessions(limit, owner_id=current_owner())
+    }
 
 
 @router.get("/sessions/{session_id}", dependencies=[Depends(require_local_request)])
 async def debug_session(session_id: str, service: Service):
-    # Debug inspects any account's session directly (owner=None), bypassing the
-    # per-request owner scope. Missing sessions 404 rather than returning an
-    # empty state.
-    raw = await service.storage.get_session_state(session_id, owner_id=None)
+    owner = current_owner()
+    raw = await service.storage.get_session_state(session_id, owner_id=owner)
     if raw is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     state = InterviewState.model_validate(raw)
-    runtime = service.get_cached_runtime(session_id)
+    runtime = service.get_cached_runtime(session_id, owner_id=owner)
     messages = runtime.get_message_log() if runtime else []
     return {
         "state": {

@@ -401,6 +401,42 @@ async def test_autopilot_reuses_candidate_cache_only_for_identical_resume(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_autopilot_clears_review_and_employer_data_when_resume_changes(tmp_path):
+    from interview_os.core.state import ResumeClaim, ResumeClaimStatus
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-switch.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, CandidateFailingWorkflowLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.candidate.raw_resume_text = "candidate A"
+    state.resume_review.claims = [
+        ResumeClaim(
+            category="employment",
+            statement="Candidate A worked at SecretCo",
+            status=ResumeClaimStatus.CONFIRMED,
+        )
+    ]
+    state.past_employer_sources = [{"title": "SecretCo"}]
+    state.past_employer_research_status = "completed"
+    state.past_employer_block = "SecretCo public profile"
+    await service._persist(session_id, state)
+
+    changed = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="candidate B",
+        job_description="Recruiting Manager",
+        company_name="Example",
+    )
+
+    assert changed.resume_review.claims == []
+    assert changed.past_employer_sources == []
+    assert changed.past_employer_block == ""
+    assert "Candidate A" not in changed.candidate_evidence_context()
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_workflow_records_progress(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'failed.db'}")
     await storage.init_db()

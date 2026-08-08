@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from interview_os.database.schema import User
+from interview_os.database.schema import LEGACY_OWNER, User
 from interview_os.database.storage import verify_password
 
 router = APIRouter()
@@ -41,6 +41,8 @@ async def register(request: Request, body: AuthRequest) -> AuthResponse:
     username = body.username.strip()
     if not username:
         raise HTTPException(status_code=422, detail="用户名不能为空")
+    if username == LEGACY_OWNER:
+        raise HTTPException(status_code=422, detail="该用户名为系统迁移保留名称")
     existing = await storage.get_user_by_username(username)
     if existing is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")

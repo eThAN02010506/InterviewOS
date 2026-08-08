@@ -161,6 +161,14 @@ class Storage:
                 for record in result.scalars()
             ]
 
+    async def list_session_ids(self, *, owner_id: str) -> set[str]:
+        """Return all session IDs for one owner for authorization filtering."""
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(InterviewSession.id).where(InterviewSession.owner_id == owner_id)
+            )
+            return set(result.scalars())
+
     async def save_evidence(self, session_id: str, evidence: dict[str, Any]) -> None:
         async with self.session_factory() as session:
             record = EvidenceRecord(session_id=session_id, **evidence)
@@ -170,6 +178,8 @@ class Storage:
     # ---- auth -------------------------------------------------------------
 
     async def create_user(self, username: str, password: str) -> User:
+        if username == LEGACY_OWNER:
+            raise ValueError("The username 'local' is reserved for legacy data migration")
         async with self.session_factory() as session:
             user = User(username=username, password_hash=hash_password(password))
             session.add(user)
