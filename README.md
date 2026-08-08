@@ -140,13 +140,17 @@ After candidate preparation, run an interactive mock interview:
 1. `POST /api/mock-interviews/{session_id}/start`
 2. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,
-   what structure to follow, and which signals to emphasize).
+   what structure to follow, and which signals to emphasize, generated per
+   question by the model).
 3. `POST /api/mock-interviews/{session_id}/answers` with its `question_id`,
    answer, and optional `retry: true` to re-answer the same question (replaces
    the previous evaluation instead of duplicating evidence).
 4. `POST /api/mock-interviews/{session_id}/next` advances to the next question
-   (or offers an evidence-seeking follow-up when signals are missing).
-5. `POST /api/mock-interviews/{session_id}/finish` ends the interview and runs
+   (or offers an evidence-seeking follow-up when signals are missing; advancing
+   may skip an unanswered question — the interviewer stays in control).
+5. `POST /api/mock-interviews/{session_id}/previous` goes back to the previous
+   question.
+6. `POST /api/mock-interviews/{session_id}/finish` ends the interview and runs
    the evaluation.
 
 The mock interview is **unlimited**: it never auto-completes after a fixed
@@ -154,7 +158,8 @@ question list. The question pool starts from the strategy's likely questions
 plus job-competency templates, and a background refill keeps ~3 questions
 cached — when fewer than 3 remain, 2 more are generated (grounded in the
 resume and recent answers). The interview ends only when the interviewer
-chooses 结束面试.
+chooses 结束面试. During the interview 上一题 / 下一题 / 结束面试 stay
+available so the interviewer can navigate freely.
 
 Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
 {session_id}/transcribe` runs the audio through the configured LAN ASR and
