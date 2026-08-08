@@ -52,8 +52,12 @@ async def debug_events(
     return {
         "events": [
             event.model_dump(mode="json")
-            for event in store.list_events(limit=limit, level=level, session_id=session_id)
-            if event.owner_id == owner
+            for event in store.list_events(
+                limit=limit,
+                level=level,
+                session_id=session_id,
+                owner_id=owner,
+            )
         ]
     }
 

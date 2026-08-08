@@ -129,8 +129,10 @@ filtered reads. `AgentRuntime` records lifecycle timing without duplicating prom
 Debug endpoints are read-only except for a fixed `/models` connectivity probe and
 reject non-loopback clients. Every event captures the request owner when it is written,
 including search and background events without a session ID; event reads, session
-lists, and session details are filtered by that owner. Localhost is not an authorization
-boundary. The console is observability, not a remote execution surface.
+lists, and session details are filtered by that owner. Owner/session/level predicates
+are evaluated before the result limit, preventing another account's newer events from
+starving the current account's diagnostics. Localhost is not an authorization boundary.
+The console is observability, not a remote execution surface.
 
 ## Streaming Suggestions
 

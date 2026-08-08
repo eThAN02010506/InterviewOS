@@ -163,7 +163,21 @@ def test_sessions_isolated_between_accounts(tmp_path):
                 detail="bob-private-query",
             )
         )
-        alice_events = client.get("/api/debug/events", headers=_auth(alice)).json()["events"]
+        # Newer Bob events must not consume Alice's result limit before owner
+        # filtering; Alice should still receive her newest own event.
+        for index in range(3):
+            client.app.state.debug_events.record(
+                DebugEvent(
+                    category="search",
+                    action=f"bob-noise-{index}",
+                    owner_id=bob_user_id,
+                )
+            )
+        alice_events = client.get(
+            "/api/debug/events?limit=1", headers=_auth(alice)
+        ).json()["events"]
+        assert len(alice_events) == 1
+        assert alice_events[0]["owner_id"] != bob_user_id
         assert any(event["session_id"] == sid for event in alice_events)
         assert all(event["session_id"] != bob_sid for event in alice_events)
         assert all(event["detail"] != "bob-private-query" for event in alice_events)

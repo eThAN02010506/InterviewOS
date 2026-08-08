@@ -72,6 +72,7 @@ class DebugEventStore:
         limit: int = 100,
         level: DebugLevel | None = None,
         session_id: str = "",
+        owner_id: str | None = None,
     ) -> list[DebugEvent]:
         bounded_limit = max(1, min(limit, self.capacity))
         with self._lock:
@@ -81,6 +82,7 @@ class DebugEventStore:
             for event in reversed(events)
             if (level is None or event.level == level)
             and (not session_id or event.session_id == session_id)
+            and (owner_id is None or event.owner_id == owner_id)
         )
         result: list[DebugEvent] = []
         for event in filtered:

@@ -35,6 +35,18 @@ def test_debug_store_captures_request_owner_for_sessionless_events():
     assert store.list_events()[0].owner_id == "account-a"
 
 
+def test_debug_owner_filter_is_applied_before_result_limit():
+    store = DebugEventStore(capacity=10)
+    store.record(DebugEvent(category="test", action="alice-old", owner_id="alice"))
+    for index in range(5):
+        store.record(
+            DebugEvent(category="test", action=f"bob-{index}", owner_id="bob")
+        )
+
+    events = store.list_events(limit=1, owner_id="alice")
+    assert [event.action for event in events] == ["alice-old"]
+
+
 def test_debug_console_rejects_remote_clients():
     request = Request(
         {

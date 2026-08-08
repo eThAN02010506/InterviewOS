@@ -254,6 +254,8 @@ accepted prompt and assembled completion are estimated locally. The console:
 
 - accepts requests only from localhost;
 - stores at most `DEBUG_EVENT_CAPACITY` events (500 by default);
+- filters by account, session, and level before applying the requested result limit,
+  so another account's event volume cannot hide the current account's diagnostics;
 - truncates message output and never exposes API keys;
 - does not provide arbitrary Python, shell, SQL, or prompt execution.
 
