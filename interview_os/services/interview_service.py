@@ -934,7 +934,9 @@ class InterviewService:
             runtime.state.next_action = "Interviewer reviews the audio-direct suggestion"
             await self._persist(session_id, runtime.state)
 
-    async def stream_live_suggestion(self, session_id: str) -> AsyncIterator[str]:
+    async def stream_live_suggestion(
+        self, session_id: str
+    ) -> AsyncIterator[dict[str, str]]:
         """Stream a next-question suggestion token by token.
 
         Yields each text chunk as the model generates it, then persists the
@@ -948,6 +950,7 @@ class InterviewService:
         self.assert_live_active(state)
         context = self._live_audio_context(state)
         text = ""
+        stream_failed = False
         if self.llm_client is not None and hasattr(self.llm_client, "chat_stream"):
             prompt = (
                 "你是面试官助手。根据面试上下文，给出一个聚焦证据缺口的下一问追问。"
@@ -958,12 +961,18 @@ class InterviewService:
                 {"role": "system", "content": "你是面试官助手，根据上下文给出下一问追问。"},
                 {"role": "user", "content": prompt},
             ]
-            async for piece in self.llm_client.chat_stream(messages, temperature=0.4, max_tokens=200):
-                text += piece
-                yield piece
-        if not text.strip() or text.startswith("[LLM Error"):
+            try:
+                async for piece in self.llm_client.chat_stream(
+                    messages, temperature=0.4, max_tokens=200
+                ):
+                    text += piece
+                    yield {"type": "append", "text": piece}
+            except Exception as exc:  # noqa: BLE001 - model adapter boundary
+                stream_failed = True
+                logger.warning("Live suggestion stream degraded: %s", type(exc).__name__)
+        if stream_failed or not text.strip():
             text = "请再补充说明一下你刚才提到的方案权衡与量化结果。"
-            yield text
+            yield {"type": "replace", "text": text}
         await self._inject_audio_direct_suggestion(session_id, runtime, text)
 
     @staticmethod

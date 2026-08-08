@@ -117,9 +117,11 @@ boundary. The console is observability, not a remote execution surface.
 ## Streaming Suggestions
 
 Text and omni model adapters use HTTPX streaming contexts so upstream SSE bytes are
-consumed before the completion finishes. The API relays each token as a JSON-encoded
-SSE data record, preserving embedded newlines, and persists the assembled suggestion
-after the stream completes. Raw browser `fetch` calls include the same bearer token
+consumed before the completion finishes. The API relays JSON-encoded `append` and
+`replace` SSE records, preserving embedded newlines, and persists the assembled
+suggestion after the stream completes. A transport failure after partial output emits
+a redacted deterministic replacement, so neither browser text nor persisted state
+contains the internal error or incomplete suggestion. Raw browser `fetch` calls include the same bearer token
 as ordinary API requests; disconnecting closes the response generator and upstream
 HTTP stream.
 

@@ -304,7 +304,10 @@ output token by token so the suggestion card fills in live instead of appearing
 after the full generation. The text and omni adapters keep an HTTPX streaming
 context open rather than buffering a normal `post()` response; SSE data is JSON
 encoded so model newlines cannot corrupt event framing, and the browser includes
-the current account's bearer token on the raw streaming request. Transcript
+the current account's bearer token on the raw streaming request. Events distinguish
+incremental `append` from a safe `replace`: if the model disconnects after partial
+output, the UI and persisted suggestion replace it with a generic fallback instead
+of exposing transport details or saving incomplete text. Transcript
 ingestion stays chunked (the LAN ASR has no
 streaming endpoint), but a finished chunk immediately produces a streaming
 suggestion. Verified with the real 8001 model: tokens arrive incrementally and the

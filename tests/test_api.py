@@ -1,3 +1,4 @@
+import json
 from io import BytesIO
 
 import httpx
@@ -1181,9 +1182,44 @@ def test_suggestions_stream_json_encodes_sse_data(tmp_path):
         assert response.status_code == 200
         data_lines = [line for line in response.text.splitlines() if line.startswith("data: ")]
         assert data_lines
-        import json
+        events = [json.loads(line[6:]) for line in data_lines]
+        assert all(event["type"] in {"append", "replace"} for event in events)
+        assert all(isinstance(event["text"], str) for event in events)
 
-        assert all(isinstance(json.loads(line[6:]), str) for line in data_lines)
+
+class _PartialFailingStreamLLM(WorkflowLLM):
+    async def chat_stream(self, messages, **kwargs):
+        yield "半截内部输出"
+        raise RuntimeError("secret backend detail")
+
+
+def test_suggestions_stream_replaces_partial_output_after_failure(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'stream-fallback.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=_PartialFailingStreamLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True},
+        )
+        response = client.post(f"/api/live-interviews/{session_id}/suggestions/stream")
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert events[0] == {"type": "append", "text": "半截内部输出"}
+        assert events[-1]["type"] == "replace"
+        assert "secret backend detail" not in response.text
+        state = client.get(f"/api/live-interviews/{session_id}").json()["state"]
+        persisted = state["live_interview"]["suggestions"][-1]["suggested_question"]
+        assert persisted == events[-1]["text"]
+        assert "半截内部输出" not in persisted
 
 
 class _DiarizeOmni:

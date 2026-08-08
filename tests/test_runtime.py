@@ -82,10 +82,10 @@ async def test_local_llm_chat_stream_yields_delta_content():
 
 
 @pytest.mark.asyncio
-async def test_local_llm_chat_stream_failure_yields_error():
+async def test_local_llm_chat_stream_failure_raises_redacted_error():
     import httpx
 
-    from interview_os.models.local_llm import LocalLLMClient
+    from interview_os.models.local_llm import LLMStreamError, LocalLLMClient
 
     def handler(request):
         raise httpx.ConnectError("boom")
@@ -96,10 +96,9 @@ async def test_local_llm_chat_stream_failure_yields_error():
         model="m",
         transport=httpx.MockTransport(handler),
     )
-    chunks = []
-    async for piece in client.chat_stream([{"role": "user", "content": "hi"}]):
-        chunks.append(piece)
-    assert chunks and "LLM Error" in chunks[0]
+    with pytest.raises(LLMStreamError, match="Local model stream failed"):
+        async for _ in client.chat_stream([{"role": "user", "content": "hi"}]):
+            pass
     await client.close()
 
 

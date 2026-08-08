@@ -778,8 +778,10 @@ async function streamNextSuggestion() {
         for (const line of event.split('\n')) {
           if (line.startsWith('data: ')) {
             const encoded = line.slice(6);
-            let piece = ''; try { piece = JSON.parse(encoded); } catch { piece = encoded; }
-            full += piece;
+            let event; try { event = JSON.parse(encoded); } catch { event = {type:'append',text:encoded}; }
+            if (typeof event === 'string') full += event;
+            else if (event.type === 'replace') full = event.text || '';
+            else full += event.text || '';
             if (box) box.textContent = full;
           }
         }
@@ -789,7 +791,7 @@ async function streamNextSuggestion() {
     // Flush any trailing buffer (partial final event).
     if (buffer.trim()) {
       for (const line of buffer.trim().split('\n')) {
-        if (line.startsWith('data: ')) { const encoded=line.slice(6);try{full+=JSON.parse(encoded)}catch{full+=encoded} }
+        if (line.startsWith('data: ')) { const encoded=line.slice(6);try{const event=JSON.parse(encoded);if(typeof event==='string')full+=event;else if(event.type==='replace')full=event.text||'';else full+=event.text||''}catch{full+=encoded} }
       }
       if (box) box.textContent = full;
     }

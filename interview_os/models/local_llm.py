@@ -21,6 +21,10 @@ from interview_os.services.settings_service import PermissionRestrictedJsonStore
 logger = logging.getLogger(__name__)
 
 
+class LLMStreamError(RuntimeError):
+    """Raised after a streaming transport fails, without exposing it as model text."""
+
+
 def _approx_tokens(text: str) -> int:
     """Rough token estimate for streaming (no server usage count available)."""
     return max(1, len(text) // 4)
@@ -150,7 +154,7 @@ class LocalLLMClient(LLMClient):
         except httpx.HTTPError as exc:
             self._metrics["failures"] += 1
             logger.error("LLM chat_stream failed: %s", exc)
-            yield f"[LLM Error: {exc}]"
+            raise LLMStreamError("Local model stream failed") from exc
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
             self._persist_metrics()

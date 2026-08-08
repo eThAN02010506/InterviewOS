@@ -195,10 +195,10 @@ async def stream_next_question(session_id: str, service: Service):
     service.assert_live_active(state)
 
     async def event_stream():
-        async for piece in service.stream_live_suggestion(session_id):
+        async for event in service.stream_live_suggestion(session_id):
             # JSON encoding keeps newlines inside one SSE data record and lets the
-            # browser reconstruct token text without corrupting event framing.
-            yield f"data: {json.dumps(piece, ensure_ascii=False)}\n\n"
+            # browser replace partial text after an upstream stream failure.
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
