@@ -250,6 +250,11 @@ accepted prompt and assembled completion are estimated locally. The console:
 - truncates message output and never exposes API keys;
 - does not provide arbitrary Python, shell, SQL, or prompt execution.
 
+Background failures expose only exception types in logs and events. During app
+shutdown, tracked scoring and question-refill tasks are cancelled before their
+shared transports close; distinct text, resume, ASR, and omni clients then close
+exactly once so a dedicated resume-model connection is not leaked.
+
 Do not reverse-proxy `/api/debug` to untrusted networks without authentication.
 
 ## Live Interview Copilot

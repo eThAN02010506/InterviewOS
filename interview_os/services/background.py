@@ -9,6 +9,7 @@ lock when they write results back.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Awaitable
 from typing import Any
@@ -26,12 +27,17 @@ class BackgroundTaskManager:
         self._debug_events = debug_events
         self._closed = False
 
-    def schedule(self, awaitable: Awaitable[Any]) -> asyncio.Task:
+    def schedule(self, awaitable: Awaitable[Any]) -> asyncio.Task[Any] | None:
         """Run ``awaitable`` in the background. The LLM call must happen inside
         the awaitable without holding the session lock."""
         if self._closed:
             logger.warning("Background task manager is closed; dropping task")
-            return None  # type: ignore[return-value]
+            # Callers construct coroutine objects before schedule() is entered.
+            # Explicitly close a rejected coroutine to avoid an unawaited-
+            # coroutine warning during shutdown races.
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            return None
         task = asyncio.create_task(self._run(awaitable))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -43,14 +49,15 @@ class BackgroundTaskManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - background boundary, log and continue
-            logger.error("Background task failed: %s", exc)
+            error_type = type(exc).__name__
+            logger.error("Background task failed (%s)", error_type)
             if self._debug_events is not None:
                 self._debug_events.record(
                     DebugEvent(
                         level=DebugLevel.ERROR,
                         category="service",
-                        action="background_scoring_failed",
-                        detail=str(exc)[:1000],
+                        action="background_task_failed",
+                        detail=f"error_type={error_type}",
                     )
                 )
 

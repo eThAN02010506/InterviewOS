@@ -140,6 +140,12 @@ adapter estimates prompt tokens once the upstream accepts the request and estima
 completion tokens from the assembled stream. Failed connections before response
 acceptance do not inflate prompt-token or cost totals.
 
+Tracked background work is an application-lifecycle dependency: shutdown first
+cancels scoring and mock-refill tasks, then closes each distinct model/ASR transport
+once, and closes storage last. Shutdown errors are reduced to exception types and do
+not prevent later resources from being released; rejected post-close coroutines are
+explicitly closed rather than left for Python to warn about during collection.
+
 ## Agent Communication
 
 Agents communicate via Messages through the Runtime.

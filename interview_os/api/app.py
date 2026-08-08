@@ -134,11 +134,23 @@ def create_app(
         application.state.omni_client = omni_client
         application.state.resume_llm_client = resume_llm_client
         yield
-        if llm_client is not None and hasattr(llm_client, "close"):
-            await llm_client.close()
-        await application.state.interview_service._background.close()
-        await asr_client.close()
-        await omni_client.close()
+        # Background scorers and refill tasks can still be using model clients.
+        # Stop them before closing any shared transport, then close each distinct
+        # client exactly once (resume_llm commonly aliases llm_client).
+        try:
+            await application.state.interview_service._background.close()
+        except Exception as exc:  # noqa: BLE001 - shutdown must continue
+            logger.error("Background shutdown failed (%s)", type(exc).__name__)
+        closeables = [llm_client, resume_llm_client, asr_client, omni_client]
+        seen: set[int] = set()
+        for client in closeables:
+            if client is None or id(client) in seen or not hasattr(client, "close"):
+                continue
+            seen.add(id(client))
+            try:
+                await client.close()
+            except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                logger.error("Client shutdown failed (%s)", type(exc).__name__)
         await storage.close()
 
     application = FastAPI(

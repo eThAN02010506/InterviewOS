@@ -1394,3 +1394,58 @@ def test_mock_interview_retry_endpoint(tmp_path):
         responses = retried["mock_session"]["responses"]
         assert len(responses) == 1
         assert responses[0]["answer"] == "better"
+
+
+def test_app_shutdown_stops_background_before_each_distinct_model_client(tmp_path):
+    order = []
+
+    class ClosingClient:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            order.append(self.name)
+
+    class ClosingBackground:
+        async def close(self):
+            order.append("background")
+
+    primary = ClosingClient("primary")
+    resume = ClosingClient("resume")
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'shutdown-order.db'}"),
+        llm_client=primary,
+        resume_llm_client=resume,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        client.app.state.interview_service._background = ClosingBackground()
+
+    assert order == ["background", "primary", "resume"]
+
+
+def test_app_shutdown_closes_aliased_model_once_and_continues_after_background_error(tmp_path):
+    order = []
+
+    class ClosingClient:
+        async def close(self):
+            order.append("shared-model")
+
+    class FailingBackground:
+        async def close(self):
+            order.append("background")
+            raise RuntimeError("private shutdown detail")
+
+    shared = ClosingClient()
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'shutdown-dedupe.db'}"),
+        llm_client=shared,
+        resume_llm_client=shared,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        client.app.state.interview_service._background = FailingBackground()
+
+    assert order == ["background", "shared-model"]
