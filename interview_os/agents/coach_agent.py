@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
@@ -68,6 +69,7 @@ class CoachAgent(Agent):
                 observed_signals=[],
                 missing_signals=["AI structured scoring failed; human review required"],
             )
+        self._ground_improved_answer(evaluation, coach_input.answer)
 
         ev = Evidence(
             competency=coach_input.competency,
@@ -104,3 +106,35 @@ class CoachAgent(Agent):
                 pass
         state.add_evidence(ev)
         return self.make_response(evaluation.model_dump_json())
+
+    @staticmethod
+    def _ground_improved_answer(evaluation: AnswerEvaluation, answer: str) -> None:
+        """Reject model rewrites that introduce unsupported numeric facts.
+
+        A coaching rewrite may improve structure and wording, but it must never
+        fabricate dates, percentages, headcount, money, or performance metrics.
+        Numeric claims are deterministic to audit and cover the highest-risk
+        hallucinations observed with local models.
+        """
+
+        def numeric_facts(value: str) -> set[str]:
+            return {
+                token.replace("，", ",")
+                for token in re.findall(
+                    r"(?<![A-Za-z0-9_])\d+(?:[.,，]\d+)?\s*(?:%|％)?(?![A-Za-z0-9_])",
+                    value,
+                )
+            }
+
+        unsupported = numeric_facts(evaluation.improved_answer) - numeric_facts(answer)
+        if not unsupported:
+            return
+        evaluation.improved_answer = (
+            "基于已提供事实的版本（未新增未经核验的数据）：\n\n" + answer.strip()
+        )
+        warning = "模型优化稿引入了原回答未提供的数字，已移除；请从 ATS 或原始材料核对后补充。"
+        if warning not in evaluation.feedback:
+            evaluation.feedback.append(warning)
+        missing = "需要核验并补充真实量化结果"
+        if missing not in evaluation.missing_signals:
+            evaluation.missing_signals.append(missing)

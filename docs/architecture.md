@@ -76,6 +76,11 @@ models and supplies `reasoning_effort=low` unless explicitly overridden. This ke
 the model's hidden reasoning from consuming the complete token budget before the
 OpenAI-compatible response emits final JSON content.
 
+`CoachAgent` applies a deterministic post-validation boundary to generated answer
+rewrites. Any numeric token absent from the submitted answer invalidates the rewrite;
+scores may remain, but the displayed improved answer falls back to the candidate's
+original facts with an explicit verification warning.
+
 Search results carry source quality, official-domain and independent-domain signals.
 These are prompt evidence labels rather than truth scores: secondary-source claims
 remain attributed, and absence from the public web is not treated as falsehood.

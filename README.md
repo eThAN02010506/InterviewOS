@@ -212,6 +212,10 @@ the answer box, and lets the candidate edit before submitting.
 Each answer receives validated 0–1 scores for content, technical depth, structure,
 and impact. The average becomes evidence confidence for the question competency;
 observed and missing signals remain attached to the persisted answer and evidence.
+The coaching rewrite may restructure the submitted answer, but it cannot introduce
+new numeric facts. If a local model invents dates, percentages, headcount, money, or
+metrics, InterviewOS deterministically rejects that rewrite, preserves the original
+answer, and asks the candidate to verify real data from ATS or source materials.
 If no LLM is configured, or the optional per-question framework pass is incomplete,
 every question receives a deterministic candidate-aware answer framework.
 

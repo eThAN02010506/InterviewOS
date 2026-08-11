@@ -96,6 +96,16 @@ class CapturingStrategyLLM:
         return '{"summary":"准备策略","key_risks":[],"answer_framework":["先讲最近经历"]}'
 
 
+class HallucinatingCoachLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"content":0.8,"technical_depth":0.7,"structure":0.75,"impact":0.7,'
+            '"feedback":[],"observed_signals":["推动团队扩张"],'
+            '"missing_signals":[],"improved_answer":'
+            '"团队从80人增长到250人，交付周期缩短30%，收入增长18%。"}'
+        )
+
+
 def test_live_suggestion_migrates_legacy_main_question_type():
     suggestion = QuestionSuggestion.model_validate(
         {
@@ -162,6 +172,27 @@ async def test_coach_degrades_to_reviewable_low_confidence_evidence():
     assert evaluation.overall_score() == pytest.approx(0.4)
     assert "人工复核" in evaluation.feedback[0]
     assert state.evidence[0].confidence == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_coach_rejects_unsupported_metrics_in_improved_answer():
+    agent = CoachAgent(llm_client=HallucinatingCoachLLM())
+    state = InterviewState()
+    original = "我组建了印度招聘团队，并支持了工程组织扩张。"
+
+    message = await agent.execute(
+        state,
+        '{"question":"请说明招聘成果","answer":"'
+        + original
+        + '","competency":"招聘战略"}',
+    )
+
+    evaluation = AnswerEvaluation.model_validate_json(message.content)
+    assert evaluation.improved_answer.endswith(original)
+    assert "80" not in evaluation.improved_answer
+    assert "250" not in evaluation.improved_answer
+    assert any("未提供的数字" in item for item in evaluation.feedback)
+    assert "需要核验并补充真实量化结果" in evaluation.missing_signals
 
 
 @pytest.mark.asyncio
