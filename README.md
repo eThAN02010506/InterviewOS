@@ -234,6 +234,15 @@ the session to `active`, allowing the user to finish again. Process-local refill
 flags and an interrupted `evaluating` state are restored to retryable values after
 a process restart.
 
+The candidate UI keeps the next action explicit throughout this lifecycle. The home
+CTA routes to preparation, the active mock, or the growth report according to session
+state. During model work, forms expose an accessible busy state and retain the user's
+input on failure. Finishing a mock no longer clears the final coaching result: the
+completion card summarizes answer count and average score, preserves the last answer's
+feedback, and offers direct actions to open the report or create a separate practice
+session. Primary, secondary, disabled, focus, and sticky navigation states share one
+responsive hierarchy across desktop and mobile layouts.
+
 Candidates can answer by voice instead of typing. While recording, bounded
 cumulative audio snapshots are sent to `POST /api/live-interviews/{session_id}/
 audio/preview`; the provisional text appears in the answer box but is never

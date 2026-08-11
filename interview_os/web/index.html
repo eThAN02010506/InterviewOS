@@ -52,7 +52,7 @@
           <article class="metric panel"><span>评价证据</span><strong id="metric-evidence">0</strong><small>已记录能力信号</small></article>
         </div>
         <div class="two-col">
-          <article class="panel"><div class="section-head"><div><p class="eyebrow">NEXT ACTION</p><h3>下一步</h3></div></div><p class="next-action" id="next-action">创建一个会话，然后选择候选人准备或企业面试设计。</p><button class="btn" data-go="candidate">开始候选人分析</button></article>
+          <article class="panel next-action-card"><div class="section-head"><div><p class="eyebrow">NEXT ACTION</p><h3>下一步</h3></div></div><p class="next-action" id="next-action">创建一个会话，然后选择候选人准备或企业面试设计。</p><button class="btn primary" id="candidate-next-action">创建第一个会话</button></article>
           <article class="panel"><div class="section-head"><div><p class="eyebrow">CONTEXT MAP</p><h3>画像完整度</h3></div></div><div id="profile-progress" class="progress-list"></div></article>
         </div>
       </section>
@@ -152,7 +152,7 @@
 
       <section class="view" id="view-mock">
         <div class="mock-layout">
-          <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
+          <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status" aria-live="polite">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
             <div id="mock-question" class="question-copy empty-state">先完成候选人准备工作流，生成个性化问题。</div>
             <div class="question-audio-controls"><button class="btn compact" id="mock-speak-question" type="button">🔊 朗读问题</button><label class="checkbox-inline"><input id="mock-auto-speak" type="checkbox" checked>自动朗读新问题</label><audio id="mock-question-audio" controls class="hidden"></audio></div>
             <div id="mock-framework" class="framework-hint hidden"><small>参考回答要点</small><p id="mock-framework-text"></p></div>
@@ -160,7 +160,7 @@
             <div id="mock-actions" class="mock-actions hidden"><button class="btn" id="mock-prev" type="button">上一题</button><button class="btn" id="mock-retry-main" type="button">重答主问题</button><button class="btn" id="mock-retry" type="button">重新来</button><button class="btn" id="mock-review-score" type="button">人工复核评分</button><button class="btn primary" id="mock-next" type="button">下一题</button><button class="btn" id="mock-finish" type="button">结束面试</button></div>
             <button class="btn" id="start-mock">开始模拟面试</button>
           </article>
-          <article class="panel"><p class="eyebrow">COACH FEEDBACK</p><h3>四维评价</h3><div id="coach-result" class="empty-state">提交回答后显示内容、深度、结构和影响力评分。</div></article>
+          <article class="panel coach-panel"><p class="eyebrow">COACH FEEDBACK</p><h3 id="coach-title">四维评价</h3><div id="coach-result" class="empty-state">提交回答后显示内容、深度、结构和影响力评分。</div></article>
         </div>
       </section>
 

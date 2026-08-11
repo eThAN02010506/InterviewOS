@@ -87,7 +87,7 @@ function toast(message, error = false) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => node.className = '', 3200);
 }
 
-function busy(form, active) { form.classList.toggle('loading', active); }
+function busy(form, active) { form.classList.toggle('loading', active); form.setAttribute('aria-busy', active ? 'true' : 'false'); }
 function showWorkflowStarting() {
   if (!state.session) return;
   state.session.strategy = {summary:'', key_risks:[], answer_framework:[], topics_to_emphasize:[], topics_to_avoid:[], likely_questions:[]};
@@ -118,6 +118,14 @@ const viewMeta = {
   enterprise:['INTERVIEW ARCHITECTURE','面试设计'], live:['LIVE INTERVIEW COPILOT','实时面试辅助'], evaluation:['EVIDENCE REVIEW','候选人评估'],
   settings:['RUNTIME CONFIGURATION','模型与搜索'], debug:['LOCAL OBSERVABILITY','Debug Console']
 };
+
+function candidateHomeAction(session) {
+  if (!session) return {view:'', label:'创建第一个会话'};
+  if (session.mock_session?.status === 'completed') return {view:'candidate-report', label:'查看本轮改进报告'};
+  if (session.mock_session?.status === 'active') return {view:'mock', label:'继续模拟面试'};
+  if (session.strategy?.summary || session.mock_interview?.questions?.length) return {view:'mock', label:'开始模拟面试'};
+  return {view:'candidate', label:'补充资料并生成策略'};
+}
 
 function renderNavigation() {
   $('nav').innerHTML = navigation[state.role].map(([view, label], index) =>
@@ -245,6 +253,7 @@ function renderState() {
   const sources = (s?.company?.public_sources?.length || 0) + (s?.interviewer?.public_expressions?.length || 0);
   $('metric-sources').textContent = sources; $('metric-questions').textContent = s?.mock_interview?.questions?.length || 0; $('metric-evidence').textContent = s?.evidence?.length || 0;
   $('next-action').textContent = s?.next_action || '创建一个会话，然后选择候选人准备或企业面试设计。';
+  const homeAction=candidateHomeAction(s); const homeButton=$('candidate-next-action'); homeButton.textContent=homeAction.label; if(homeAction.view){homeButton.dataset.route=homeAction.view;delete homeButton.dataset.newPractice;}else{delete homeButton.dataset.route;homeButton.dataset.newPractice='true';}
   renderResumeReview(); renderJDReview(); renderFacts(); maybePromptEntityResolution();
   const profiles = [['候选人', !!s?.candidate?.skills?.length],['岗位',!!s?.job?.competencies?.length],['公司',!!s?.company?.dna],['面试官',!!s?.interviewer?.name]];
   $('profile-progress').innerHTML = profiles.map(([name, done]) => `<div class="progress-item"><span>${name}</span><div class="progress-track"><i style="width:${done?100:8}%"></i></div><b>${done?'完成':'待分析'}</b></div>`).join('');
@@ -537,7 +546,9 @@ function renderMock() {
   const isRetrying = !!(mockRetry && retryResponse);
   $('answer-form').style.display = current && (!justAnswered || isRetrying) ? 'block' : 'none';
   if (framework) { const hasFw = current && current.answer_framework && (!justAnswered || (isRetrying && !retryResponse.is_follow_up)); framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
-  $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
+  const completed=session?.status==='completed'; const responseCount=session?.responses?.length||0; const scoredResponses=(session?.responses||[]).filter(item=>item.evaluation); const averageScore=scoredResponses.length?Math.round(scoredResponses.reduce((sum,item)=>sum+((item.evaluation.content+item.evaluation.technical_depth+item.evaluation.structure+item.evaluation.impact)/4),0)/scoredResponses.length*100):0;
+  $('mock-question').className=current?'question-copy':completed?'question-copy completion-state':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:completed?`<small>练习已保存</small><strong>本轮完成 ${responseCount} 次回答${averageScore?` · 平均 ${averageScore} 分`:''}</strong><p>先查看改进报告梳理共性问题；需要练习另一岗位或候选人时，新建会话可避免证据混用。</p><div class="completion-actions"><button class="btn primary" type="button" data-route="candidate-report">查看改进报告</button><button class="btn" type="button" data-new-practice>新建练习会话</button></div>`:'先完成候选人准备工作流，生成个性化问题。';
+  const questionAudio=$('mock-speak-question')?.closest('.question-audio-controls'); if(questionAudio)questionAudio.classList.toggle('hidden',!current);
   const speakButton=$('mock-speak-question');if(speakButton)speakButton.disabled=!current;
   const speechKey=current?`${current.id}:${displayedQuestionText}`:'';
   if(speechKey!==mockCurrentSpeechKey){cancelMockQuestionSpeech();clearMockQuestionAudio();clearMockAnswerExperience();mockCurrentSpeechKey=speechKey;}
@@ -560,7 +571,7 @@ function renderMock() {
     actions.classList.toggle('hidden', !isActive || isRetrying);
     if (isActive && retryBtn) retryBtn.disabled = false;
   }
-  const last=displayResponse; const node=$('coach-result');
+  const last=displayResponse||(completed?(session?.responses||[]).at(-1):null); const node=$('coach-result'); $('coach-title').textContent=completed&&last?'最后一题反馈':'四维评价'; if(completed&&last){mockDisplayedResponseId=last.id;syncMockAnswerAudio(last);}
   const showEval = !!last;
   if (!showEval) { const pendingReviews=(session?.responses||[]).filter(item=>item.evaluation?.review_status==='pending'); node.className=pendingReviews.length?'review-queue':'empty-state'; node.innerHTML=pendingReviews.length?`<div class="review-subtitle">尚待人工复核的规则评分</div>${pendingReviews.map(item=>`<div class="review-claim"><div><small>${esc(item.competency)}</small><span>${esc(item.question)}</span></div><div class="claim-actions"><button type="button" data-score-review="${esc(item.id)}">人工复核评分</button></div></div>`).join('')}`:'提交回答后显示内容、深度、结构和影响力评分。'; return; }
   const e=last.evaluation; const sourceLabel=e.scoring_source==='human'?'人工已复核':e.scoring_source==='deterministic_rule'?'规则评分 · 待复核':'AI 评分'; const dimensionLabels={content:'岗位相关证据',technical_depth:'决策与专业深度',structure:'表达结构',impact:'结果与复盘'}; const dimensionHtml=(e.dimension_feedback||[]).map(item=>`<div class="dimension-card"><div><strong>${esc(dimensionLabels[item.dimension]||item.dimension)}</strong><b>${Math.round((item.score||0)*100)} · ${esc(item.level)}</b></div><p>${esc(item.evidence)}</p><small>下一步：${esc(item.suggestion)}</small></div>`).join(''); node.className=''; node.innerHTML=`<div class="score-grid">${[['证据',e.content],['深度',e.technical_depth],['结构',e.structure],['结果',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div><div class="claim-actions"><small>${esc(sourceLabel)}</small><button type="button" data-score-review="${esc(last.id)}">人工复核评分</button></div>${dimensionHtml?`<div class="dimension-feedback">${dimensionHtml}</div>`:''}${list('优先改进',e.feedback)}<div class="result-block"><h4>事实安全回答框架</h4><p>${esc(e.improved_answer)}</p></div>`;
@@ -569,7 +580,7 @@ function renderMock() {
   const details=node.innerHTML;
   const previous=[...(session?.attempt_history||[])].reverse().find(item=>item.question_id===last.question_id&&item.question===last.question);
   const headline=(e.feedback||[])[0]||'已完成本题证据检查，可以查看具体依据或立即重答。';
-  node.innerHTML=`<div class="coach-summary"><small>本题最优先改进</small><strong>${esc(headline)}</strong><div class="claim-actions"><button type="button" data-quick-retry="${esc(last.id)}">按建议重答</button>${last.audio_file?`<button type="button" data-delete-mock-audio="${esc(last.id)}">删除本次录音</button>`:''}</div></div>${renderRetryComparison(last,previous)}<details class="coach-details"><summary>查看完整分析、评分和校准依据</summary>${details}</details>`;
+  node.innerHTML=`<div class="coach-summary"><small>本题最优先改进</small><strong>${esc(headline)}</strong><div class="claim-actions">${completed?'':`<button type="button" data-quick-retry="${esc(last.id)}">按建议重答</button>`}${last.audio_file?`<button type="button" data-delete-mock-audio="${esc(last.id)}">删除本次录音</button>`:''}</div></div>${renderRetryComparison(last,previous)}<details class="coach-details"><summary>查看完整分析、评分和校准依据</summary>${details}</details>`;
 }
 
 async function ensureSession() { if (state.sessionId) return true; $('session-dialog').showModal(); toast('请先创建一个会话'); return false; }
@@ -678,7 +689,7 @@ function startMockScoringProgress(){mockVoiceNote('正在提交回答并提取�
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);const stopProgress=startMockScoringProgress();try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value,retry:mockRetry,retry_response_id:mockRetryResponseId||null,recording_id:mockPendingRecordingId||null})});$('mock-answer').value='';mockPendingRecordingId='';mockRetry=false;mockRetryResponseId='';await loadSession();toast('回答已评分');}catch(error){mockVoiceNote('评分未完成，回答仍保留，可检查后重试。');toast(error.message,true)}finally{stopProgress();busy(form,false)}};
 $('mock-retry').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';mockPendingRecordingId='';$('mock-answer').value='';renderMock();};
 $('mock-retry-main').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';mockPendingRecordingId='';$('mock-answer').value='';renderMock();};
-document.addEventListener('click',async event=>{const retry=event.target.closest('[data-quick-retry]');if(retry){mockRetry=true;mockRetryResponseId=retry.dataset.quickRetry||'';mockPendingRecordingId='';$('mock-answer').value='';renderMock();$('mock-answer')?.focus();return;}const play=event.target.closest('[data-play-mock-audio]');if(play){await loadMockAnswerAudio(play.dataset.playMockAudio,true);mockVoiceNote('正在回放上一版回答');return;}const remove=event.target.closest('[data-delete-mock-audio]');if(remove){try{await api(`/api/mock-interviews/${state.sessionId}/answers/${remove.dataset.deleteMockAudio}/audio`,{method:'DELETE'});await loadSession();toast('录音已从本机删除，文字与评分仍保留');}catch(error){toast(error.message,true);}}});
+document.addEventListener('click',async event=>{const route=event.target.closest('[data-route]');if(route){setView(route.dataset.route);return;}const fresh=event.target.closest('[data-new-practice]');if(fresh){$('session-dialog').showModal();return;}const retry=event.target.closest('[data-quick-retry]');if(retry){mockRetry=true;mockRetryResponseId=retry.dataset.quickRetry||'';mockPendingRecordingId='';$('mock-answer').value='';renderMock();$('mock-answer')?.focus();return;}const play=event.target.closest('[data-play-mock-audio]');if(play){await loadMockAnswerAudio(play.dataset.playMockAudio,true);mockVoiceNote('正在回放上一版回答');return;}const remove=event.target.closest('[data-delete-mock-audio]');if(remove){try{await api(`/api/mock-interviews/${state.sessionId}/answers/${remove.dataset.deleteMockAudio}/audio`,{method:'DELETE'});await loadSession();toast('录音已从本机删除，文字与评分仍保留');}catch(error){toast(error.message,true);}}});
 $('mock-next').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
 $('mock-prev').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/previous`,{method:'POST'});await loadSession();toast('上一题');}catch(error){toast(error.message,true)}};
 $('mock-finish').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();try{await api(`/api/mock-interviews/${state.sessionId}/finish`,{method:'POST'});await loadSession();toast('面试已结束');}catch(error){toast(error.message,true)}};
