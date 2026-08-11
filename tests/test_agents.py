@@ -4,10 +4,12 @@ import pytest
 from interview_os.agents.candidate_agent import CandidateAgent
 from interview_os.agents.coach_agent import CoachAgent
 from interview_os.agents.company_agent import CompanyAgent
+from interview_os.agents.evaluation_agent import EvaluationAgent
 from interview_os.agents.feedback_agent import FeedbackAgent
 from interview_os.agents.interview_strategy_agent import InterviewStrategyAgent
 from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
+from interview_os.core.evidence import Evidence
 from interview_os.core.message import MessageType
 from interview_os.core.state import (
     AnswerEvaluation,
@@ -117,6 +119,18 @@ class HiringVoiceFeedbackLLM:
             '"action_plan":["要求候选人提供项目时间线",'
             '"请候选人补充团队规模"],"interviewer_notes":["核验数据"],'
             '"recommendation_reasoning":"证据有限"}'
+        )
+
+
+class StrongHireLowScoreLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"competencies":[{"competency":"招聘战略","score":0.61,'
+            '"confidence":0.6,"supporting_evidence":["说明了行动"],'
+            '"gaps":["缺少量化结果"]},{"competency":"团队领导","score":0.61,'
+            '"confidence":0.6,"supporting_evidence":["说明了协作"],'
+            '"gaps":["缺少长期结果"]}],"overall_score":0.95,'
+            '"recommendation":"strong_hire","summary":"表现优秀","risks":[]}'
         )
 
 
@@ -258,6 +272,32 @@ async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
     assert "仅用于面试准备" in state.feedback.overall
     assert all("候选人" not in item for item in state.feedback.action_plan)
     assert all(item.startswith("准备并练习：") for item in state.feedback.action_plan)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_agent_calibrates_strong_hire_against_scores_and_confidence():
+    agent = EvaluationAgent(llm_client=StrongHireLowScoreLLM())
+    state = InterviewState()
+    state.evidence = [
+        Evidence(
+            competency="招聘战略",
+            signal="说明了行动",
+            confidence=0.61,
+        )
+        for _ in range(2)
+    ] + [
+        Evidence(
+            competency="团队领导",
+            signal="说明了协作",
+            confidence=0.61,
+        )
+    ]
+
+    await agent.execute(state)
+
+    assert state.evaluation.overall_score == pytest.approx(0.61)
+    assert state.evaluation.recommendation.value == "lean_hire"
+    assert any("确定性阈值校准" in item for item in state.evaluation.risks)
 
 
 @pytest.mark.asyncio

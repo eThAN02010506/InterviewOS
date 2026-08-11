@@ -62,6 +62,7 @@ class EvaluationAgent(Agent):
             self.record_degradation(
                 "Structured evaluation competencies were not grounded; aggregated recorded evidence"
             )
+        self._calibrate_recommendation(report)
         state.evaluation = report
         state.enforce_evaluation_evidence_floor()
         report = state.evaluation
@@ -71,6 +72,37 @@ class EvaluationAgent(Agent):
             dict.fromkeys(gap for item in report.competencies for gap in item.gaps)
         )
         return self.make_response(report.model_dump_json())
+
+    @staticmethod
+    def _calibrate_recommendation(report: EvaluationReport) -> None:
+        """Bind hiring labels to the persisted scores and confidence."""
+        if not report.competencies:
+            report.overall_score = 0.0
+            report.recommendation = HiringRecommendation.INSUFFICIENT_EVIDENCE
+            return
+        overall = sum(item.score for item in report.competencies) / len(report.competencies)
+        confidence = sum(item.confidence for item in report.competencies) / len(
+            report.competencies
+        )
+        original = report.recommendation
+        report.overall_score = round(overall, 4)
+        if confidence < 0.5:
+            calibrated = HiringRecommendation.INSUFFICIENT_EVIDENCE
+        elif overall >= 0.85 and confidence >= 0.75:
+            calibrated = HiringRecommendation.STRONG_HIRE
+        elif overall >= 0.75 and confidence >= 0.65:
+            calibrated = HiringRecommendation.HIRE
+        elif overall >= 0.6:
+            calibrated = HiringRecommendation.LEAN_HIRE
+        elif overall >= 0.45:
+            calibrated = HiringRecommendation.LEAN_NO_HIRE
+        else:
+            calibrated = HiringRecommendation.NO_HIRE
+        report.recommendation = calibrated
+        if calibrated != original:
+            report.risks.append(
+                "模型招聘建议与证据分数或置信度不一致，已按确定性阈值校准。"
+            )
 
     @staticmethod
     def _fallback_report(state: InterviewState) -> EvaluationReport:

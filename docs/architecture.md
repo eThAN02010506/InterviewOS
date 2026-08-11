@@ -132,6 +132,10 @@ Recruitment recommendations and verification notes remain in interviewer-only fi
 The result is actionable candidate coaching and evidence-aware interviewer notes. The
 service completes the interview stage only after both outputs validate; an empty
 evidence set is rejected before any LLM call.
+Before persistence, `EvaluationAgent` recomputes the overall score from competency
+scores and maps recommendation labels through fixed score/confidence thresholds.
+`strong_hire` requires score >= 0.85 and mean confidence >= 0.75; conflicting model
+labels are replaced and the calibration is retained as a report risk.
 
 ## Runtime Settings
 

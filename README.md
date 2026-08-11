@@ -242,6 +242,10 @@ Candidate-facing `overall` and `action_plan` fields are post-validated: hiring o
 employment recommendations are replaced with a preparation-only evidence summary,
 and interviewer commands such as “要求候选人…” are converted into direct candidate
 practice actions. Hiring decisions remain exclusive to the interviewer workspace.
+Interviewer recommendations are also deterministic: the final `overall_score` is
+recomputed from persisted competency scores, then the recommendation is calibrated
+against score and mean evidence confidence. `strong_hire` requires at least 0.85 score
+and 0.75 confidence; a model cannot label a 0.61 report “strong hire”.
 
 ## Web research
 
