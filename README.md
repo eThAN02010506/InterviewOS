@@ -166,7 +166,9 @@ For an end-to-end flow, call one of:
 Workflow progress is stored under `state.workflow`. Clients can poll the existing
 session endpoint while a workflow request is running. Invalid structured LLM output
 marks the workflow as `failed` and preserves the failing step and error message.
-Structured calls use a low temperature. When the configured model is `gpt-oss`, the
+Structured calls use temperature zero and send the Pydantic JSON Schema through
+OpenAI-compatible `response_format`. A provider that rejects this optional transport
+hint is detected once and retried without it. When the configured model is `gpt-oss`, the
 OpenAI-compatible request sends `chat_template_kwargs.reasoning_effort=low`, the
 location llama.cpp's GPT-OSS Jinja template actually reads. This prevents the model
 from exhausting its completion budget in hidden reasoning and returning empty JSON.
@@ -175,6 +177,9 @@ responses are retried once in the transport adapter before structured-output ret
 begin. A `200` without usable `choices.message.content` becomes a redacted model error
 instead of escaping as `KeyError`. Provider exception and response text are never
 returned to agents or written to logs.
+Schema-invalid content is retried once with only the missing/invalid field locations
+and validation types, never the raw model output. Debug events expose that sanitized
+reason, attempt number, response length, and whether JSON Schema mode was requested.
 If the configured model still returns invalid scoring JSON, the coach applies a
 transparent deterministic rubric based on answer detail, concrete actions, structure,
 results, and verified metrics. The UI identifies this as a rule score requiring human
@@ -351,6 +356,8 @@ accepted prompt and assembled completion are estimated locally. The console:
 - filters by account, session, and level before applying the requested result limit,
   so another account's event volume cannot hide the current account's diagnostics;
 - truncates message output and never exposes API keys;
+- reports structured-output failures as safe field/type diagnostics (for example,
+  `impact:missing`) without storing the model response, resume, or answer text;
 - does not provide arbitrary Python, shell, SQL, or prompt execution.
 
 Background failures expose only exception types in logs and events. During app
@@ -495,8 +502,9 @@ blueprint the planner context shrinks ~33% (≈6.8k → ≈4.5k chars), cutting 
 dominant prefill cost for the 20B local model.
 
 Structured-output generation is resilient to the model drifting off-schema:
-`think_structured` retries the same prompt once on invalid output (no extra
-context, zero cost on the happy path), then agents with deterministic fallbacks
+`think_structured` requests the model's JSON Schema at temperature zero and retries
+once with a compact field-level validation diagnostic (no raw output or extra
+candidate context), then agents with deterministic fallbacks
 take over. Enterprise interview design now builds a generic JD-based blueprint
 from job competencies when the model returns empty rounds, so a resume-less
 interview (JD only, common before the candidate's resume arrives) no longer fails

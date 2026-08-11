@@ -93,8 +93,14 @@ validated job-specific weighting policy exists.
 
 `LocalLLMClient.chat` separates transport recovery from model-output recovery. One
 bounded retry handles connection/timeouts and HTTP 5xx responses; only successfully
-returned model content enters the agent's structured JSON retry loop. Exhausted
-transport failures become a constant redacted sentinel and metadata-only log event.
+returned model content enters the agent's structured JSON retry loop. Structured
+calls use temperature zero plus a Pydantic-derived `json_schema` response format.
+Endpoints that reject the optional hint with 400/404/422 are capability-cached and
+retried without it. A validation failure is reduced to field locations and error
+types; the second attempt receives that compact repair instruction, while Debug only
+stores the reason, attempt, character count, and structured mode. Raw model text and
+candidate content are never persisted. Exhausted transport failures become a
+constant redacted sentinel and metadata-only log event.
 
 Search results carry source quality, official-domain and independent-domain signals.
 These are prompt evidence labels rather than truth scores: secondary-source claims

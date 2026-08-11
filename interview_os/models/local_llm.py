@@ -70,6 +70,7 @@ class LocalLLMClient(LLMClient):
         }
         loaded = self._metrics_store.load() if self._metrics_store else {}
         self._metrics = {key: loaded.get(key, value) for key, value in defaults.items()}
+        self._response_format_supported: bool | None = None
 
     async def chat(
         self,
@@ -85,6 +86,8 @@ class LocalLLMClient(LLMClient):
             "max_tokens": max_tokens,
             **kwargs,
         }
+        if self._response_format_supported is False:
+            payload.pop("response_format", None)
         # gpt-oss can spend the entire completion budget in reasoning and return
         # an empty `content` field at its default effort. llama.cpp's compatible
         # endpoint accepts this standard hint and still allows an explicit caller
@@ -120,9 +123,25 @@ class LocalLLMClient(LLMClient):
                         usage = {}
                     self._metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
                     self._metrics["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+                    if "response_format" in payload:
+                        self._response_format_supported = True
                     return content
                 except httpx.HTTPError as exc:
                     self._metrics["failures"] += 1
+                    unsupported_response_format = (
+                        isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code in {400, 404, 422}
+                        and "response_format" in payload
+                    )
+                    if attempt == 0 and unsupported_response_format:
+                        # OpenAI-compatible local servers vary in JSON Schema
+                        # support. Remember the capability and retry this request
+                        # without the unsupported transport hint; prompt-level
+                        # validation and targeted repair still apply.
+                        self._response_format_supported = False
+                        payload.pop("response_format", None)
+                        logger.warning("LLM endpoint rejected response_format; retrying without it")
+                        continue
                     retryable = not isinstance(exc, httpx.HTTPStatusError) or (
                         exc.response.status_code == 429 or exc.response.status_code >= 500
                     )

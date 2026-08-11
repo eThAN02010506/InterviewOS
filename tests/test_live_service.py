@@ -881,9 +881,8 @@ async def test_think_structured_invalid_output_makes_single_call(tmp_path):
         await counting_agent.execute(state)
     finally:
         await storage.close()
-    # Invalid output triggers one lightweight retry (same prompt, no added
-    # context), then the planner falls back deterministically instead of a
-    # second repair call re-prefilling the whole context.
+    # Invalid output triggers one lightweight schema-repair retry without adding
+    # candidate context, then the planner falls back deterministically.
     assert len(calls) == 2
 
 

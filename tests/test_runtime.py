@@ -2,12 +2,25 @@
 import logging
 
 import pytest
+from pydantic import BaseModel
 
 from interview_os.core.agent import Agent
+from interview_os.core.debug import DebugEventStore
 from interview_os.core.evidence import Evidence
 from interview_os.core.message import Message
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import InterviewStage, InterviewState
+
+
+class _StructuredResult(BaseModel):
+    score: float
+    reason: str
+
+
+class _StructuredTestAgent(Agent):
+    async def execute(self, state, instruction=""):
+        result = await self.think_structured(instruction, _StructuredResult)
+        return Message(sender=self.name, content=result.model_dump_json())
 
 
 def test_evidence_strong_weak():
@@ -138,6 +151,81 @@ async def test_local_gpt_oss_uses_low_reasoning_effort_to_preserve_final_content
     )
 
     assert result == '{"answer":"ok"}'
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_think_structured_uses_schema_and_targeted_privacy_safe_repair():
+    calls = []
+
+    class RepairingLLM:
+        async def chat(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            if len(calls) == 1:
+                return '{"score":0.7,"private_candidate_claim":"do not log this"}'
+            return '{"score":0.7,"reason":"evidence is incomplete"}'
+
+    events = DebugEventStore()
+    agent = _StructuredTestAgent(
+        name="structured_test", role="test", goal="test", llm_client=RepairingLLM()
+    )
+    agent.debug_events = events
+    result = await agent.think_structured("Score this answer", _StructuredResult)
+
+    assert result.reason == "evidence is incomplete"
+    assert len(calls) == 2
+    first_kwargs = calls[0][1]
+    assert first_kwargs["temperature"] == 0.0
+    assert first_kwargs["response_format"]["type"] == "json_schema"
+    assert first_kwargs["response_format"]["json_schema"]["strict"] is True
+    repair_prompt = calls[1][0][-1]["content"]
+    assert "reason:missing" in repair_prompt
+    assert "private_candidate_claim" not in repair_prompt
+    event = events.list_events(limit=1)[0]
+    assert event.action == "structured_output_retry"
+    assert event.metadata["validation_reason"] == "schema_validation[reason:missing]"
+    assert "do not log this" not in event.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_retries_without_unsupported_response_format():
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    payloads = []
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            return httpx.Response(400, text="response_format unsupported")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"score":0.8}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="local-model",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.chat(
+        [{"role": "user", "content": "score"}],
+        response_format={"type": "json_object"},
+    )
+    second = await client.chat(
+        [{"role": "user", "content": "score again"}],
+        response_format={"type": "json_object"},
+    )
+
+    assert result == '{"score":0.8}'
+    assert second == '{"score":0.8}'
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]
+    assert "response_format" not in payloads[2]
     await client.close()
 
 
