@@ -238,6 +238,10 @@ evaluation and feedback workflow. Candidate UI presents strengths, improvements,
 and an action plan; interviewer UI presents competency scores, evidence confidence,
 signal gaps, and a hiring recommendation. Missing evidence returns `409` instead of
 fabricating a conclusion.
+Candidate-facing `overall` and `action_plan` fields are post-validated: hiring or
+employment recommendations are replaced with a preparation-only evidence summary,
+and interviewer commands such as “要求候选人…” are converted into direct candidate
+practice actions. Hiring decisions remain exclusive to the interviewer workspace.
 
 ## Web research
 

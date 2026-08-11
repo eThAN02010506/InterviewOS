@@ -126,7 +126,10 @@ initial fixed plan.
 
 `EvaluationAgent` separates competency score from evidence confidence and aggregates
 only persisted evidence. `FeedbackAgent` derives two views from the same structured
-result: actionable candidate coaching and evidence-aware interviewer notes. The
+report, then enforces a role boundary: candidate `overall` cannot contain hiring
+language and candidate action items cannot contain interviewer-to-candidate commands.
+Recruitment recommendations and verification notes remain in interviewer-only fields.
+The result is actionable candidate coaching and evidence-aware interviewer notes. The
 service completes the interview stage only after both outputs validate; an empty
 evidence set is rejected before any LLM call.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from pydantic import ValidationError
 
@@ -35,7 +36,10 @@ class FeedbackAgent(Agent):
             "Generate evidence-based feedback as JSON with overall, strengths, improvements, "
             "action_plan, interviewer_notes, and recommendation_reasoning. All fields except "
             "overall and recommendation_reasoning are lists of strings. Candidate-facing "
-            "improvements must be actionable; interviewer notes must distinguish missing "
+            "overall must discuss preparation only and must never contain a hire/no-hire or "
+            "employment recommendation. Candidate action_plan items must address the candidate "
+            "directly, never say '要求候选人' or use interviewer instructions. Interviewer "
+            "notes must distinguish missing "
             "signals from negative evidence. Use Chinese for every narrative field."
         )
         try:
@@ -61,4 +65,44 @@ class FeedbackAgent(Agent):
                 "Structured feedback failed; summarized the finalized evidence report"
             )
         state.enforce_evaluation_evidence_floor()
+        self._enforce_candidate_voice(state)
         return self.make_response(state.feedback.model_dump_json())
+
+    @staticmethod
+    def _enforce_candidate_voice(state: InterviewState) -> None:
+        """Keep hiring decisions out of the candidate-facing report fields."""
+        report = state.feedback
+        hiring_language = re.compile(
+            r"(?:推荐|建议|不予|考虑)?(?:录用|聘用)|(?:strong[_ -]?hire|lean[_ -]?hire|no[_ -]?hire)|"
+            r"(?:recommend|hire)\b",
+            re.IGNORECASE,
+        )
+        if hiring_language.search(report.overall):
+            competencies = state.evaluation.competencies
+            average = (
+                sum(item.score for item in competencies) / len(competencies)
+                if competencies
+                else state.evaluation.overall_score
+            )
+            evidence_prefix = (
+                "当前证据不足；"
+                if state.evaluation.recommendation.value == "insufficient_evidence"
+                else ""
+            )
+            report.overall = (
+                f"{evidence_prefix}本次练习覆盖 {len(competencies)} 个能力维度，"
+                f"当前证据平均得分约 {average:.2f}。"
+                "该结果仅用于面试准备，请优先补强下列证据缺口。"
+            )
+
+        candidate_instruction = re.compile(
+            r"^(?:在后续面试中)?\s*(?:请|要求|让)候选人\s*",
+            re.IGNORECASE,
+        )
+        grounded_actions = []
+        for item in report.action_plan:
+            clean = candidate_instruction.sub("", item).strip(" ：:，,")
+            grounded_actions.append(
+                f"准备并练习：{clean}" if clean != item.strip() and clean else item
+            )
+        report.action_plan = grounded_actions

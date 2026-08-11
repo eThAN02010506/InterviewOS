@@ -4,12 +4,15 @@ import pytest
 from interview_os.agents.candidate_agent import CandidateAgent
 from interview_os.agents.coach_agent import CoachAgent
 from interview_os.agents.company_agent import CompanyAgent
+from interview_os.agents.feedback_agent import FeedbackAgent
 from interview_os.agents.interview_strategy_agent import InterviewStrategyAgent
 from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
 from interview_os.core.message import MessageType
 from interview_os.core.state import (
     AnswerEvaluation,
+    CompetencyEvaluation,
+    EvaluationReport,
     InterviewState,
     JobDescription,
     QuestionSuggestion,
@@ -103,6 +106,17 @@ class HallucinatingCoachLLM:
             '"feedback":[],"observed_signals":["推动团队扩张"],'
             '"missing_signals":[],"improved_answer":'
             '"团队从80人增长到250人，交付周期缩短30%，收入增长18%。"}'
+        )
+
+
+class HiringVoiceFeedbackLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"overall":"候选人平均得分0.59，推荐录用。",'
+            '"strengths":["有战略意识"],"improvements":["补充时间线"],'
+            '"action_plan":["要求候选人提供项目时间线",'
+            '"请候选人补充团队规模"],"interviewer_notes":["核验数据"],'
+            '"recommendation_reasoning":"证据有限"}'
         )
 
 
@@ -220,6 +234,30 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     assert "STAR 补充框架" in evaluation.improved_answer
     assert any("未提供的数字" in item for item in evaluation.feedback)
     assert "需要核验并补充真实量化结果" in evaluation.missing_signals
+
+
+@pytest.mark.asyncio
+async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
+    agent = FeedbackAgent(llm_client=HiringVoiceFeedbackLLM())
+    state = InterviewState(
+        evaluation=EvaluationReport(
+            competencies=[
+                CompetencyEvaluation(
+                    competency="招聘战略",
+                    score=0.59,
+                    confidence=0.6,
+                )
+            ],
+            overall_score=0.59,
+        )
+    )
+
+    await agent.execute(state)
+
+    assert "录用" not in state.feedback.overall
+    assert "仅用于面试准备" in state.feedback.overall
+    assert all("候选人" not in item for item in state.feedback.action_plan)
+    assert all(item.startswith("准备并练习：") for item in state.feedback.action_plan)
 
 
 @pytest.mark.asyncio
