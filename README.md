@@ -250,6 +250,9 @@ Any response still carrying an unreviewed deterministic rule score makes the ent
 hiring recommendation `insufficient_evidence`, regardless of the numeric average.
 Missing descriptions are normalized to “pending verification” and cannot be presented
 as negative evidence; genuine adverse statements remain explicitly negative.
+The interviewer recommendation explanation is generated deterministically from the
+final calibrated enum and score, so model prose cannot say `lean_no_hire` while the
+decision header correctly says `insufficient_evidence`.
 
 ## Web research
 

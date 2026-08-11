@@ -140,6 +140,9 @@ Provisional deterministic answer scores form a hard decision boundary: if any re
 unreviewed, the recommendation is `insufficient_evidence` even when the numeric score
 would otherwise cross a hire threshold. Feedback post-validation also relabels missing
 descriptions from “negative evidence” to “pending verification”.
+`FeedbackAgent` then replaces free-form recommendation prose with a deterministic
+explanation of the final calibrated enum and score. This makes the decision header
+and reasoning one atomic, internally consistent view.
 
 ## Runtime Settings
 

@@ -272,6 +272,7 @@ async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
     assert "仅用于面试准备" in state.feedback.overall
     assert all("候选人" not in item for item in state.feedback.action_plan)
     assert all(item.startswith("准备并练习：") for item in state.feedback.action_plan)
+    assert "不能给出录用或不录用建议" in state.feedback.recommendation_reasoning
 
 
 @pytest.mark.asyncio
@@ -330,6 +331,7 @@ def test_feedback_agent_relabels_missing_signal_as_pending_not_negative():
 
     assert state.feedback.interviewer_notes[0].startswith("仍待核验：")
     assert state.feedback.interviewer_notes[1].startswith("负面证据：")
+    assert "缺失信号不是负面证据" in state.feedback.recommendation_reasoning
 
 
 @pytest.mark.asyncio

@@ -113,3 +113,22 @@ class FeedbackAgent(Agent):
             else item
             for item in report.interviewer_notes
         ]
+        recommendation = state.evaluation.recommendation
+        if recommendation.value == "insufficient_evidence":
+            report.recommendation_reasoning = (
+                "当前证据包含尚未人工复核的规则评分，或未达到招聘决策门槛，"
+                "因此不能给出录用或不录用建议；缺失信号不是负面证据。"
+            )
+        else:
+            labels = {
+                "strong_hire": "强烈建议录用",
+                "hire": "建议录用",
+                "lean_hire": "倾向录用",
+                "lean_no_hire": "倾向不录用",
+                "no_hire": "不建议录用",
+            }
+            report.recommendation_reasoning = (
+                f"当前校准建议为“{labels.get(recommendation.value, recommendation.value)}”，"
+                f"总分 {state.evaluation.overall_score:.2f}；该结论依据持久化胜任力分数、"
+                "证据置信度和固定阈值生成。仍缺信号需单独核验，不能当作负面证据。"
+            )
