@@ -16,8 +16,12 @@ _STRONG_FILLERS = ("嗯", "啊", "呃")
 _OBSERVED_DISCOURSE_WORDS = ("就是", "那个", "然后")
 _SCORE_FIELDS = ("content", "technical_depth", "structure", "impact")
 _METRIC_PATTERN = re.compile(
+    r"(?:"
     r"\d+(?:[.,]\d+)?\s*(?:%|％|人|天|周|月|年|倍|ms|s|sec|seconds?|min|minutes?|"
-    r"qps|rps|tps|gb|mb|kb|万元|元|美元|usd|cny|\$|¥)",
+    r"qps|rps|tps|gb|mb|kb|万元|元|美元|usd|cny|\$|¥)"
+    r"|百分之\s*[零〇一二两三四五六七八九十百千万\d.]+"
+    r"|[零〇一二两三四五六七八九十百千万]+(?:个)?(?:人|天|周|月|年|倍|万元|元|美元)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -71,12 +75,16 @@ _STEP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "缩短",
             "增长",
             "达成",
+            "达到",
+            "完成",
             "结果",
             "压测",
             "p95",
             "improved",
             "reduced",
             "delivered",
+            "completed",
+            "achieved",
             "result",
         ),
     ),
@@ -262,6 +270,8 @@ def _coverage(
             "缩短",
             "增长",
             "达成",
+            "达到",
+            "完成",
             "恢复",
             "交付",
             "p95",
@@ -271,6 +281,8 @@ def _coverage(
             "returned",
             "resolved",
             "delivered",
+            "completed",
+            "achieved",
             "increased",
         ),
     )

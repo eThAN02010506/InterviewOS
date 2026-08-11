@@ -83,6 +83,21 @@ def test_chinese_technical_answer_recognizes_latency_metric_and_result():
     assert statuses["给出结果与验证方式"] == "covered"
 
 
+def test_spoken_chinese_number_is_a_verifiable_result_metric():
+    analysis = analyze_spoken_answer(
+        "请讲一次你制定并执行招聘策略的经历。",
+        (
+            "在业务扩张阶段，我负责高管招聘，先确定画像，再建立分阶段评估。"
+            "最终我们在八周内完成录用，试用期评估达到预设要求。"
+        ),
+        answer_modality="asr",
+    )
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert statuses["提供一个真实案例"] == "covered"
+    assert statuses["给出结果与验证方式"] == "covered"
+
+
 def test_typed_transition_words_do_not_trigger_asr_structure_penalty():
     evaluation = AnswerEvaluation(
         content=0.8,
