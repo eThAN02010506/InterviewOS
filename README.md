@@ -162,6 +162,9 @@ marks the workflow as `failed` and preserves the failing step and error message.
 Structured calls use a low temperature. When the configured model is `gpt-oss`, the
 OpenAI-compatible request also sends `reasoning_effort=low`; this prevents the model
 from exhausting its completion budget in hidden reasoning and returning empty JSON.
+Transient local-model connection, timeout, and HTTP 5xx failures are retried once in
+the transport adapter before structured-output retries begin. Provider exception and
+response text are never returned to agents or written to logs.
 Public fact cards are created only from substantive source snippets; image captions,
 navigation text, and page titles remain visible as raw sources but are not promoted
 to verified facts. Multi-entity person/company searches recognize either quoted

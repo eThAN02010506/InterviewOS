@@ -5,6 +5,7 @@ Supports Ollama / vLLM / LM Studio backends.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -87,23 +88,36 @@ class LocalLLMClient(LLMClient):
         if "gpt-oss" in self.model.lower() and "reasoning_effort" not in payload:
             payload["reasoning_effort"] = "low"
         started = perf_counter()
-        self._metrics["requests"] += 1
         try:
-            resp = await self._client.post(
-                "/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage") or {}
-            self._metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-            self._metrics["completion_tokens"] += int(usage.get("completion_tokens") or 0)
-            return data["choices"][0]["message"]["content"]
-        except httpx.HTTPError as exc:
-            self._metrics["failures"] += 1
-            logger.error("LLM chat failed: %s", exc)
-            return f"[LLM Error: {exc}]"
+            for attempt in range(2):
+                self._metrics["requests"] += 1
+                try:
+                    resp = await self._client.post(
+                        "/chat/completions",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    usage = data.get("usage") or {}
+                    self._metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+                    self._metrics["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+                    return data["choices"][0]["message"]["content"]
+                except httpx.HTTPError as exc:
+                    self._metrics["failures"] += 1
+                    retryable = not isinstance(exc, httpx.HTTPStatusError) or (
+                        exc.response.status_code >= 500
+                    )
+                    if attempt == 0 and retryable:
+                        logger.warning(
+                            "LLM chat request failed; retrying once (%s)",
+                            type(exc).__name__,
+                        )
+                        await asyncio.sleep(0.25)
+                        continue
+                    logger.error("LLM chat failed after retry (%s)", type(exc).__name__)
+                    return "[LLM Error: request failed]"
+            return "[LLM Error: request failed]"
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
             self._persist_metrics()
@@ -166,8 +180,8 @@ class LocalLLMClient(LLMClient):
                 self._metrics["completion_tokens"] += _approx_tokens(content)
         except httpx.HTTPError as exc:
             self._metrics["failures"] += 1
-            logger.error("LLM chat_stream failed: %s", exc)
-            raise LLMStreamError("Local model stream failed") from exc
+            logger.error("LLM chat_stream failed (%s)", type(exc).__name__)
+            raise LLMStreamError("Local model stream failed") from None
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000
             self._persist_metrics()

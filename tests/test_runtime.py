@@ -141,6 +141,63 @@ async def test_local_gpt_oss_uses_low_reasoning_effort_to_preserve_final_content
 
 
 @pytest.mark.asyncio
+async def test_local_llm_chat_retries_transient_server_error_before_returning_content():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(500, text="private provider body")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"score":0.8}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="gpt-oss-20b",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.chat([{"role": "user", "content": "score"}])
+
+    assert result == '{"score":0.8}'
+    assert calls == 2
+    assert client.settings_status()["metrics"]["requests"] == 2
+    assert client.settings_status()["metrics"]["failures"] == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_chat_returns_redacted_error_after_retry(caplog):
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    def handler(request):
+        raise httpx.ConnectError("private-host-and-prompt")
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="gpt-oss-20b",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.chat([{"role": "user", "content": "private resume"}])
+
+    assert result == "[LLM Error: request failed]"
+    assert "private-host-and-prompt" not in caplog.text
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_local_llm_chat_stream_failure_raises_redacted_error():
     import httpx
 
