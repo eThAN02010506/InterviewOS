@@ -1189,11 +1189,15 @@ class InterviewService:
                 review.structured_by = "llm"
         async with self._lock_for(session_id):
             self._assert_candidate_reset_allowed(runtime.state)
+            candidate_name = runtime.state.candidate.name
             self._reset_candidate_outputs(runtime.state)
             # A newly uploaded document replaces all candidate-derived state.
             # Keeping the previous parsed profile would mix two resumes before
             # the candidate agent has a chance to analyze the new document.
-            runtime.state.candidate = CandidateProfile(raw_resume_text=text)
+            runtime.state.candidate = CandidateProfile(
+                name=candidate_name,
+                raw_resume_text=text,
+            )
             runtime.state.resume_review = review
             runtime.state.past_employer_sources = []
             runtime.state.past_employer_research_status = "not_requested"
@@ -1258,10 +1262,14 @@ class InterviewService:
         """Safely invalidate stale derived state before a workflow consumes a resume."""
         async with self._lock_for(session_id):
             self._assert_candidate_reset_allowed(runtime.state)
+            candidate_name = runtime.state.candidate.name
             same_resume = runtime.state.candidate.raw_resume_text.strip() == resume_text.strip()
             self._reset_candidate_outputs(runtime.state)
             if not same_resume:
-                runtime.state.candidate = CandidateProfile(raw_resume_text=resume_text)
+                runtime.state.candidate = CandidateProfile(
+                    name=candidate_name,
+                    raw_resume_text=resume_text,
+                )
                 runtime.state.resume_review = ResumeReview()
             else:
                 runtime.state.candidate.raw_resume_text = resume_text
@@ -2020,7 +2028,13 @@ class InterviewService:
             runtime.state.candidate = (
                 previous_candidate.model_copy(deep=True)
                 if same_resume
-                else CandidateProfile(raw_resume_text=resume_text)
+                else CandidateProfile(
+                    # The session label is user-controlled identity metadata, not
+                    # a derived resume artifact. Preserve it while clearing every
+                    # analyzed skill/claim from the prior document.
+                    name=previous_candidate.name,
+                    raw_resume_text=resume_text,
+                )
             )
             if not same_resume:
                 # Confirmations belong to a specific resume. Reusing them after
@@ -2074,6 +2088,7 @@ class InterviewService:
                     company_context=company_context,
                     interviewer_name=interviewer_name,
                     interviewer_position=interviewer_position,
+                    authorized_public_research=authorized_public_research,
                     prepare_resume_transition=False,
                 )
                 state = await self.start_mock_interview(session_id)
@@ -2095,6 +2110,7 @@ class InterviewService:
                     job_description=job_description,
                     company_name=company_name,
                     company_context=company_context,
+                    authorized_public_research=authorized_public_research,
                     prepare_resume_transition=False,
                 )
                 state.autopilot.completed_actions = [

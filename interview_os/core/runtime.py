@@ -49,7 +49,13 @@ class AgentRuntime:
                 sender="runtime",
                 content=f"Agent '{agent_name}' not found",
             )
-        logger.info("Runtime -> %s: %s", agent_name, instruction[:80])
+        # Agent instructions can contain resumes, transcripts, or provider data.
+        # Operational logs only need routing and size metadata; never emit content.
+        logger.info(
+            "Runtime -> %s: input_chars=%d",
+            agent_name,
+            len(instruction),
+        )
         started = perf_counter()
         self._record_debug("agent_started", agent=agent_name)
         try:
@@ -60,7 +66,9 @@ class AgentRuntime:
                 agent=agent_name,
                 level=DebugLevel.ERROR,
                 duration_ms=(perf_counter() - started) * 1000,
-                detail=str(exc),
+                # Exception messages from model/provider clients may echo prompts,
+                # response bodies, or credentials. Keep only the exception class.
+                detail=type(exc).__name__,
             )
             raise
         self._message_log.append(result)

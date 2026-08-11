@@ -62,6 +62,14 @@ autopilot runs intelligence and strategy, starts the interview, evaluates every
 answer, and automatically triggers final evaluation. Interviewer autopilot prepares
 the evidence-based blueprint and pauses for real interview evidence. It never invents
 candidate answers or performs public research without explicit authorization.
+The authorization bit is explicitly forwarded into each nested workflow instead of
+relying on defaults. Resume upload preserves the session display identity, while a
+document-explicit name may still replace it during grounded candidate analysis.
+
+Agent runtime logs are metadata-only (`agent`, input/output character counts,
+duration, message type, and exception class). Prompts, resumes, transcripts, model
+response bodies, provider error text, and credentials are excluded from logs and
+debug events.
 
 Search results carry source quality, official-domain and independent-domain signals.
 These are prompt evidence labels rather than truth scores: secondary-source claims

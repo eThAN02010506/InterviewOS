@@ -1,7 +1,11 @@
 """Tests for the Agent Runtime core."""
+import logging
+
 import pytest
 
+from interview_os.core.agent import Agent
 from interview_os.core.evidence import Evidence
+from interview_os.core.message import Message
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import InterviewStage, InterviewState
 
@@ -47,6 +51,25 @@ async def test_runtime_run_missing_agent_async():
     runtime = AgentRuntime()
     result = await runtime.run("nonexistent")
     assert "not found" in result.content
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_agent_input_metadata_without_sensitive_content(caplog):
+    class EchoAgent(Agent):
+        async def execute(self, state, instruction=""):
+            return Message(sender=self.name, content="done")
+
+    runtime = AgentRuntime()
+    runtime.register_agent(
+        EchoAgent(name="privacy_agent", role="Privacy test", goal="Return safely")
+    )
+    private_text = "PRIVATE-JLO-RESUME-CONTENT"
+
+    with caplog.at_level(logging.INFO, logger="interview_os.core.runtime"):
+        await runtime.run("privacy_agent", private_text)
+
+    assert private_text not in caplog.text
+    assert f"input_chars={len(private_text)}" in caplog.text
 
 
 @pytest.mark.asyncio

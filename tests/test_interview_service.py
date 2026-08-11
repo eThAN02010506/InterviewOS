@@ -36,7 +36,11 @@ class MockLLM:
 
 
 class FakeSearchProvider(SearchProvider):
+    def __init__(self):
+        self.queries: list[str] = []
+
     async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
+        self.queries.append(query)
         return [
             SearchResult(
                 title="Grace — CTO at Example",
@@ -107,6 +111,14 @@ class CandidateFailingWorkflowLLM(WorkflowMockLLM):
         prompt = messages[-1]["content"].lower()
         if "structured candidate profile" in prompt or "candidateprofile" in prompt:
             return "not json"
+        return await super().chat(messages, **kwargs)
+
+
+class IdentityOmittingWorkflowLLM(WorkflowMockLLM):
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"].lower()
+        if "structured candidate profile" in prompt or "candidateprofile" in prompt:
+            return '{"name":"","skills":["Recruiting"],"strengths":["APAC hiring"]}'
         return await super().chat(messages, **kwargs)
 
 
@@ -291,6 +303,59 @@ async def test_autopilot_advances_then_waits_for_real_candidate_input(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_autopilot_forwards_public_research_consent_to_candidate_workflow(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot-research.db'}")
+    await storage.init_db()
+    search = FakeSearchProvider()
+    service = InterviewService(storage, IdentityOmittingWorkflowLLM(), search)
+    session_id, _ = await service.create_session(candidate_name="JLO")
+
+    state = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="Talent acquisition leader",
+        job_description="Platform engineer",
+        company_name="Example",
+        interviewer_name="Grace",
+        interviewer_position="CTO",
+        authorized_public_research=True,
+    )
+
+    assert state.autopilot.authorized_public_research is True
+    assert search.queries
+    assert state.company.public_research_status == "completed"
+    assert state.company.public_sources
+    assert state.interviewer.public_research_status == "completed"
+    assert state.interviewer.public_expressions
+    assert state.candidate.name == "JLO"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_autopilot_without_consent_does_not_call_public_search(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot-no-research.db'}")
+    await storage.init_db()
+    search = FakeSearchProvider()
+    service = InterviewService(storage, WorkflowMockLLM(), search)
+    session_id, _ = await service.create_session()
+
+    state = await service.run_autopilot(
+        session_id,
+        role="candidate",
+        resume_text="Python systems engineer",
+        job_description="Platform engineer",
+        company_name="Example",
+        interviewer_name="Grace",
+        authorized_public_research=False,
+    )
+
+    assert search.queries == []
+    assert state.company.public_sources == []
+    assert state.interviewer.public_expressions == []
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'autopilot-complete.db'}")
     await storage.init_db()
@@ -378,7 +443,7 @@ async def test_evaluation_rejects_competencies_not_bound_to_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_autopilot_reuses_candidate_cache_only_for_identical_resume(tmp_path):
+async def test_autopilot_reuses_analysis_only_for_identical_resume_but_keeps_name(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'candidate-cache.db'}")
     await storage.init_db()
     service = InterviewService(storage, CandidateFailingWorkflowLLM(), FakeSearchProvider())
@@ -405,7 +470,8 @@ async def test_autopilot_reuses_candidate_cache_only_for_identical_resume(tmp_pa
         company_name="Example",
     )
     assert changed.candidate.raw_resume_text == "different resume"
-    assert changed.candidate.name == ""
+    assert changed.candidate.name == "Cached Candidate"
+    assert changed.candidate.skills == []
     await storage.close()
 
 

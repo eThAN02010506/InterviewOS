@@ -147,6 +147,9 @@ For an end-to-end flow, call one of:
   analysis and planning step. Candidate mode starts the AI-led interview, evaluates
   each answer, and generates the final dual-side report after the last answer.
   Autopilot pauses instead of fabricating candidate answers or real-world evidence.
+  Explicit public-research consent is propagated to every nested company/interviewer
+  workflow; without it, no search provider is called. The session's candidate display
+  name survives document upload and model output that omits identity.
 
 - `POST /api/workflows/candidate-prep` — candidate, job, company and optional
   interviewer analysis, followed by a structured strategy and mock interview plan.

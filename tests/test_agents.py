@@ -173,6 +173,17 @@ async def test_candidate_agent_extracts_explicit_name_when_model_output_fails():
 
 
 @pytest.mark.asyncio
+async def test_candidate_agent_preserves_session_name_when_model_omits_identity():
+    agent = CandidateAgent(llm_client=InvalidLLM())
+    state = InterviewState()
+    state.candidate.name = "JLO"
+
+    await agent.execute(state, "Talent acquisition leader across APAC")
+
+    assert state.candidate.name == "JLO"
+
+
+@pytest.mark.asyncio
 async def test_candidate_agent_grounds_identity_weaknesses_and_achievements():
     agent = CandidateAgent(llm_client=HallucinatedCandidateLLM())
     state = InterviewState()

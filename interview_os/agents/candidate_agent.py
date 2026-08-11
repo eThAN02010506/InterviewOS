@@ -26,6 +26,7 @@ class CandidateAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
+        existing_name = state.candidate.name
         resume_text = instruction or state.candidate.raw_resume_text
         resume_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", resume_text)
         state.candidate.raw_resume_text = resume_text
@@ -37,6 +38,8 @@ class CandidateAgent(Agent):
             )
             parsed.raw_resume_text = resume_text
             self._ground_profile(parsed, resume_text)
+            if not parsed.name:
+                parsed.name = existing_name
             state.candidate = parsed
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse candidate profile: %s", exc)
