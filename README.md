@@ -159,6 +159,9 @@ For an end-to-end flow, call one of:
 Workflow progress is stored under `state.workflow`. Clients can poll the existing
 session endpoint while a workflow request is running. Invalid structured LLM output
 marks the workflow as `failed` and preserves the failing step and error message.
+Structured calls use a low temperature. When the configured model is `gpt-oss`, the
+OpenAI-compatible request also sends `reasoning_effort=low`; this prevents the model
+from exhausting its completion budget in hidden reasoning and returning empty JSON.
 
 After candidate preparation, run an interactive mock interview:
 

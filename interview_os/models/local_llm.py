@@ -80,6 +80,12 @@ class LocalLLMClient(LLMClient):
             "max_tokens": max_tokens,
             **kwargs,
         }
+        # gpt-oss can spend the entire completion budget in reasoning and return
+        # an empty `content` field at its default effort. llama.cpp's compatible
+        # endpoint accepts this standard hint and still allows an explicit caller
+        # override through kwargs.
+        if "gpt-oss" in self.model.lower() and "reasoning_effort" not in payload:
+            payload["reasoning_effort"] = "low"
         started = perf_counter()
         self._metrics["requests"] += 1
         try:
@@ -123,6 +129,8 @@ class LocalLLMClient(LLMClient):
             "stream": True,
             **kwargs,
         }
+        if "gpt-oss" in self.model.lower() and "reasoning_effort" not in payload:
+            payload["reasoning_effort"] = "low"
         started = perf_counter()
         self._metrics["requests"] += 1
         try:

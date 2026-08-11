@@ -71,6 +71,11 @@ duration, message type, and exception class). Prompts, resumes, transcripts, mod
 response bodies, provider error text, and credentials are excluded from logs and
 debug events.
 
+Structured agent calls use temperature `0.2`. `LocalLLMClient` detects `gpt-oss`
+models and supplies `reasoning_effort=low` unless explicitly overridden. This keeps
+the model's hidden reasoning from consuming the complete token budget before the
+OpenAI-compatible response emits final JSON content.
+
 Search results carry source quality, official-domain and independent-domain signals.
 These are prompt evidence labels rather than truth scores: secondary-source claims
 remain attributed, and absence from the public web is not treated as falsehood.

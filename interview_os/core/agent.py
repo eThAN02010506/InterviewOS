@@ -55,7 +55,13 @@ class Agent(ABC):
     @abstractmethod
     async def execute(self, state: InterviewState, instruction: str = "") -> Message: ...
 
-    async def think(self, prompt: str, context: str = "", max_tokens: int | None = None) -> str:
+    async def think(
+        self,
+        prompt: str,
+        context: str = "",
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
         messages = [{"role": "system", "content": self._system_prompt}]
         history = self.memory.short_term.to_llm_messages(n=5)
         messages.extend(history)
@@ -69,6 +75,8 @@ class Agent(ABC):
         kwargs = {}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         response = await self.llm_client.chat(messages, **kwargs)
         return response
 
@@ -90,7 +98,14 @@ class Agent(ABC):
         """
         last_error: Exception | None = None
         for attempt in (1, 2):
-            raw = await self.think(prompt, context=context, max_tokens=max_tokens)
+            # Structured extraction should be deterministic. Higher temperatures
+            # make local models more likely to rename keys or add prose.
+            raw = await self.think(
+                prompt,
+                context=context,
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
             parsed = self._parse_structured(raw, model)
             if parsed is not None:
                 return parsed

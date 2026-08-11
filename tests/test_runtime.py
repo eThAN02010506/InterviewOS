@@ -108,6 +108,39 @@ async def test_local_llm_chat_stream_yields_delta_content():
 
 
 @pytest.mark.asyncio
+async def test_local_gpt_oss_uses_low_reasoning_effort_to_preserve_final_content():
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["reasoning_effort"] == "low"
+        assert payload["temperature"] == pytest.approx(0.2)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"answer":"ok"}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="gpt-oss-20b",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.chat(
+        [{"role": "user", "content": "Return JSON"}],
+        temperature=0.2,
+    )
+
+    assert result == '{"answer":"ok"}'
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_local_llm_chat_stream_failure_raises_redacted_error():
     import httpx
 
