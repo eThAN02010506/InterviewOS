@@ -63,6 +63,19 @@ def _parse_diarized_response(raw: str) -> list[dict[str, str]]:
         segments.append({"speaker": speaker, "text": utterance})
     return segments
 
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
 # A short built-in Chinese utterance used to verify the endpoint actually
 # understands audio end to end, not just that it responds.
 _PROBE_AUDIO_BASE64 = (
@@ -154,7 +167,7 @@ class OmniAudioClient:
             response.raise_for_status()
             return response, perf_counter() - started
         except httpx.HTTPError as exc:
-            logger.error("Omni chat failed: %s", exc)
+            logger.error("Omni chat failed (%s)", type(exc).__name__)
             raise
 
     async def suggest_next_question(
@@ -218,7 +231,7 @@ class OmniAudioClient:
                         except ValueError:
                             continue
             except httpx.HTTPError as exc:
-                logger.error("Omni streaming chat failed: %s", exc)
+                logger.error("Omni streaming chat failed (%s)", type(exc).__name__)
             if not content:
                 yield "[音频直连模型未返回可用建议]"
 
@@ -251,12 +264,42 @@ class OmniAudioClient:
             response, _ = await self._chat(messages, max_tokens=600)
             raw = response.json()["choices"][0]["message"]["content"]
         except Exception as exc:  # noqa: BLE001 - report and fall back
-            logger.warning("Omni diarize failed: %s", exc)
+            logger.warning("Omni diarize failed (%s)", type(exc).__name__)
             return []
         segments = _parse_diarized_response(raw)
         if not segments:
             logger.warning("Omni diarize returned no usable segments")
         return segments
+
+    async def analyze_speaking_style(
+        self,
+        audio_bytes: bytes,
+        *,
+        transcript: str,
+        content_type: str = "audio/wav",
+    ) -> dict[str, Any]:
+        """Analyze delivery for candidate coaching, never for hiring evidence."""
+        audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
+        fmt = "wav" if "wav" in content_type else "mp3" if "mp3" in content_type else "webm"
+        system = (
+            "你是面试表达辅导员，只分析可改变的发言特征：语速、停顿、填充词、"
+            "音量稳定性、语调变化和清晰度。禁止评价口音、性格、情绪状态、健康、"
+            "年龄、性别、族裔或其他个人特征；禁止给出录用判断。证据不足时明确说无法判断。"
+            "只输出 JSON，字段：pace, pauses, fillers, volume, intonation, clarity, "
+            "strengths(字符串数组), improvements(字符串数组)。每个结论必须具体可行动。"
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"转写文本（仅用于辅助核对）：{transcript[:4000]}"},
+            self._audio_message(audio_base64, fmt),
+        ]
+        try:
+            response, _ = await self._chat(messages, max_tokens=700)
+            raw = response.json()["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001 - caller has a text-only fallback
+            logger.warning("Omni speaking-style analysis failed: %s", type(exc).__name__)
+            return {}
+        return _parse_json_object(raw)
 
     @staticmethod
     async def _read_probe_audio(path: str) -> bytes:
@@ -294,7 +337,7 @@ class OmniAudioClient:
                 "probe_audio": os.path.basename(probe_path) if probe_path else "builtin",
             }
         except Exception as exc:  # noqa: BLE001 - probe reports failure, does not raise
-            logger.warning("Omni capability probe failed: %s", exc)
+            logger.warning("Omni capability probe failed (%s)", type(exc).__name__)
             self._capability = {
                 "ok": False,
                 "latency_ms": round((perf_counter() - started) * 1000, 1),

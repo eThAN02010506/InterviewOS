@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
+    ASRPreviewResponse,
     LiveEvidenceBatchConfirmationRequest,
     LiveEvidenceConfirmationRequest,
     LiveEvidenceMergeConfirmationRequest,
@@ -179,6 +180,24 @@ async def transcribe_audio(
         mode=mode,
     )
     return response(session_id, state)
+
+
+@router.post("/{session_id}/audio/preview", response_model=ASRPreviewResponse)
+async def preview_audio_transcription(
+    session_id: str,
+    service: Service,
+    file: Annotated[UploadFile, File()],
+    language: Annotated[str, Form()] = "zh",
+):
+    content = await file.read()
+    text = await service.preview_audio_transcription(
+        session_id,
+        content=content,
+        filename=file.filename or "preview.wav",
+        content_type=file.content_type or "application/octet-stream",
+        language=language,
+    )
+    return ASRPreviewResponse(text=text)
 
 
 @router.post("/{session_id}/suggestions", response_model=WorkflowResponse)

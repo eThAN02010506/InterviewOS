@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import Response
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import MockAnswerRequest, MockSessionResponse
@@ -92,4 +94,20 @@ async def transcribe_mock_answer(session_id: str, service: Service, file: Annota
     text = await service.transcribe_mock_spoken_answer(
         session_id, content, file.filename or "answer.webm"
     )
-    return {"text": text}
+    speech_feedback = await service.analyze_mock_speech_delivery(
+        session_id,
+        content,
+        text,
+        content_type=file.content_type or "application/octet-stream",
+    )
+    return {"text": text, "speech_feedback": speech_feedback.model_dump(mode="json")}
+
+
+@router.post("/{session_id}/questions/{question_id}/speech")
+async def speak_mock_question(session_id: str, question_id: str, service: Service):
+    try:
+        parsed_id = UUID(question_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="问题 ID 无效") from exc
+    content, content_type = await service.synthesize_mock_question(session_id, parsed_id)
+    return Response(content=content, media_type=content_type)

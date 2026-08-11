@@ -7,7 +7,7 @@
 
 ## JobAgent
 - Role: Job Intelligence Analyst
-- Input: Job description text
+- Input: Job description text; for title-only input, optional source-bound public JD context marked unconfirmed
 - Output: JobDescription (competencies, required skills)
 
 ## CompanyAgent
@@ -36,8 +36,13 @@
 
 ## CoachAgent
 - Input: Question + Answer
-- Output: 4-dimension scoring + deterministic STAR completion scaffold
+- Output: 4-dimension scoring + per-dimension behavior anchors and concrete next actions + deterministic STAR completion scaffold
 - Provenance: the model returns an untrusted draft; the service assigns scoring source and review status
+
+## Speech Delivery Coach (service boundary)
+- Input: Candidate practice audio + final ASR text
+- Output: pace, pause, filler, volume-stability, intonation, and clarity coaching
+- Trust boundary: no accent/personality/demographic inference; output never becomes Evidence or a hiring signal
 
 ## LiveInterviewAgent
 - Input: Live transcript

@@ -67,6 +67,22 @@ class EmployerSearchProvider(SearchProvider):
         return []
 
 
+class JobDescriptionSearchProvider(SearchProvider):
+    def __init__(self):
+        self.queries = []
+
+    async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
+        self.queries.append(query)
+        return [
+            SearchResult(
+                title="Example Platform Engineer 招聘",
+                url="https://careers.example.com/platform-engineer",
+                snippet="岗位职责：设计分布式平台和 SLO。任职要求：熟悉 Python 与可观测性。",
+                source="fake",
+            )
+        ]
+
+
 class WorkflowMockLLM:
     async def chat(self, messages, **kwargs):
         prompt = messages[-1]["content"]
@@ -104,6 +120,17 @@ class WorkflowMockLLM:
 
     async def embed(self, text):
         return []
+
+
+class JobPromptCapturingLLM(WorkflowMockLLM):
+    def __init__(self):
+        self.job_prompt = ""
+
+    async def chat(self, messages, **kwargs):
+        prompt = messages[-1]["content"]
+        if "job description" in prompt.lower():
+            self.job_prompt = prompt
+        return await super().chat(messages, **kwargs)
 
 
 class CandidateFailingWorkflowLLM(WorkflowMockLLM):
@@ -235,6 +262,34 @@ async def test_candidate_prep_workflow_persists_structured_results(tmp_path):
     restored_state = await restored.get_state(session_id)
     assert restored_state.strategy.summary == "Lead with impact"
     assert restored_state.next_action == "Start mock interview"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_title_only_job_is_researched_before_question_generation(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'job-research.db'}")
+    await storage.init_db()
+    search = JobDescriptionSearchProvider()
+    llm = JobPromptCapturingLLM()
+    service = InterviewService(storage, llm, search)
+    session_id, _ = await service.create_session()
+
+    state = await service.run_candidate_prep(
+        session_id,
+        resume_text="Python systems engineer",
+        job_description="Platform Engineer",
+        company_name="Example",
+        authorized_public_research=True,
+    )
+
+    assert search.queries and "岗位职责" in search.queries[0]
+    assert "设计分布式平台" in llm.job_prompt
+    assert state.job.raw_description == "Platform Engineer"
+    assert state.job_review.public_research_status == "completed"
+    assert state.job_review.public_sources[0]["url"].startswith("https://careers.example.com")
+    assert state.job_review.requirements
+    assert all(item.origin.value == "inferred" for item in state.job_review.requirements)
+    assert any("待确认" in warning for warning in state.job_review.warnings)
     await storage.close()
 
 
@@ -403,7 +458,7 @@ async def test_evaluation_falls_back_when_model_omits_competencies(tmp_path):
         assert question is not None
         await service.submit_mock_answer(session_id, question.id, "Clear trade-offs and metrics")
 
-        state = await service.run_evaluation(session_id)
+        state = await service.finish_mock_interview(session_id)
 
         assert state.evaluation.competencies
         assert "已按已记录证据完成确定性聚合" in state.evaluation.summary
@@ -430,7 +485,7 @@ async def test_evaluation_rejects_competencies_not_bound_to_evidence(tmp_path):
         assert question is not None
         await service.submit_mock_answer(session_id, question.id, "Clear trade-offs and metrics")
 
-        state = await service.run_evaluation(session_id)
+        state = await service.finish_mock_interview(session_id)
 
         evidence_competencies = {item.competency for item in state.evidence}
         assert {item.competency for item in state.evaluation.competencies} <= evidence_competencies
@@ -682,7 +737,7 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     assert question is not None
     await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
 
-    state = await service.run_evaluation(session_id)
+    state = await service.finish_mock_interview(session_id)
     assert state.evaluation.overall_score == pytest.approx(0.75)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == [

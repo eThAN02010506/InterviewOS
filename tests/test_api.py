@@ -236,13 +236,21 @@ def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
 
         updated = client.put(
             "/api/settings",
-            json={"search": {"provider": "tavily", "tavily_api_key": "tvly-secret"}},
+            json={
+                "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
+                "tts": {
+                    "base_url": "http://tts.test/v1",
+                    "model": "qwen3-tts",
+                    "api_key": "tts-secret",
+                },
+            },
         )
         assert updated.status_code == 200
         body = updated.json()
         assert body["search"]["selected"] == "tavily"
         assert body["search"]["configured"]["tavily"] is True
     assert "tvly-secret" not in updated.text
+    assert "tts-secret" not in updated.text
     assert (tmp_path / "settings.json").stat().st_mode & 0o777 == 0o600
 
 
@@ -431,6 +439,7 @@ def test_evaluation_api_generates_dual_side_report(tmp_path):
             f"/api/mock-interviews/{session_id}/answers",
             json={"question_id": started["current_question"]["id"], "answer": "Clear design"},
         )
+        client.post(f"/api/mock-interviews/{session_id}/finish")
         response = client.post(f"/api/evaluations/{session_id}")
     assert response.status_code == 200
     assert response.json()["state"]["evaluation"]["recommendation"] == "insufficient_evidence"
@@ -1067,6 +1076,10 @@ def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_pa
         client.post(
             f"/api/live-interviews/{session_id}/segments/{candidates[2]['id']}/evidence",
             json={"competency": "Incident Review"},
+        )
+        client.post(
+            f"/api/live-interviews/{session_id}/status",
+            json={"status": "completed"},
         )
         evaluated = client.post(f"/api/evaluations/{session_id}")
 

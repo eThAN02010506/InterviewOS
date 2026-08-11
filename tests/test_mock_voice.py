@@ -27,6 +27,46 @@ class _WorkflowLLM:
         return []
 
 
+class _OmniFallback:
+    mode = "asr_text"
+
+    async def analyze_speaking_style(self, content, **kwargs):
+        return {}
+
+    def status(self):
+        return {"enabled": True, "mode": self.mode}
+
+    def secret_snapshot(self):
+        return {"mode": self.mode}
+
+    def configure(self, **kwargs):
+        self.mode = kwargs.get("mode", self.mode)
+
+    async def close(self):
+        return None
+
+
+class _FakeTTS:
+    def __init__(self):
+        self.spoken = []
+
+    async def synthesize(self, text):
+        self.spoken.append(text)
+        return b"RIFF-fake-question-audio", "audio/wav"
+
+    def status(self):
+        return {"enabled": True, "model": "fake-tts"}
+
+    def secret_snapshot(self):
+        return {"model": "fake-tts", "api_key": ""}
+
+    def configure(self, **kwargs):
+        return None
+
+    async def close(self):
+        return None
+
+
 def _register(client: TestClient, username: str = "alice") -> str:
     resp = client.post(
         "/api/auth/register", json={"username": username, "password": "pw-123456"}
@@ -38,12 +78,14 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_app(tmp_path, asr):
+def _make_app(tmp_path, asr, *, tts=None):
     return create_app(
         storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'mock-voice.db'}"),
         llm_client=_WorkflowLLM(),
         configure_llm=False,
         asr_client=asr,
+        omni_client=_OmniFallback(),
+        tts_client=tts,
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
     )
 
@@ -71,6 +113,8 @@ def test_mock_transcribe_returns_text(tmp_path):
         )
         assert resp.status_code == 200
         assert "压测" in resp.json()["text"]
+        assert resp.json()["speech_feedback"]["source"] == "text_fallback"
+        assert "不进入" in resp.json()["speech_feedback"]["disclaimer"]
         # Pure transcription: no answer was submitted, transcription is not stored.
         state = client.get(f"/api/interviews/sessions/{sid}", headers=_auth(token)).json()["state"]
         assert not (state.get("mock_interview") or {}).get("answers")
@@ -130,3 +174,60 @@ def test_mock_transcribe_anonymous_uses_local_owner(tmp_path):
             ).status_code
             == 404
         )
+
+
+def test_asr_preview_is_provisional_and_does_not_mutate_transcript(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"text": "这是实时草稿"})
+        ),
+    )
+    with TestClient(_make_app(tmp_path, asr)) as client:
+        token = _register(client)
+        sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        preview = client.post(
+            f"/api/live-interviews/{sid}/audio/preview",
+            files={"file": ("preview.wav", _FAKE_WAV, "audio/wav")},
+            headers=_auth(token),
+        )
+        state = client.get(f"/api/interviews/sessions/{sid}", headers=_auth(token)).json()["state"]
+    assert preview.status_code == 200
+    assert preview.json()["text"] == "这是实时草稿"
+    assert state["live_interview"]["segments"] == []
+
+
+def test_current_mock_question_can_be_synthesized_but_other_id_cannot(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"text": "x"})),
+    )
+    tts = _FakeTTS()
+    with TestClient(_make_app(tmp_path, asr, tts=tts)) as client:
+        token = _register(client)
+        sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        prepared = client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": sid,
+                "resume_text": "Python engineer",
+                "job_description": "Platform Engineer\n岗位职责：设计分布式平台\n任职要求：熟悉 Python",
+                "company_name": "Example",
+            },
+            headers=_auth(token),
+        )
+        assert prepared.status_code == 200
+        started = client.post(f"/api/mock-interviews/{sid}/start", headers=_auth(token)).json()
+        question = started["current_question"]
+        spoken = client.post(
+            f"/api/mock-interviews/{sid}/questions/{question['id']}/speech",
+            headers=_auth(token),
+        )
+        denied = client.post(
+            f"/api/mock-interviews/{sid}/questions/00000000-0000-0000-0000-000000000000/speech",
+            headers=_auth(token),
+        )
+    assert spoken.status_code == 200
+    assert spoken.headers["content-type"].startswith("audio/wav")
+    assert tts.spoken == [question["question"]]
+    assert denied.status_code == 409

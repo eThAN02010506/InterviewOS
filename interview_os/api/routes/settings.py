@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.asr import ASRClient
+from interview_os.tools.tts import TTSClient
 from interview_os.tools.web_search import SearchProviderManager
 
 router = APIRouter()
@@ -57,12 +58,22 @@ class ResumeLLMSettingsUpdate(BaseModel):
     model: str | None = None
 
 
+class TTSSettingsUpdate(BaseModel):
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    voice: str | None = None
+    speech_path: str | None = None
+    timeout_seconds: float | None = Field(default=None, ge=1, le=600)
+
+
 class SettingsUpdate(BaseModel):
     search: SearchSettingsUpdate | None = None
     llm: LLMSettingsUpdate | None = None
     asr: ASRSettingsUpdate | None = None
     live_audio: LiveAudioSettingsUpdate | None = None
     resume_llm: ResumeLLMSettingsUpdate | None = None
+    tts: TTSSettingsUpdate | None = None
     persist: bool = True
 
 
@@ -81,6 +92,7 @@ async def _restore_runtime_settings(request: Request, snapshots: dict) -> None:
     llm = request.app.state.llm_client
     asr: ASRClient = request.app.state.asr_client
     omni = getattr(request.app.state, "omni_client", None)
+    tts: TTSClient | None = getattr(request.app.state, "tts_client", None)
     service = request.app.state.interview_service
     original_resume = snapshots["resume_client"]
     current_resume = getattr(request.app.state, "resume_llm_client", None)
@@ -95,6 +107,9 @@ async def _restore_runtime_settings(request: Request, snapshots: dict) -> None:
         omni.api_key = snapshots["live_audio"]["api_key"]
         service.set_live_audio_mode(snapshots["live_mode"])
         omni.mode = snapshots["live_mode"]
+    if tts is not None and snapshots["tts"] is not None:
+        tts.configure(**snapshots["tts"])
+        tts.api_key = snapshots["tts"]["api_key"]
     if current_resume is not original_resume:
         if current_resume is not None and hasattr(current_resume, "close"):
             await current_resume.close()
@@ -110,12 +125,14 @@ async def get_settings(request: Request):
     llm = request.app.state.llm_client
     asr: ASRClient = request.app.state.asr_client
     omni = getattr(request.app.state, "omni_client", None)
+    tts = getattr(request.app.state, "tts_client", None)
     resume_llm = getattr(request.app.state, "resume_llm_client", None)
     return {
         "search": search.status(),
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "asr": asr.status(),
         "live_audio": omni.status() if omni is not None else {"enabled": False},
+        "tts": tts.status() if tts is not None else {"enabled": False},
         "resume_llm": (
             resume_llm.settings_status() if isinstance(resume_llm, LocalLLMClient) else {"managed": True}
         ),
@@ -131,6 +148,7 @@ async def update_settings(payload: SettingsUpdate, request: Request):
     asr: ASRClient = request.app.state.asr_client
     store: LocalSettingsStore = request.app.state.settings_store
     omni = getattr(request.app.state, "omni_client", None)
+    tts = getattr(request.app.state, "tts_client", None)
     async with request.app.state.settings_lock:
         resume_llm = getattr(request.app.state, "resume_llm_client", None)
         snapshots = {
@@ -139,6 +157,7 @@ async def update_settings(payload: SettingsUpdate, request: Request):
             "asr": asr.secret_snapshot(),
             "live_audio": omni.secret_snapshot() if omni is not None else None,
             "live_mode": request.app.state.interview_service.live_audio_mode,
+            "tts": tts.secret_snapshot() if tts is not None else None,
             "resume_client": resume_llm,
             "resume_llm": (
                 resume_llm.secret_snapshot()
@@ -163,6 +182,10 @@ async def update_settings(payload: SettingsUpdate, request: Request):
                 if payload.live_audio.mode is not None:
                     service.set_live_audio_mode(payload.live_audio.mode)
                     omni.mode = payload.live_audio.mode
+            if payload.tts:
+                if tts is None:
+                    raise ValueError("TTS client is not configured")
+                tts.configure(**payload.tts.model_dump())
             if payload.resume_llm:
                 resume_llm = getattr(request.app.state, "resume_llm_client", None)
                 if not isinstance(resume_llm, LocalLLMClient):
@@ -185,6 +208,8 @@ async def update_settings(payload: SettingsUpdate, request: Request):
                 saved["asr"] = asr.secret_snapshot()
                 if omni is not None:
                     saved["live_audio"] = omni.secret_snapshot()
+                if tts is not None:
+                    saved["tts"] = tts.secret_snapshot()
                 resume_llm = getattr(request.app.state, "resume_llm_client", None)
                 if isinstance(resume_llm, LocalLLMClient):
                     saved["resume_llm"] = resume_llm.secret_snapshot()

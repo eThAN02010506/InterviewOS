@@ -96,10 +96,15 @@ The system is built around a few product rules:
   happens before document parsing or optional LLM structuring, then is checked again
   before committing results so concurrent interview activity cannot be overwritten.
 - JD quality matters. A title-only JD is treated as insufficient context, and the
-  UI should ask for responsibilities, requirements, and team background while
-  separating explicit requirements from AI assumptions. Inferred requirements can
-  be confirmed, edited into explicit requirements, or removed before later Agents
-  use them.
+  UI asks for responsibilities, requirements, and team background while separating
+  explicit requirements from AI assumptions. With explicit public-research consent,
+  a title-only input first triggers a source-filtered public JD search; source-bound
+  snippets are supplied to the Job Agent before questions are generated. The stored
+  user input remains the original title, every discovered requirement stays
+  `inferred`, and source cards/warnings require confirmation. Without consent or a
+  relevant source, the workflow stays generic. Inferred requirements can be
+  confirmed, edited into explicit requirements, or removed before later Agents use
+  them.
 - Search conclusions are organized into fact cards with source URLs and status:
   verified, inferred, conflicting, or needs review. The UI groups cards by conflict,
   company, interviewer, past-employer, technology, and public-opinion categories.
@@ -220,15 +225,31 @@ the session to `active`, allowing the user to finish again. Process-local refill
 flags and an interrupted `evaluating` state are restored to retryable values after
 a process restart.
 
-Candidates can answer by voice instead of typing: `POST /api/mock-interviews/
-{session_id}/transcribe` runs the audio through the configured LAN ASR and
-returns plain text (a pure transcription — it does not touch live state or
-persist the recording). The UI's "语音回答" button records, transcribes into
-the answer box, and lets the candidate edit before submitting.
+Candidates can answer by voice instead of typing. While recording, bounded
+cumulative audio snapshots are sent to `POST /api/live-interviews/{session_id}/
+audio/preview`; the provisional text appears in the answer box but is never
+persisted as transcript or evidence. Stopping the recording sends one stable WAV
+to `POST /api/mock-interviews/{session_id}/transcribe`, keeps the original browser
+recording available in an audio player, and lets the candidate edit the final
+text before submitting. The recording is not uploaded for storage.
 
-Each answer receives validated 0–1 scores for content, technical depth, structure,
-and impact. The average becomes evidence confidence for the question competency;
-observed and missing signals remain attached to the persisted answer and evidence.
+The current question can be read aloud through the configurable OpenAI-compatible
+TTS client (`8002` / Qwen3-TTS by default). The server only accepts the current
+owned question ID, so the endpoint cannot be used as an arbitrary speech proxy.
+After transcription, the configured `8004` omni model may analyze only changeable
+delivery features: pace, pauses, fillers, volume stability, intonation, and clarity.
+It is forbidden from evaluating accent, personality, health, demographic traits,
+or hire suitability. If audio analysis fails or exceeds 25 seconds, deterministic
+duration/text indicators are returned. Delivery feedback is coaching-only and is
+never added to competency evidence or the hiring recommendation.
+
+Each answer receives validated 0–1 scores for four equally weighted, job-related
+dimensions: role-relevant evidence, decision/professional depth, response structure,
+and result/reflection. Their mean becomes evidence confidence for the question
+competency. The service then creates a behavior-anchored card for every dimension:
+the observable answer feature supporting the score and one concrete next action.
+The three weakest dimensions become ranked improvement priorities; observed and
+missing signals remain attached to the persisted answer and evidence.
 The model does not generate a replacement answer. It scores the submission and returns
 at most three feedback/signal items; InterviewOS deterministically displays the exact
 original answer inside a STAR completion scaffold. This prevents model-written names,
@@ -294,7 +315,7 @@ settings are stored in a local permission-restricted file and environment variab
 can still provide startup defaults.
 
 Each settings request is serialized and applied transactionally across search, main
-LLM, ASR, live-audio, and resume-LLM clients. Validation or local persistence
+LLM, ASR, TTS, live-audio, and resume-LLM clients. Validation or local persistence
 failure restores the previous runtime configuration. The resume structuring model
 initially reuses the main LLM, but its first dedicated UI update creates a separate
 client so changing resume extraction cannot silently move the primary reasoning

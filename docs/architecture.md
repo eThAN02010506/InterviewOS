@@ -85,6 +85,11 @@ When model scoring JSON remains invalid, a bounded deterministic rubric derives 
 from observable answer features (detail length, action/structure/result markers, and
 verified metrics). It records a degradation event and never presents the result as an
 equivalent substitute for human review.
+The post-validator also rebuilds four behavior-anchored feedback cards from the
+submitted answer: role evidence, decision depth, structure, and result/reflection.
+Each card contains an observable feature and one concrete next step; model prose
+cannot create the evidence explanation. The dimensions are equally weighted until a
+validated job-specific weighting policy exists.
 
 `LocalLLMClient.chat` separates transport recovery from model-output recovery. One
 bounded retry handles connection/timeouts and HTTP 5xx responses; only successfully
@@ -97,6 +102,11 @@ remain attributed, and absence from the public web is not treated as falsehood.
 Official-domain matching considers every quoted entity in a joint person/company
 query. Fact-card extraction discards image captions, navigation boilerplate, and
 title-only fallbacks; these remain auditable in the underlying source list.
+For a title-only JD, authorized public research runs before the parallel Job Agent
+step. Only title-relevant results become prompt context. The resulting requirements
+are persisted as inferred with their source URLs while `job.raw_description` retains
+the user's original title. No consent or no relevant result leaves the generic title
+path intact.
 
 ## Mock Interview State Machine
 
@@ -121,6 +131,13 @@ restart. The same restoration changes an orphaned `evaluating` state back to `ac
 so finalization can be retried. State grows linearly with the number of questions actually visited and is
 bounded operationally by the user-controlled interview duration rather than by an
 initial fixed plan.
+
+Mock audio has three separate data paths. ASR previews are cumulative, rate-limited
+snapshots and never mutate session state. The stopped recording is transcribed once
+and remains a browser-local object URL for replay. TTS accepts only the current owned
+question ID and returns audio without persisting it. Optional omni delivery analysis
+has a 25-second service timeout and may discuss only changeable speaking behavior;
+its result is UI coaching and never an Evidence input.
 
 ## Final Evaluation
 
@@ -165,7 +182,7 @@ events expose only configuration status, never secret values.
 
 Updates acquire one application-level async lock and snapshot every mutable provider
 before applying changes. Any validation or persistence error triggers a best-effort
-rollback of all providers, preventing concurrent requests or a late ASR error from
+rollback of all providers, preventing concurrent requests or a late ASR/TTS error from
 leaving an earlier search/LLM mutation active. The resume client aliases the main
 LLM only until its first dedicated configuration; that update constructs a separate
 client, atomically swaps the service reference, and participates in rollback and

@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 
 from interview_os.core.agent import Agent
+from interview_os.core.evidence import EvidencePolarity
 from interview_os.core.message import Message
 from interview_os.core.state import (
     AnswerReviewStatus,
@@ -94,7 +95,7 @@ class EvaluationAgent(Agent):
             )
         if calibrated != original:
             report.risks.append(
-                "模型招聘建议与证据分数或置信度不一致，已按确定性阈值校准。"
+                "初始建议与证据分数或置信度不一致，已按确定性阈值校准。"
             )
 
     @staticmethod
@@ -104,7 +105,17 @@ class EvaluationAgent(Agent):
             grouped.setdefault(evidence.competency or "综合能力", []).append(evidence)
         competencies = []
         for competency, evidence_items in grouped.items():
-            score = sum(item.confidence for item in evidence_items) / len(evidence_items)
+            # Positive/neutral evidence retains its demonstrated competency
+            # score. Explicitly human-classified negative evidence can never
+            # improve a hiring recommendation: confidence in an adverse signal
+            # moves the contribution down, capped below the lean-hire boundary.
+            directional_scores = [
+                min(0.4, 1.0 - item.confidence)
+                if item.polarity == EvidencePolarity.NEGATIVE
+                else item.confidence
+                for item in evidence_items
+            ]
+            score = sum(directional_scores) / len(directional_scores)
             recorded_gaps = list(
                 dict.fromkeys(
                     gap.strip()

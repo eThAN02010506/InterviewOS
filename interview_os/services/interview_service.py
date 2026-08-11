@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
 import re
+import wave
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +16,7 @@ from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
+from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.factory import create_runtime
@@ -73,6 +76,7 @@ from interview_os.core.state import (
     RequirementOrigin,
     ResumeClaimStatus,
     ResumeReview,
+    SpeechDeliveryFeedback,
     TranscriptSegment,
     TranscriptSpeaker,
     WorkflowProgress,
@@ -90,6 +94,7 @@ from interview_os.services.intelligence_service import (
 from interview_os.services.resume_llm import structure_resume_with_llm
 from interview_os.services.resume_service import ResumeProcessor
 from interview_os.tools.asr import ASRClient, ASRError
+from interview_os.tools.tts import TTSClient, TTSError
 from interview_os.tools.web_search import (
     SearchProvider,
     filter_entity_results,
@@ -139,6 +144,7 @@ class InterviewService:
         asr_client: ASRClient | None = None,
         background: BackgroundTaskManager | None = None,
         omni_client: Any = None,
+        tts_client: TTSClient | None = None,
         resume_llm_client: Any = None,
         recordings_dir: Path | None = None,
     ) -> None:
@@ -148,6 +154,7 @@ class InterviewService:
         self.debug_events = debug_events
         self.asr_client = asr_client
         self.omni_client = omni_client
+        self.tts_client = tts_client
         self.resume_llm_client = resume_llm_client
         self.live_audio_mode = "asr_text"  # "asr_text" | "audio_direct"
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
@@ -373,6 +380,54 @@ class InterviewService:
         )
         return state, transcript
 
+    async def preview_audio_transcription(
+        self,
+        session_id: str,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        language: str = "zh",
+    ) -> str:
+        """Transcribe a cumulative recording snapshot without persisting it.
+
+        The browser calls this at a bounded interval while recording so users
+        can see provisional words. Only the final audio request creates a stable
+        transcript segment, preventing duplicate evidence and partial text from
+        entering downstream agents.
+        """
+        await self._get_runtime(session_id)
+        if len(content) > 10 * 1024 * 1024:
+            raise LiveInterviewStateError("ASR preview exceeds the 10 MB limit")
+        if not content:
+            raise LiveInterviewStateError("ASR preview audio is empty")
+        if self.asr_client is None:
+            raise LiveInterviewStateError("ASR client is not configured")
+        started = perf_counter()
+        try:
+            transcript = await self.asr_client.transcribe(
+                content,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+            )
+        except ASRError as exc:
+            self._record_debug(
+                "asr_preview_failed",
+                session_id,
+                level=DebugLevel.ERROR,
+                detail=str(exc),
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            raise WorkflowExecutionError(str(exc)) from exc
+        self._record_debug(
+            "asr_preview_completed",
+            session_id,
+            detail=f"bytes={len(content)}; chars={len(transcript)}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return transcript
+
     async def transcribe_mock_spoken_answer(
         self, session_id: str, content: bytes, filename: str
     ) -> str:
@@ -416,6 +471,130 @@ class InterviewService:
             duration_ms=(perf_counter() - started) * 1000,
         )
         return transcript
+
+    async def analyze_mock_speech_delivery(
+        self,
+        session_id: str,
+        content: bytes,
+        transcript: str,
+        *,
+        content_type: str = "audio/wav",
+    ) -> SpeechDeliveryFeedback:
+        """Return coaching-only delivery feedback with a safe local fallback."""
+        await self._get_runtime(session_id)
+        duration = self._wav_duration_seconds(content) if "wav" in content_type else 0.0
+        clean = transcript.strip()
+        filler_count = sum(clean.count(word) for word in ("嗯", "啊", "然后", "就是", "那个"))
+        chars_per_minute = round(len(clean) * 60 / duration) if duration > 0 else 0
+        pace = (
+            f"约 {chars_per_minute} 字/分钟，语速偏快，关键结论后可停顿 1–2 秒。"
+            if chars_per_minute > 300
+            else f"约 {chars_per_minute} 字/分钟，语速偏慢，可先说结论再补证据。"
+            if 0 < chars_per_minute < 120
+            else f"约 {chars_per_minute} 字/分钟，处于易跟随区间。"
+            if chars_per_minute
+            else "未获得可靠音频时长，无法计算语速。"
+        )
+        fallback = SpeechDeliveryFeedback(
+            pace=pace,
+            fillers=(
+                f"转写中识别到约 {filler_count} 处常见填充词，可用短停顿替代。"
+                if filler_count
+                else "转写中未识别到明显填充词。"
+            ),
+            clarity=(
+                "转写文本过短，暂时无法判断表达清晰度。"
+                if len(clean) < 20
+                else "转写文本可读；请用“结论—行动—结果”的句式进一步提高清晰度。"
+            ),
+            strengths=["已完成可回放的口语回答，可对照转写文本自查。"],
+            improvements=[
+                "回放时只检查一个目标：每个关键结论后留出 1–2 秒停顿。",
+                "下次开头先用一句话给出结论，再说行动和可量化结果。",
+            ],
+        )
+        if self.omni_client is None or not hasattr(self.omni_client, "analyze_speaking_style"):
+            return fallback
+        started = perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                self.omni_client.analyze_speaking_style(
+                    content,
+                    transcript=clean,
+                    content_type=content_type,
+                ),
+                timeout=25.0,
+            )
+        except TimeoutError:
+            self._record_debug(
+                "mock_speech_delivery_fallback",
+                session_id,
+                detail="reason=audio_model_timeout; source=text_fallback",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            return fallback
+        allowed_text = ("pace", "pauses", "fillers", "volume", "intonation", "clarity")
+        if not result or not any(str(result.get(key) or "").strip() for key in allowed_text):
+            return fallback
+        values = {key: str(result.get(key) or getattr(fallback, key))[:500] for key in allowed_text}
+        raw_strengths = result.get("strengths")
+        raw_improvements = result.get("improvements")
+        feedback = SpeechDeliveryFeedback(
+            source="audio_model",
+            **values,
+            strengths=[str(item)[:300] for item in raw_strengths[:4]]
+            if isinstance(raw_strengths, list)
+            else fallback.strengths,
+            improvements=[str(item)[:300] for item in raw_improvements[:4]]
+            if isinstance(raw_improvements, list)
+            else fallback.improvements,
+        )
+        self._record_debug(
+            "mock_speech_delivery_analyzed",
+            session_id,
+            detail=f"source=audio_model; duration_seconds={duration:.1f}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return feedback
+
+    @staticmethod
+    def _wav_duration_seconds(content: bytes) -> float:
+        try:
+            with wave.open(io.BytesIO(content), "rb") as audio:
+                rate = audio.getframerate()
+                return audio.getnframes() / rate if rate else 0.0
+        except (wave.Error, EOFError):
+            return 0.0
+
+    async def synthesize_mock_question(
+        self, session_id: str, question_id: UUID
+    ) -> tuple[bytes, str]:
+        """Synthesize a question that belongs to this owned mock session."""
+        runtime = await self._get_runtime(session_id)
+        question = self.current_mock_question(runtime.state)
+        if question is None or question.id != question_id:
+            raise MockInterviewStateError("Question is not the current mock question")
+        if self.tts_client is None:
+            raise WorkflowExecutionError("TTS client is not configured")
+        started = perf_counter()
+        try:
+            audio, content_type = await self.tts_client.synthesize(question.question)
+        except TTSError as exc:
+            self._record_debug(
+                "mock_question_tts_failed",
+                session_id,
+                level=DebugLevel.ERROR,
+                detail="tts_provider_error",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            raise WorkflowExecutionError(str(exc)) from exc
+        self._record_debug(
+            "mock_question_tts_completed",
+            session_id,
+            detail=f"question_id={question_id}; bytes={len(audio)}",
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        return audio, content_type
 
     async def plan_live_next_question(self, session_id: str) -> InterviewState:
         runtime = await self._get_runtime(session_id)
@@ -591,6 +770,9 @@ class InterviewService:
             )
             runtime.state.live_interview_records.append(record)
             runtime.state.evidence.append(placeholder)
+            self._invalidate_final_reports(
+                runtime.state, "New live evidence was confirmed; regenerate evaluation"
+            )
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
             self._refresh_live_coverage_guidance(runtime.state)
@@ -638,6 +820,9 @@ class InterviewService:
             record.evaluation = evaluation
             record.scoring_status = "scored"
             record.scoring_error = ""
+            self._invalidate_final_reports(
+                runtime.state, "Live evidence was re-evaluated; regenerate evaluation"
+            )
             self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review updated live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
@@ -665,6 +850,9 @@ class InterviewService:
             runtime.state.evidence = [
                 item for item in runtime.state.evidence if item.source_record_id != record_id
             ]
+            self._invalidate_final_reports(
+                runtime.state, "Live evidence was revoked; regenerate evaluation"
+            )
             self._refresh_live_answer_boundaries(runtime.state)
             self._refresh_live_rolling_summary(runtime.state)
             self._refresh_live_coverage_guidance(runtime.state)
@@ -726,6 +914,13 @@ class InterviewService:
             placeholder.competency = record.competency
             placeholder.signal = "; ".join(evaluation.observed_signals) or record.answer[:200]
             placeholder.confidence = evaluation.overall_score()
+            # The signal has just been replaced by model output. Never carry a
+            # human classification from the previous signal across that change.
+            placeholder.polarity = (
+                EvidencePolarity.POSITIVE
+                if evaluation.observed_signals
+                else EvidencePolarity.NEUTRAL
+            )
             placeholder.notes = "; ".join(evaluation.missing_signals)
             return
         state.evidence.append(
@@ -735,6 +930,11 @@ class InterviewService:
                 confidence=evaluation.overall_score(),
                 source=EvidenceSource.LIVE_INTERVIEW,
                 source_record_id=record.id,
+                polarity=(
+                    EvidencePolarity.POSITIVE
+                    if evaluation.observed_signals
+                    else EvidencePolarity.NEUTRAL
+                ),
                 notes="; ".join(evaluation.missing_signals),
             )
         )
@@ -771,6 +971,13 @@ class InterviewService:
                     None,
                 )
                 if current is None:
+                    return
+                if (
+                    current.evaluation.scoring_source == AnswerScoringSource.HUMAN
+                    and current.evaluation.review_status == AnswerReviewStatus.REVIEWED
+                ):
+                    # The same trust rule applies when the stale model request
+                    # fails: it must not make a reviewed record provisional.
                     return
                 current.scoring_status = "failed"
                 current.scoring_error = str(exc)[:500]
@@ -809,6 +1016,9 @@ class InterviewService:
             current.evaluation = evaluation
             current.scoring_status = "scored"
             current.scoring_error = ""
+            self._invalidate_final_reports(
+                runtime.state, "Live evidence scoring changed; regenerate evaluation"
+            )
             self._refresh_live_coverage_guidance(runtime.state)
             await self._persist(session_id, runtime.state)
 
@@ -1266,6 +1476,43 @@ class InterviewService:
         state.current_stage = InterviewStage.NOT_STARTED
         state.next_action = "Regenerate candidate-dependent interview artifacts"
 
+    @staticmethod
+    def _invalidate_final_reports(state: InterviewState, next_action: str) -> bool:
+        """Clear derived decisions when their underlying evidence changes.
+
+        This is intentionally a no-op before any final report exists, so ordinary
+        answer collection does not disturb the active interview stage. Once an
+        evaluation has been produced, every evidence mutation returns the state
+        to a retryable wrap-up phase and also reopens completed automation state.
+        """
+        has_derived_report = bool(
+            state.evaluation.finalized_at
+            or state.evaluation.competencies
+            or state.feedback.overall
+            or state.workflow.name == "evaluation"
+            or state.current_stage == InterviewStage.COMPLETED
+        )
+        if not has_derived_report:
+            return False
+        state.evaluation = EvaluationReport()
+        state.feedback = FeedbackReport()
+        state.evaluated_competencies = {}
+        state.current_stage = InterviewStage.WRAP_UP
+        if state.workflow.name == "evaluation":
+            state.workflow = WorkflowProgress()
+        if state.autopilot.enabled and state.autopilot.status == AutopilotStatus.COMPLETED:
+            state.autopilot.status = AutopilotStatus.WAITING_FOR_INPUT
+            state.autopilot.phase = "evaluation_review"
+            state.autopilot.pause_reason = "Evidence changed after final evaluation"
+            state.autopilot.completed_actions = [
+                action
+                for action in state.autopilot.completed_actions
+                if action not in {"final_evaluation", "feedback_generation"}
+            ]
+            state.autopilot.updated_at = datetime.now(timezone.utc)
+        state.next_action = next_action
+        return True
+
     async def _prepare_resume_transition(
         self, session_id: str, runtime: AgentRuntime, resume_text: str
     ) -> None:
@@ -1609,9 +1856,12 @@ class InterviewService:
         runtime = await self._get_runtime(session_id)
         if prepare_resume_transition:
             await self._prepare_resume_transition(session_id, runtime, resume_text)
+        job_input, job_sources, job_research_status = await self._enrich_title_only_job_input(
+            job_description, company_name, authorized=authorized_public_research
+        )
         steps: list[tuple[str, str]] = [
             ("candidate_agent", resume_text),
-            ("job_agent", job_description),
+            ("job_agent", job_input),
             ("company_agent", company_context),
         ]
         interviewer = None
@@ -1631,7 +1881,7 @@ class InterviewService:
                 ("mock_interview_agent", "Generate personalized mock questions"),
             ]
         )
-        return await self._execute_workflow(
+        state = await self._execute_workflow(
             session_id,
             runtime,
             "candidate_prep",
@@ -1641,6 +1891,14 @@ class InterviewService:
             parallel_prefix=4 if interviewer else 3,
             authorized_public_research=authorized_public_research,
         )
+        await self._attach_job_research(
+            session_id,
+            state,
+            original_input=job_description,
+            sources=job_sources,
+            status=job_research_status,
+        )
+        return state
 
     async def run_enterprise_design(
         self,
@@ -1656,13 +1914,16 @@ class InterviewService:
         runtime = await self._get_runtime(session_id)
         if prepare_resume_transition:
             await self._prepare_resume_transition(session_id, runtime, resume_text)
+        job_input, job_sources, job_research_status = await self._enrich_title_only_job_input(
+            job_description, company_name, authorized=authorized_public_research
+        )
         steps = [
             ("candidate_agent", resume_text),
-            ("job_agent", job_description),
+            ("job_agent", job_input),
             ("company_agent", company_context),
             ("interview_design_agent", "Design an evidence-based interview blueprint"),
         ]
-        return await self._execute_workflow(
+        state = await self._execute_workflow(
             session_id,
             runtime,
             "enterprise_design",
@@ -1670,6 +1931,99 @@ class InterviewService:
             company_name=company_name,
             parallel_prefix=3,
             authorized_public_research=authorized_public_research,
+        )
+        await self._attach_job_research(
+            session_id,
+            state,
+            original_input=job_description,
+            sources=job_sources,
+            status=job_research_status,
+        )
+        return state
+
+    async def _enrich_title_only_job_input(
+        self, job_description: str, company_name: str, *, authorized: bool
+    ) -> tuple[str, list[dict[str, Any]], str]:
+        """Resolve a bare title into source-bound public JD context before planning."""
+        initial_review = review_job_description(job_description, [])
+        if not initial_review.is_title_only:
+            return job_description, [], "not_needed"
+        if not authorized:
+            return job_description, [], "consent_required"
+        if self.search_provider is None:
+            return job_description, [], "not_configured"
+        title = job_description.strip()
+        company = company_name.strip()
+        query = f'"{title}"'
+        if company:
+            query += f' "{company}"'
+        query += " 岗位职责 任职要求 招聘 JD"
+        try:
+            results = await self.search_provider.search(query, limit=6, search_depth="advanced")
+        except Exception as exc:  # noqa: BLE001 - provider boundary
+            logger.warning("Public JD research failed (%s)", type(exc).__name__)
+            return job_description, [], "failed"
+        title_tokens = {
+            token.casefold()
+            for token in re.findall(r"[A-Za-z0-9]{3,}|[\u4e00-\u9fff]{2,}", title)
+        }
+        relevant = []
+        for result in results:
+            payload = result.model_dump(mode="json")
+            haystack = f"{result.title} {result.snippet}".casefold()
+            title_match = any(token in haystack for token in title_tokens)
+            if title_match:
+                relevant.append(payload)
+        sources = relevant[:5]
+        if not sources:
+            return job_description, [], "no_reliable_sources"
+        context = format_search_results(sources)
+        enriched = (
+            f"用户输入的职位名称：{title}\n"
+            f"目标公司：{company or '未指定'}\n\n"
+            "以下是公开招聘结果的候选 JD 摘要，未经用户确认；只能用于生成待核验的岗位问题，"
+            "不得表述为目标公司的明确要求：\n"
+            f"{context}"
+        )
+        return enriched, sources, "completed"
+
+    async def _attach_job_research(
+        self,
+        session_id: str,
+        state: InterviewState,
+        *,
+        original_input: str,
+        sources: list[dict[str, Any]],
+        status: str,
+    ) -> None:
+        if status == "not_needed":
+            return
+        async with self._lock_for(session_id):
+            state.job.raw_description = original_input
+            state.job_review.is_title_only = True
+            state.job_review.completeness_score = 0.55 if sources else 0.2
+            state.job_review.public_sources = sources
+            state.job_review.public_research_status = status
+            state.job_review.researched_title = original_input.strip()
+            state.job_review.requirements = [
+                item.model_copy(update={"origin": RequirementOrigin.INFERRED})
+                for item in state.job_review.requirements
+            ]
+            warning = (
+                "已根据公开招聘来源补全候选 JD；职责与要求仍是待确认推测。"
+                if sources
+                else "需要允许公开检索后才能根据职位名称补全 JD。"
+                if status == "consent_required"
+                else "未找到可靠公开 JD；当前问题只能按职位名称生成通用准备方向。"
+            )
+            state.job_review.warnings = list(
+                dict.fromkeys([warning, *state.job_review.warnings])
+            )
+            await self._persist(session_id, state)
+        self._record_debug(
+            "job_jd_research_completed",
+            session_id,
+            detail=f"status={status}; sources={len(sources)}",
         )
 
     async def start_mock_interview(self, session_id: str) -> InterviewState:
@@ -1812,6 +2166,9 @@ class InterviewService:
                 ) from exc
             record.evaluation = evaluation
             mock_session.responses.append(record)
+            self._invalidate_final_reports(
+                runtime.state, "Mock answer evidence changed; regenerate evaluation"
+            )
             if is_follow_up:
                 # The follow-up was answered: the question is complete. Clear the
                 # pending flag so the UI shows the actions and a later /next
@@ -1968,7 +2325,9 @@ class InterviewService:
                     runtime.state, recent_answers=recent
                 )
         except Exception as exc:  # noqa: BLE001 - background boundary
-            logger.error("Mock question refill failed for %s: %s", session_id, exc)
+            logger.error(
+                "Mock question refill failed for %s (%s)", session_id, type(exc).__name__
+            )
             new_questions = []
         async with self._lock_for(session_id):
             current = self._runtimes.get((owner, session_id))
@@ -2054,6 +2413,12 @@ class InterviewService:
             evaluation.impact = impact
             evaluation.scoring_source = AnswerScoringSource.HUMAN
             evaluation.review_status = AnswerReviewStatus.REVIEWED
+            apply_specific_feedback(
+                evaluation,
+                record.answer,
+                question=record.question,
+                competency=record.competency,
+            )
             clean_note = note.strip()
             if clean_note:
                 review_feedback = f"人工复核：{clean_note}"
@@ -2069,9 +2434,10 @@ class InterviewService:
             linked_evidence.polarity = evidence_polarity
 
             # Any existing final report was calculated from the superseded score.
-            runtime.state.evaluation = EvaluationReport()
-            runtime.state.feedback = FeedbackReport()
-            runtime.state.evaluated_competencies = {}
+            self._invalidate_final_reports(
+                runtime.state, "Regenerate evaluation after human score review"
+            )
+            runtime.state.next_action = "Regenerate evaluation after human score review"
             runtime.state.missing_signals = list(
                 dict.fromkeys(
                     gap
@@ -2079,7 +2445,6 @@ class InterviewService:
                     for gap in item.evaluation.missing_signals
                 )
             )
-            runtime.state.next_action = "Regenerate evaluation after human score review"
             self._refresh_live_coverage_guidance(runtime.state)
             await self._persist(session_id, runtime.state)
         self._record_debug(
@@ -2277,12 +2642,16 @@ class InterviewService:
                     competency=competency,
                     evaluation=evaluation,
                     source="live_interview",
+                    scoring_status="scored",
                 )
                 runtime.state.live_interview_records.append(record)
                 for evidence in runtime.state.evidence[evidence_count_before:]:
                     if evidence.source.value == "live_interview":
                         evidence.source_record_id = record.id
             runtime.state.next_action = "Generate evidence-based hiring evaluation"
+            self._invalidate_final_reports(
+                runtime.state, "Transcript evidence changed; regenerate evaluation"
+            )
             await self._persist(session_id, runtime.state)
             self._record_debug(
                 "interview_transcript_imported",
@@ -2310,6 +2679,25 @@ class InterviewService:
                 raise EvaluationStateError(
                     "No interview evidence is available; complete a mock or live interview first"
                 )
+            if name == "evaluation":
+                if runtime.state.mock_session.status == MockSessionStatus.ACTIVE:
+                    raise EvaluationStateError(
+                        "Finish the active mock interview before generating the final report"
+                    )
+                if runtime.state.live_interview.status in {
+                    LiveInterviewStatus.ACTIVE,
+                    LiveInterviewStatus.PAUSED,
+                }:
+                    raise EvaluationStateError(
+                        "Complete the live interview before generating the final report"
+                    )
+                if any(
+                    record.scoring_status != "scored"
+                    for record in runtime.state.live_interview_records
+                ):
+                    raise EvaluationStateError(
+                        "Wait for live answer scoring or complete human review before evaluation"
+                    )
             if company_name is not None:
                 runtime.state.company.name = company_name
             if interviewer is not None:

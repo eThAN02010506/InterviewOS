@@ -213,6 +213,14 @@ async def test_coach_deterministic_fallback_rewards_grounded_detail():
     assert evaluation.technical_depth >= 0.64
     assert evaluation.structure >= 0.56
     assert evaluation.impact > 0.4
+    assert [item.dimension for item in evaluation.dimension_feedback] == [
+        "content",
+        "technical_depth",
+        "structure",
+        "impact",
+    ]
+    assert all(item.evidence and item.suggestion for item in evaluation.dimension_feedback)
+    assert any("可核验" in item.suggestion for item in evaluation.dimension_feedback)
     assert "缺少已核验的量化结果" in evaluation.missing_signals
     assert detailed in evaluation.improved_answer
 
@@ -378,6 +386,44 @@ def test_evaluation_calibration_blocks_decision_for_provisional_rule_scores():
 
     assert report.recommendation.value == "insufficient_evidence"
     assert any("尚未人工复核" in item for item in report.risks)
+
+
+@pytest.mark.asyncio
+async def test_negative_evidence_cannot_improve_hiring_recommendation():
+    state = InterviewState(
+        evidence=[
+            Evidence(
+                competency="诚信",
+                signal="承认伪造数据",
+                confidence=0.9,
+                polarity=EvidencePolarity.NEGATIVE,
+            ),
+            Evidence(
+                competency="诚信",
+                signal="再次承认伪造",
+                confidence=0.9,
+                polarity=EvidencePolarity.NEGATIVE,
+            ),
+            Evidence(
+                competency="沟通",
+                signal="清晰解释过程",
+                confidence=0.9,
+                polarity=EvidencePolarity.POSITIVE,
+            ),
+        ]
+    )
+
+    await EvaluationAgent().execute(state)
+
+    integrity = next(
+        item for item in state.evaluation.competencies if item.competency == "诚信"
+    )
+    assert integrity.score == pytest.approx(0.1)
+    assert state.evaluation.recommendation.value in {
+        "lean_no_hire",
+        "no_hire",
+        "insufficient_evidence",
+    }
 
 
 def test_feedback_agent_only_emits_human_classified_negative_evidence():

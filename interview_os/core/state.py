@@ -201,6 +201,9 @@ class JobDescriptionReview(BaseModel):
     missing_sections: list[str] = Field(default_factory=list)
     requirements: list[JobRequirement] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    public_sources: list[dict[str, Any]] = Field(default_factory=list)
+    public_research_status: str = "not_requested"
+    researched_title: str = ""
 
 
 class ResolutionStatus(str, Enum):
@@ -321,6 +324,31 @@ class AnswerReviewStatus(str, Enum):
     REVIEWED = "reviewed"
 
 
+class DimensionFeedback(BaseModel):
+    """Behavior-anchored explanation for one answer-scoring dimension."""
+
+    dimension: str
+    score: float = Field(ge=0.0, le=1.0)
+    level: str
+    evidence: str
+    suggestion: str
+
+
+class SpeechDeliveryFeedback(BaseModel):
+    """Non-evaluative coaching for changeable delivery characteristics."""
+
+    source: str = "text_fallback"
+    pace: str = "无法判断"
+    pauses: str = "无法判断"
+    fillers: str = "无法判断"
+    volume: str = "无法判断"
+    intonation: str = "无法判断"
+    clarity: str = "无法判断"
+    strengths: list[str] = Field(default_factory=list)
+    improvements: list[str] = Field(default_factory=list)
+    disclaimer: str = "仅用于表达训练，不进入胜任力证据或录用评价。"
+
+
 class AnswerEvaluationDraft(BaseModel):
     """Untrusted model output; intentionally excludes provenance fields."""
 
@@ -337,6 +365,7 @@ class AnswerEvaluationDraft(BaseModel):
     improved_answer: str = ""
     observed_signals: list[str] = Field(default_factory=list)
     missing_signals: list[str] = Field(default_factory=list)
+    dimension_feedback: list[DimensionFeedback] = Field(default_factory=list)
 
     @field_validator("content", "technical_depth", "structure", "impact", mode="before")
     @classmethod

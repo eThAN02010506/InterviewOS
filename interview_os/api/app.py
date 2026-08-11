@@ -47,6 +47,7 @@ from interview_os.services.interview_service import (
 from interview_os.services.resume_service import ResumeProcessingError
 from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.asr import ASRClient
+from interview_os.tools.tts import TTSClient
 from interview_os.tools.web_search import SearchProvider, SearchProviderManager
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +64,7 @@ def create_app(
     settings_store: LocalSettingsStore | None = None,
     asr_client: ASRClient | None = None,
     omni_client: OmniAudioClient | None = None,
+    tts_client: TTSClient | None = None,
     resume_llm_client: Any = None,
     recordings_dir: Path | None = None,
     require_auth: bool | None = None,
@@ -95,6 +97,7 @@ def create_app(
             logger.warning("Ignoring invalid persisted search settings")
     active_search_provider = search_provider or search_manager
     asr_client = asr_client or ASRClient(**saved_settings.get("asr", {}))
+    tts_client = tts_client or TTSClient(**saved_settings.get("tts", {}))
     saved_live_audio = saved_settings.get("live_audio")
     if omni_client is None:
         omni_client = (
@@ -116,6 +119,7 @@ def create_app(
         application.state.interview_service = InterviewService(
             storage, llm_client, active_search_provider, debug_events, asr_client,
             omni_client=omni_client,
+            tts_client=tts_client,
             resume_llm_client=resume_llm_client,
             recordings_dir=recordings_dir,
         )
@@ -133,6 +137,7 @@ def create_app(
         application.state.settings_store = settings_store
         application.state.asr_client = asr_client
         application.state.omni_client = omni_client
+        application.state.tts_client = tts_client
         application.state.resume_llm_client = resume_llm_client
         application.state.settings_lock = asyncio.Lock()
         yield
@@ -148,6 +153,7 @@ def create_app(
             application.state.resume_llm_client,
             asr_client,
             omni_client,
+            tts_client,
         ]
         seen: set[int] = set()
         for client in closeables:

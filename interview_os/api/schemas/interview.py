@@ -134,6 +134,10 @@ class AnswerEvaluationReviewRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class ASRPreviewResponse(BaseModel):
+    text: str
+
+
 class MockAnswerRequest(BaseModel):
     question_id: UUID
     answer: str = Field(min_length=1)

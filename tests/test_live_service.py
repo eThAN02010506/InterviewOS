@@ -14,9 +14,12 @@ from interview_os.core.state import (
     AnswerEvaluation,
     AnswerReviewStatus,
     AnswerScoringSource,
+    EvaluationReport,
+    FeedbackReport,
     InterviewBlueprint,
     InterviewQuestion,
     InterviewRound,
+    InterviewStage,
     InterviewState,
     JobDescription,
     LiveInterviewRecord,
@@ -615,6 +618,113 @@ async def test_human_review_wins_race_with_background_live_scoring(tmp_path):
     assert refreshed.evidence[0].polarity == EvidencePolarity.POSITIVE
     await background.close()
     await storage.close()
+
+
+async def test_human_review_wins_when_stale_background_scoring_fails(tmp_path):
+    import asyncio as _asyncio
+
+    started = _asyncio.Event()
+    release = _asyncio.Event()
+
+    class _FailingCoach:
+        async def chat(self, messages, **kwargs):
+            started.set()
+            await release.wait()
+            raise RuntimeError("model unavailable")
+
+        async def embed(self, text):
+            return []
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-human-failure-race.db'}")
+    await storage.init_db()
+    background = BackgroundTaskManager()
+    service = InterviewService(storage, llm_client=_FailingCoach(), background=background)
+    session_id, _ = await service.create_session()
+    await service.start_live_interview(session_id, consent_confirmed=True)
+    await service.append_live_transcript(
+        session_id, text="问题", speaker=TranscriptSpeaker.INTERVIEWER
+    )
+    state = await service.append_live_transcript(
+        session_id, text="一段完整回答。", speaker=TranscriptSpeaker.CANDIDATE
+    )
+    await service.set_live_interview_status(session_id, LiveInterviewStatus.PAUSED)
+    confirmed = await service.confirm_live_answer(
+        session_id, state.live_interview.segments[-1].id,
+        question="问题", competency="系统设计",
+    )
+    await started.wait()
+    record_id = confirmed.live_interview_records[0].id
+    await service.review_answer_evaluation(
+        session_id, record_id, content=0.9, technical_depth=0.8,
+        structure=0.7, impact=0.6,
+    )
+    release.set()
+    await background.flush()
+    record = (await service.get_state(session_id)).live_interview_records[0]
+
+    assert record.scoring_status == "scored"
+    assert record.scoring_error == ""
+    assert record.evaluation.scoring_source == AnswerScoringSource.HUMAN
+    await background.close()
+    await storage.close()
+
+
+async def test_live_reevaluation_resets_polarity_for_replaced_signal(scoring_service):
+    session_id, _ = await scoring_service.create_session()
+    await scoring_service.start_live_interview(session_id, consent_confirmed=True)
+    await scoring_service.append_live_transcript(
+        session_id, text="问题", speaker=TranscriptSpeaker.INTERVIEWER
+    )
+    state = await scoring_service.append_live_transcript(
+        session_id, text="一段完整回答。", speaker=TranscriptSpeaker.CANDIDATE
+    )
+    await scoring_service.set_live_interview_status(session_id, LiveInterviewStatus.PAUSED)
+    confirmed = await scoring_service.confirm_live_answer(
+        session_id, state.live_interview.segments[-1].id,
+        question="问题", competency="系统设计",
+    )
+    await scoring_service._background.flush()
+    record_id = confirmed.live_interview_records[0].id
+    await scoring_service.review_answer_evaluation(
+        session_id, record_id, content=0.8, technical_depth=0.8,
+        structure=0.8, impact=0.8, evidence_polarity=EvidencePolarity.NEGATIVE,
+    )
+
+    refreshed = await scoring_service.reevaluate_live_evidence(session_id, record_id)
+
+    linked = next(item for item in refreshed.evidence if item.source_record_id == record_id)
+    assert linked.signal == "Clear design"
+    assert linked.polarity == EvidencePolarity.POSITIVE
+
+
+async def test_revoking_evidence_invalidates_final_report(scoring_service):
+    session_id, _ = await scoring_service.create_session()
+    await scoring_service.start_live_interview(session_id, consent_confirmed=True)
+    await scoring_service.append_live_transcript(
+        session_id, text="问题", speaker=TranscriptSpeaker.INTERVIEWER
+    )
+    state = await scoring_service.append_live_transcript(
+        session_id, text="一段完整回答。", speaker=TranscriptSpeaker.CANDIDATE
+    )
+    confirmed = await scoring_service.confirm_live_answer(
+        session_id, state.live_interview.segments[-1].id,
+        question="问题", competency="系统设计",
+    )
+    await scoring_service._background.flush()
+    runtime = await scoring_service._get_runtime(session_id)
+    runtime.state.evaluation = EvaluationReport(
+        overall_score=0.8, finalized_at=confirmed.live_interview.started_at
+    )
+    runtime.state.feedback = FeedbackReport(overall="旧报告")
+    runtime.state.current_stage = InterviewStage.COMPLETED
+
+    revoked = await scoring_service.revoke_live_evidence(
+        session_id, confirmed.live_interview_records[0].id
+    )
+
+    assert revoked.evaluation.finalized_at is None
+    assert revoked.feedback.overall == ""
+    assert revoked.current_stage == InterviewStage.WRAP_UP
 
 
 async def test_auto_plan_skips_when_suggestion_pending(scoring_service):

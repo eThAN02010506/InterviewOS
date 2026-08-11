@@ -8,7 +8,8 @@ from uuid import UUID
 from pydantic import BaseModel, ValidationError
 
 from interview_os.core.agent import Agent
-from interview_os.core.evidence import Evidence, EvidenceSource
+from interview_os.core.answer_feedback import apply_specific_feedback
+from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.message import Message
 from interview_os.core.state import (
     AnswerEvaluation,
@@ -74,6 +75,12 @@ class CoachAgent(Agent):
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
         self._build_grounded_improvement(evaluation, coach_input.answer)
+        apply_specific_feedback(
+            evaluation,
+            coach_input.answer,
+            question=coach_input.question,
+            competency=coach_input.competency,
+        )
 
         # Background live scoring must remain a pure calculation until the
         # service reacquires its session lock. Otherwise a slow model response
@@ -86,6 +93,11 @@ class CoachAgent(Agent):
             signal="; ".join(evaluation.observed_signals) or coach_input.answer[:200],
             confidence=evaluation.overall_score(),
             source=coach_input.evidence_source,
+            polarity=(
+                EvidencePolarity.POSITIVE
+                if evaluation.observed_signals
+                else EvidencePolarity.NEUTRAL
+            ),
             notes="; ".join(evaluation.missing_signals),
         )
         if coach_input.record_id is not None:

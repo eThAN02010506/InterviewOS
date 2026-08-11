@@ -34,6 +34,7 @@ async def debug_status(request: Request):
         "llm": llm.settings_status() if isinstance(llm, LocalLLMClient) else {"managed": True},
         "search": search,
         "asr": request.app.state.asr_client.status(),
+        "tts": request.app.state.tts_client.status(),
         "event_capacity": request.app.state.debug_events.capacity,
         "events_persistent": request.app.state.debug_events.persistent,
     }
@@ -121,7 +122,7 @@ async def probe_llm(request: Request):
     try:
         return await llm.probe()
     except (httpx.HTTPError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=502, detail=f"LLM probe failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail="LLM probe failed") from exc
 
 
 @router.post("/probes/asr", dependencies=[Depends(require_local_request)])
