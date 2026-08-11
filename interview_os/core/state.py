@@ -321,7 +321,9 @@ class AnswerReviewStatus(str, Enum):
     REVIEWED = "reviewed"
 
 
-class AnswerEvaluation(BaseModel):
+class AnswerEvaluationDraft(BaseModel):
+    """Untrusted model output; intentionally excludes provenance fields."""
+
     content: float = Field(
         ge=0.0,
         le=1.0,
@@ -335,6 +337,22 @@ class AnswerEvaluation(BaseModel):
     improved_answer: str = ""
     observed_signals: list[str] = Field(default_factory=list)
     missing_signals: list[str] = Field(default_factory=list)
+
+    @field_validator("content", "technical_depth", "structure", "impact", mode="before")
+    @classmethod
+    def normalize_percentage_score(cls, value: Any) -> Any:
+        """Accept the common local-model 0-10/0-100 score convention."""
+        if isinstance(value, (int, float)) and 1 < value <= 10:
+            return value / 10
+        if isinstance(value, (int, float)) and 10 < value <= 100:
+            return value / 100
+        return value
+
+    def overall_score(self) -> float:
+        return (self.content + self.technical_depth + self.structure + self.impact) / 4
+
+
+class AnswerEvaluation(AnswerEvaluationDraft):
     scoring_source: AnswerScoringSource = AnswerScoringSource.MODEL
     review_status: AnswerReviewStatus = AnswerReviewStatus.NOT_REQUIRED
 
@@ -354,19 +372,6 @@ class AnswerEvaluation(BaseModel):
             migrated["review_status"] = AnswerReviewStatus.PENDING
             return migrated
         return value
-
-    @field_validator("content", "technical_depth", "structure", "impact", mode="before")
-    @classmethod
-    def normalize_percentage_score(cls, value: Any) -> Any:
-        """Accept the common local-model 0-10/0-100 score convention."""
-        if isinstance(value, (int, float)) and 1 < value <= 10:
-            return value / 10
-        if isinstance(value, (int, float)) and 10 < value <= 100:
-            return value / 100
-        return value
-
-    def overall_score(self) -> float:
-        return (self.content + self.technical_depth + self.structure + self.impact) / 4
 
 
 class MockAnswerRecord(BaseModel):

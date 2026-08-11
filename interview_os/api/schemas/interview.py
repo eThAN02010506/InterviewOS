@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from interview_os.core.evidence import EvidencePolarity
 from interview_os.core.state import ResumeClaimStatus
 
 
@@ -122,6 +123,15 @@ class TranscriptEntryRequest(BaseModel):
 class TranscriptImportRequest(BaseModel):
     entries: list[TranscriptEntryRequest] = Field(min_length=1, max_length=50)
     auto_evaluate: bool = True
+
+
+class AnswerEvaluationReviewRequest(BaseModel):
+    content: float = Field(ge=0.0, le=1.0)
+    technical_depth: float = Field(ge=0.0, le=1.0)
+    structure: float = Field(ge=0.0, le=1.0)
+    impact: float = Field(ge=0.0, le=1.0)
+    evidence_polarity: EvidencePolarity = EvidencePolarity.NEUTRAL
+    note: str = Field(default="", max_length=500)
 
 
 class MockAnswerRequest(BaseModel):

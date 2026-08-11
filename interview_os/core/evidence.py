@@ -18,6 +18,12 @@ class EvidenceSource(str, Enum):
     RESUME_REVIEW = "resume_review"
 
 
+class EvidencePolarity(str, Enum):
+    NEUTRAL = "neutral"
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+
+
 class Evidence(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     competency: str
@@ -25,6 +31,7 @@ class Evidence(BaseModel):
     confidence: float = 0.0
     source: EvidenceSource = EvidenceSource.TECHNICAL_ROUND
     source_record_id: UUID | None = None
+    polarity: EvidencePolarity = EvidencePolarity.NEUTRAL
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     notes: str = ""
 

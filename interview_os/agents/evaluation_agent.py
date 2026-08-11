@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import logging
+import re
 from datetime import datetime, timezone
-
-from pydantic import ValidationError
 
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
@@ -17,9 +15,6 @@ from interview_os.core.state import (
     HiringRecommendation,
     InterviewState,
 )
-from interview_os.models.prompt_templates import EVALUATION_PROMPT
-
-logger = logging.getLogger(__name__)
 
 
 class EvaluationAgent(Agent):
@@ -34,22 +29,10 @@ class EvaluationAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        evidence_text = "\n".join(
-            f"- [{e.source.value}] {e.competency}: {e.signal} (confidence: {e.confidence})"
-            for e in state.evidence
-        )
-        prompt = EVALUATION_PROMPT.format(
-            evidence_list=evidence_text or "No evidence collected yet."
-        )
-        try:
-            report = await self.think_structured(prompt, EvaluationReport, context=state.summary())
-        except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse evaluation report: %s", exc)
-            report = self._fallback_report(state)
-            self.record_degradation(
-                "Structured evaluation failed; aggregated recorded evidence without adding facts"
-            )
-        self._ground_competencies(report, state)
+        # Recruitment decisions are a trust boundary. The model scores individual
+        # answers, but final aggregation and every narrative field are rebuilt from
+        # persisted Evidence so free-form output cannot introduce new allegations.
+        report = self._fallback_report(state)
         provisional_scoring = self._has_provisional_scores(state)
         self._calibrate_recommendation(report, provisional_scoring=provisional_scoring)
         state.evaluation = report
@@ -76,24 +59,6 @@ class EvaluationAgent(Agent):
             record.scoring_status != "scored" for record in state.live_interview_records
         )
         return has_unreviewed_rule_score or has_unfinished_live_score
-
-    @classmethod
-    def _ground_competencies(cls, report: EvaluationReport, state: InterviewState) -> None:
-        """Replace model-controlled numeric fields with persisted evidence aggregates."""
-        grounded = cls._fallback_report(state)
-        if not report.competencies:
-            report.summary = report.summary or grounded.summary
-            report.risks = list(dict.fromkeys([*report.risks, *grounded.risks]))
-        reported_by_name = {
-            item.competency.strip().casefold(): item
-            for item in report.competencies
-            if item.competency.strip()
-        }
-        for item in grounded.competencies:
-            model_item = reported_by_name.get(item.competency.strip().casefold())
-            if model_item is not None:
-                item.gaps = list(dict.fromkeys([*model_item.gaps, *item.gaps]))
-        report.competencies = grounded.competencies
 
     @staticmethod
     def _calibrate_recommendation(
@@ -140,13 +105,23 @@ class EvaluationAgent(Agent):
         competencies = []
         for competency, evidence_items in grouped.items():
             score = sum(item.confidence for item in evidence_items) / len(evidence_items)
+            recorded_gaps = list(
+                dict.fromkeys(
+                    gap.strip()
+                    for item in evidence_items
+                    for gap in re.split(r"[;；]", item.notes)
+                    if gap.strip()
+                )
+            )
+            if len(evidence_items) < 2:
+                recorded_gaps.append("需要更多独立回答交叉验证")
             competencies.append(
                 CompetencyEvaluation(
                     competency=competency,
                     score=score,
                     confidence=min(0.85, 0.45 + 0.1 * len(evidence_items)),
                     supporting_evidence=[item.signal for item in evidence_items if item.signal],
-                    gaps=[] if len(evidence_items) >= 2 else ["需要更多独立回答交叉验证"],
+                    gaps=list(dict.fromkeys(recorded_gaps)),
                 )
             )
         overall = (
@@ -171,5 +146,5 @@ class EvaluationAgent(Agent):
                 if not sufficient
                 else "已按已记录证据完成确定性聚合。"
             ),
-            risks=[] if sufficient else ["结构化模型输出失败；当前报告使用证据聚合兜底"],
+            risks=[] if sufficient else ["当前证据数量或胜任力覆盖尚未达到招聘决策门槛"],
         )

@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import logging
-import re
-
-from pydantic import ValidationError
-
 from interview_os.core.agent import Agent
+from interview_os.core.evidence import EvidencePolarity
 from interview_os.core.message import Message
 from interview_os.core.state import FeedbackReport, InterviewState
-
-logger = logging.getLogger(__name__)
 
 
 class FeedbackAgent(Agent):
@@ -26,92 +20,77 @@ class FeedbackAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        context = (
-            f"Evaluated competencies: {state.evaluated_competencies}\n"
-            f"Evidence count: {len(state.evidence)}\n"
-            f"Missing signals: {state.missing_signals}\n"
-            f"Evaluation: {state.evaluation.model_dump_json()}"
-        )
-        prompt = (
-            "Generate evidence-based feedback as JSON with overall, strengths, improvements, "
-            "action_plan, interviewer_notes, and recommendation_reasoning. All fields except "
-            "overall and recommendation_reasoning are lists of strings. Candidate-facing "
-            "overall must discuss preparation only and must never contain a hire/no-hire or "
-            "employment recommendation. Candidate action_plan items must address the candidate "
-            "directly, never say '要求候选人' or use interviewer instructions. Interviewer "
-            "notes must distinguish missing "
-            "signals from negative evidence. Use Chinese for every narrative field."
-        )
-        try:
-            state.feedback = await self.think_structured(prompt, FeedbackReport, context=context)
-        except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse feedback report: %s", exc)
-            evidence_count = len(state.evidence)
-            state.feedback = FeedbackReport(
-                overall=state.evaluation.summary or "已根据现有证据完成评价。",
-                strengths=[
-                    item.signal
-                    for item in state.evidence
-                    if item.confidence >= 0.7 and item.signal
-                ][:5],
-                improvements=list(dict.fromkeys(state.missing_signals))[:5],
-                action_plan=["补充至少两道不同胜任力问题，以形成交叉验证"],
-                interviewer_notes=[f"当前共有 {evidence_count} 条可追溯证据"],
-                recommendation_reasoning=(
-                    "结构化反馈生成失败，本段仅转述确定性证据聚合结果；未添加新事实。"
-                ),
-            )
-            self.record_degradation(
-                "Structured feedback failed; summarized the finalized evidence report"
-            )
+        state.feedback = FeedbackReport()
         state.enforce_evaluation_evidence_floor()
         self._enforce_candidate_voice(state)
         return self.make_response(state.feedback.model_dump_json())
 
     @staticmethod
     def _enforce_candidate_voice(state: InterviewState) -> None:
-        """Keep hiring decisions out of the candidate-facing report fields."""
+        """Build both report views only from persisted evidence and evaluation gaps."""
         report = state.feedback
-        hiring_language = re.compile(
-            r"(?:推荐|建议|不予|考虑)?(?:录用|聘用)|(?:strong[_ -]?hire|lean[_ -]?hire|no[_ -]?hire)|"
-            r"(?:recommend|hire)\b",
-            re.IGNORECASE,
+        competencies = state.evaluation.competencies
+        average = (
+            sum(item.score for item in competencies) / len(competencies)
+            if competencies
+            else state.evaluation.overall_score
         )
-        if hiring_language.search(report.overall):
-            competencies = state.evaluation.competencies
-            average = (
-                sum(item.score for item in competencies) / len(competencies)
-                if competencies
-                else state.evaluation.overall_score
-            )
-            evidence_prefix = (
-                "当前证据不足；"
-                if state.evaluation.recommendation.value == "insufficient_evidence"
-                else ""
-            )
-            report.overall = (
-                f"{evidence_prefix}本次练习覆盖 {len(competencies)} 个能力维度，"
-                f"当前证据平均得分约 {average:.2f}。"
-                "该结果仅用于面试准备，请优先补强下列证据缺口。"
-            )
-
-        candidate_instruction = re.compile(
-            r"^(?:在后续面试中)?\s*(?:请|要求|让)候选人\s*",
-            re.IGNORECASE,
+        evidence_prefix = (
+            "当前证据不足；"
+            if state.evaluation.recommendation.value == "insufficient_evidence"
+            else ""
         )
-        grounded_actions = []
-        for item in report.action_plan:
-            clean = candidate_instruction.sub("", item).strip(" ：:，,")
-            grounded_actions.append(
-                f"准备并练习：{clean}" if clean != item.strip() and clean else item
+        report.overall = (
+            f"{evidence_prefix}本次练习覆盖 {len(competencies)} 个能力维度，"
+            f"当前证据平均得分约 {average:.2f}。"
+            "该结果仅用于面试准备，请优先补强下列证据缺口。"
+        )
+        report.strengths = list(
+            dict.fromkeys(
+                item.signal
+                for item in state.evidence
+                if item.signal
+                and item.confidence >= 0.7
+                and item.polarity != EvidencePolarity.NEGATIVE
             )
-        report.action_plan = grounded_actions
-        report.interviewer_notes = [
-            re.sub(r"^负面证据[：:]", "仍待核验：", item)
-            if item.startswith("负面证据") and not FeedbackAgent._negative_note_is_grounded(item, state)
-            else item
-            for item in report.interviewer_notes
+        )[:5]
+        gaps = list(
+            dict.fromkeys(
+                [*state.missing_signals]
+                + [gap for item in competencies for gap in item.gaps]
+            )
+        )[:5]
+        report.improvements = gaps
+        report.action_plan = (
+            [f"准备并练习：{gap}" for gap in gaps]
+            if gaps
+            else ["准备并练习：可交叉验证的具体案例与真实结果"]
+        )
+        negative_notes = [
+            f"负面证据：{item.signal}（Evidence {item.id}）"
+            for item in state.evidence
+            if item.signal and item.polarity == EvidencePolarity.NEGATIVE
         ]
+        pending_notes = [f"仍待核验：{gap}" for gap in gaps]
+        evidence_competencies = {
+            item.competency for item in state.evidence if item.competency.strip()
+        }
+        threshold_met = len(state.evidence) >= 3 and len(evidence_competencies) >= 2
+        evidence_summary = (
+            f"当前共有 {len(state.evidence)} 条可追溯证据"
+            if threshold_met
+            else (
+                f"当前仅有 {len(state.evidence)} 条证据，覆盖 "
+                f"{len(evidence_competencies)} 个胜任力；未达到招聘决策门槛。"
+            )
+        )
+        report.interviewer_notes = [
+            evidence_summary,
+            *negative_notes[:5],
+            *pending_notes[:5],
+        ]
+        if not threshold_met:
+            report.interviewer_notes.insert(1, "证据不足不是负面证据，需要继续采集独立回答")
         recommendation = state.evaluation.recommendation
         if recommendation.value == "insufficient_evidence":
             report.recommendation_reasoning = (
@@ -131,19 +110,3 @@ class FeedbackAgent(Agent):
                 f"总分 {state.evaluation.overall_score:.2f}；该结论依据持久化胜任力分数、"
                 "证据置信度和固定阈值生成。仍缺信号需单独核验，不能当作负面证据。"
             )
-
-    @staticmethod
-    def _negative_note_is_grounded(item: str, state: InterviewState) -> bool:
-        """Require a negative note to repeat a persisted evidence signal."""
-
-        def normalize(value: str) -> str:
-            return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).casefold()
-
-        detail = normalize(re.sub(r"^负面证据[：:]", "", item))
-        if not detail:
-            return False
-        for evidence in state.evidence:
-            signal = normalize(evidence.signal)
-            if len(signal) >= 4 and (signal in detail or detail in signal):
-                return True
-        return False

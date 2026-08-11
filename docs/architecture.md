@@ -125,28 +125,35 @@ initial fixed plan.
 ## Final Evaluation
 
 `EvaluationAgent` separates competency score from assessment confidence and rebuilds
-every numeric competency field and supporting signal from persisted `Evidence` rows;
-model-generated numbers never enter the hiring threshold calculation. `FeedbackAgent` derives two views from the same structured
-report, then enforces a role boundary: candidate `overall` cannot contain hiring
-language and candidate action items cannot contain interviewer-to-candidate commands.
+every competency field, supporting signal, gap, summary, and risk from persisted
+`Evidence` rows. Final evaluation and feedback are deterministic and make no model
+call. `FeedbackAgent` derives two views from the same structured report, then enforces
+a role boundary: candidate `overall` cannot contain hiring language and candidate
+action items cannot contain interviewer-to-candidate commands.
 Recruitment recommendations and verification notes remain in interviewer-only fields.
 The result is actionable candidate coaching and evidence-aware interviewer notes. The
 service completes the interview stage only after both outputs validate; an empty
 evidence set is rejected before any LLM call.
-Before persistence, `EvaluationAgent` recomputes the overall score from competency
-scores and maps recommendation labels through fixed score/confidence thresholds.
+`EvaluationAgent` computes the overall score from competency scores and maps
+recommendation labels through fixed score/confidence thresholds.
 `strong_hire` requires score >= 0.85 and mean confidence >= 0.75; conflicting model
 labels are replaced and the calibration is retained as a report risk.
-`AnswerEvaluation` persists structured `scoring_source` and `review_status` provenance.
+The model-facing `AnswerEvaluationDraft` deliberately excludes trust metadata. The
+server constructs the persisted `AnswerEvaluation` and owns its structured
+`scoring_source` and `review_status` provenance.
 Provisional deterministic answer scores and unfinished live scoring form a hard
 decision boundary: if any remain unreviewed, the recommendation is
 `insufficient_evidence` even when the numeric score would otherwise cross a hire
 threshold. A compatibility validator migrates known pre-provenance rule-score records
-once during state loading. Feedback post-validation retains a negative note only when
-it repeats a persisted evidence signal; unsupported notes become “pending verification”.
-`FeedbackAgent` then replaces free-form recommendation prose with a deterministic
-explanation of the final calibrated enum and score. This makes the decision header
-and reasoning one atomic, internally consistent view.
+once during state loading. A human review API and UI can replace the rubric scores,
+classify linked evidence polarity, and invalidate stale final reports. Background live
+scoring is a pure calculation until it reacquires the session lock; a late AI result is
+dropped when the persisted record is already `human/reviewed`.
+
+Negative interviewer notes are emitted only for Evidence explicitly classified
+`negative` by a human reviewer, repeat the exact signal, and include its Evidence ID.
+Missing evidence remains a verification gap. `FeedbackAgent` deterministically explains
+the final calibrated enum and score, keeping the decision header and reasoning atomic.
 
 ## Runtime Settings
 

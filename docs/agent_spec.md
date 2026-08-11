@@ -31,11 +31,13 @@
 
 ## EvaluationAgent
 - Input: All evidence
-- Output: Competency scores + hiring recommendation
+- Output: Deterministic competency scores, evidence narratives, and hiring recommendation
+- Trust boundary: final aggregation makes no LLM call; every conclusion is derived from persisted Evidence
 
 ## CoachAgent
 - Input: Question + Answer
-- Output: 4-dimension scoring + improved answer
+- Output: 4-dimension scoring + deterministic STAR completion scaffold
+- Provenance: the model returns an untrusted draft; the service assigns scoring source and review status
 
 ## LiveInterviewAgent
 - Input: Live transcript

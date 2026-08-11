@@ -12,6 +12,7 @@ from interview_os.core.evidence import Evidence, EvidenceSource
 from interview_os.core.message import Message
 from interview_os.core.state import (
     AnswerEvaluation,
+    AnswerEvaluationDraft,
     AnswerReviewStatus,
     AnswerScoringSource,
     InterviewState,
@@ -27,6 +28,7 @@ class CoachInput(BaseModel):
     competency: str = "Answer Quality"
     evidence_source: EvidenceSource = EvidenceSource.MOCK_INTERVIEW
     record_id: str | None = None
+    persist_evidence: bool = True
 
 
 class CoachAgent(Agent):
@@ -59,14 +61,25 @@ class CoachAgent(Agent):
             competency=coach_input.competency,
         )
         try:
-            evaluation = await self.think_structured(
-                prompt, AnswerEvaluation, context=state.summary()
+            draft = await self.think_structured(
+                prompt, AnswerEvaluationDraft, context=state.summary()
+            )
+            evaluation = AnswerEvaluation(
+                **draft.model_dump(),
+                scoring_source=AnswerScoringSource.MODEL,
+                review_status=AnswerReviewStatus.NOT_REQUIRED,
             )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse answer evaluation: %s", exc)
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
         self._build_grounded_improvement(evaluation, coach_input.answer)
+
+        # Background live scoring must remain a pure calculation until the
+        # service reacquires its session lock. Otherwise a slow model response
+        # could mutate evidence after a human review has already won the race.
+        if not coach_input.persist_evidence:
+            return self.make_response(evaluation.model_dump_json())
 
         ev = Evidence(
             competency=coach_input.competency,

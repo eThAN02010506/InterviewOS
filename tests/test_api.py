@@ -2,6 +2,7 @@ import json
 from io import BytesIO
 
 import httpx
+import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 
@@ -435,10 +436,54 @@ def test_evaluation_api_generates_dual_side_report(tmp_path):
     assert response.json()["state"]["evaluation"]["recommendation"] == "insufficient_evidence"
     assert "证据不足" in response.json()["state"]["feedback"]["overall"]
     notes = response.json()["state"]["feedback"]["interviewer_notes"]
-    assert notes == [
+    assert notes[:2] == [
         "当前仅有 1 条证据，覆盖 1 个胜任力；未达到招聘决策门槛。",
         "证据不足不是负面证据，需要继续采集独立回答",
     ]
+
+
+def test_human_answer_review_overrides_score_and_classifies_linked_evidence(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'human-review-api.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": session_id,
+                "resume_text": "Python",
+                "job_description": "Platform",
+                "company_name": "Example",
+            },
+        )
+        started = client.post(f"/api/mock-interviews/{session_id}/start").json()
+        answered = client.post(
+            f"/api/mock-interviews/{session_id}/answers",
+            json={"question_id": started["current_question"]["id"], "answer": "Clear design"},
+        ).json()
+        record_id = answered["mock_session"]["responses"][0]["id"]
+
+        response = client.patch(
+            f"/api/evaluations/{session_id}/answers/{record_id}/review",
+            json={
+                "content": 0.9,
+                "technical_depth": 0.8,
+                "structure": 0.7,
+                "impact": 0.6,
+                "evidence_polarity": "negative",
+                "note": "已核对原始回答",
+            },
+        )
+
+    assert response.status_code == 200
+    state = response.json()["state"]
+    evaluation = state["mock_session"]["responses"][0]["evaluation"]
+    assert evaluation["scoring_source"] == "human"
+    assert evaluation["review_status"] == "reviewed"
+    assert evaluation["content"] == pytest.approx(0.9)
+    assert state["evidence"][0]["polarity"] == "negative"
+    assert state["evidence"][0]["confidence"] == pytest.approx(0.75)
+    assert state["evaluation"]["finalized_at"] is None
 
 
 def test_mock_interview_asks_followup_before_advancing(tmp_path):

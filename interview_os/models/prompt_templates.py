@@ -155,13 +155,3 @@ ANSWER_COACH_PROMPT = (
     "content_score must be a number, never the answer text. Base every signal only on the "
     "submitted answer. Do not generate an improved answer and do not explain outside JSON.\n"
 )
-
-EVALUATION_PROMPT = (
-    "Based on the following evidence, evaluate the candidate competencies.\n\n"
-    "Evidence:\n{evidence_list}\n\n"
-    "Output JSON with competencies, overall_score, recommendation, summary, and risks. "
-    "Each competency item contains competency, score, confidence, supporting_evidence "
-    "and gaps. Recommendation must be one of strong_hire, hire, lean_hire, "
-    "lean_no_hire, no_hire, insufficient_evidence. Do not treat missing evidence as "
-    "negative evidence, and do not invent signals. Use Chinese for all narrative fields.\n"
-)

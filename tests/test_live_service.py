@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from interview_os.core.evidence import EvidenceSource
+from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.state import (
     AnswerEvaluation,
-    Evidence,
+    AnswerReviewStatus,
+    AnswerScoringSource,
     InterviewBlueprint,
     InterviewQuestion,
     InterviewRound,
@@ -538,6 +539,7 @@ async def test_confirm_scores_in_background_without_blocking(tmp_path):
     state = await service.append_live_transcript(
         session_id, text="一段完整回答。", speaker=TranscriptSpeaker.CANDIDATE
     )
+    await service.set_live_interview_status(session_id, LiveInterviewStatus.PAUSED)
     answer = state.live_interview.segments[-1]
     confirmed = await service.confirm_live_answer(
         session_id, answer.id, question="问题", competency="系统设计"
@@ -548,6 +550,69 @@ async def test_confirm_scores_in_background_without_blocking(tmp_path):
     await background.flush()
     refreshed = await service.get_state(session_id)
     assert refreshed.live_interview_records[0].scoring_status == "scored"
+    await background.close()
+    await storage.close()
+
+
+async def test_human_review_wins_race_with_background_live_scoring(tmp_path):
+    import asyncio as _asyncio
+
+    started = _asyncio.Event()
+    release = _asyncio.Event()
+
+    class _BlockedCoach:
+        async def chat(self, messages, **kwargs):
+            started.set()
+            await release.wait()
+            return (
+                '{"content":0.2,"technical_depth":0.2,"structure":0.2,"impact":0.2,'
+                '"feedback":[],"observed_signals":["AI score"],"missing_signals":[]}'
+            )
+
+        async def embed(self, text):
+            return []
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-human-race.db'}")
+    await storage.init_db()
+    background = BackgroundTaskManager()
+    service = InterviewService(storage, llm_client=_BlockedCoach(), background=background)
+    session_id, _ = await service.create_session()
+    await service.start_live_interview(session_id, consent_confirmed=True)
+    await service.append_live_transcript(
+        session_id, text="问题", speaker=TranscriptSpeaker.INTERVIEWER
+    )
+    state = await service.append_live_transcript(
+        session_id, text="一段完整回答。", speaker=TranscriptSpeaker.CANDIDATE
+    )
+    # Isolate the scoring race: pausing disables the separate auto-planning
+    # task, which uses the same deliberately blocked test client.
+    await service.set_live_interview_status(session_id, LiveInterviewStatus.PAUSED)
+    answer = state.live_interview.segments[-1]
+    confirmed = await service.confirm_live_answer(
+        session_id, answer.id, question="问题", competency="系统设计"
+    )
+    await started.wait()
+    record_id = confirmed.live_interview_records[0].id
+
+    await service.review_answer_evaluation(
+        session_id,
+        record_id,
+        content=0.9,
+        technical_depth=0.8,
+        structure=0.7,
+        impact=0.6,
+        evidence_polarity=EvidencePolarity.POSITIVE,
+    )
+    release.set()
+    await background.flush()
+    refreshed = await service.get_state(session_id)
+    record = refreshed.live_interview_records[0]
+
+    assert record.evaluation.scoring_source == AnswerScoringSource.HUMAN
+    assert record.evaluation.review_status == AnswerReviewStatus.REVIEWED
+    assert record.evaluation.overall_score() == pytest.approx(0.75)
+    assert refreshed.evidence[0].confidence == pytest.approx(0.75)
+    assert refreshed.evidence[0].polarity == EvidencePolarity.POSITIVE
     await background.close()
     await storage.close()
 

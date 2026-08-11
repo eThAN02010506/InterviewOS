@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
-from interview_os.core.evidence import Evidence, EvidenceSource
+from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
 from interview_os.core.request_context import current_owner
@@ -39,6 +39,8 @@ from interview_os.core.state import (
     QUESTION_USAGE_MAX_ITEMS,
     WEAK_SIGNAL_THRESHOLD,
     AnswerEvaluation,
+    AnswerReviewStatus,
+    AnswerScoringSource,
     AutopilotState,
     AutopilotStatus,
     CandidateProfile,
@@ -687,6 +689,7 @@ class InterviewService:
                     "competency": record.competency,
                     "evidence_source": "live_interview",
                     "record_id": str(record.id),
+                    "persist_evidence": False,
                 },
                 ensure_ascii=False,
             ),
@@ -794,6 +797,13 @@ class InterviewService:
                     )
                 ]
                 await self._persist(session_id, runtime.state)
+                return
+            if (
+                current.evaluation.scoring_source == AnswerScoringSource.HUMAN
+                and current.evaluation.review_status == AnswerReviewStatus.REVIEWED
+            ):
+                # A reviewer can finish while the original background model call is
+                # still running. Human provenance wins that race permanently.
                 return
             self._apply_live_scoring_result(runtime.state, current, evaluation)
             current.evaluation = evaluation
@@ -2004,6 +2014,83 @@ class InterviewService:
             await self._persist(session_id, state)
             self._record_debug("autopilot_completed", session_id)
         return state
+
+    async def review_answer_evaluation(
+        self,
+        session_id: str,
+        record_id: UUID,
+        *,
+        content: float,
+        technical_depth: float,
+        structure: float,
+        impact: float,
+        evidence_polarity: EvidencePolarity = EvidencePolarity.NEUTRAL,
+        note: str = "",
+    ) -> InterviewState:
+        """Persist a human-reviewed score for either a mock or live answer."""
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            records: list[MockAnswerRecord | LiveInterviewRecord] = [
+                *runtime.state.mock_session.responses,
+                *runtime.state.live_interview_records,
+            ]
+            record = next((item for item in records if item.id == record_id), None)
+            if record is None:
+                raise EvaluationStateError("Answer record was not found")
+            linked_evidence = next(
+                (
+                    item
+                    for item in runtime.state.evidence
+                    if item.source_record_id == record_id
+                ),
+                None,
+            )
+            if linked_evidence is None:
+                raise EvaluationStateError("Linked evidence was not found")
+            evaluation = record.evaluation.model_copy(deep=True)
+            evaluation.content = content
+            evaluation.technical_depth = technical_depth
+            evaluation.structure = structure
+            evaluation.impact = impact
+            evaluation.scoring_source = AnswerScoringSource.HUMAN
+            evaluation.review_status = AnswerReviewStatus.REVIEWED
+            clean_note = note.strip()
+            if clean_note:
+                review_feedback = f"人工复核：{clean_note}"
+                evaluation.feedback = list(
+                    dict.fromkeys([*evaluation.feedback, review_feedback])
+                )
+            record.evaluation = evaluation
+            if isinstance(record, LiveInterviewRecord):
+                record.scoring_status = "scored"
+                record.scoring_error = ""
+
+            linked_evidence.confidence = evaluation.overall_score()
+            linked_evidence.polarity = evidence_polarity
+
+            # Any existing final report was calculated from the superseded score.
+            runtime.state.evaluation = EvaluationReport()
+            runtime.state.feedback = FeedbackReport()
+            runtime.state.evaluated_competencies = {}
+            runtime.state.missing_signals = list(
+                dict.fromkeys(
+                    gap
+                    for item in records
+                    for gap in item.evaluation.missing_signals
+                )
+            )
+            runtime.state.next_action = "Regenerate evaluation after human score review"
+            self._refresh_live_coverage_guidance(runtime.state)
+            await self._persist(session_id, runtime.state)
+        self._record_debug(
+            "answer_score_human_reviewed",
+            session_id,
+            detail=(
+                f"record={str(record_id)[:8]}; polarity={evidence_polarity.value}; "
+                f"score={evaluation.overall_score():.2f}"
+            ),
+        )
+        return runtime.state
 
     async def run_autopilot(
         self,

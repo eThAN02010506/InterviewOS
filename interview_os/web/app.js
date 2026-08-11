@@ -320,7 +320,7 @@ function renderLive() {
     const boundaryHtml = boundarySuggestions.length ? `<div class="review-subtitle">自动边界建议</div>${boundarySuggestions.map((item,index)=>`<div class="review-claim boundary"><div><small>${Math.round((item.confidence||0)*100)}% · ${esc(item.suggested_competency)}</small><span>${esc(item.reason)}（${(item.answer_segment_ids||[]).length} 段）</span><div class="boundary-factors">${(item.confidence_factors||[]).map(factor=>`<em>${esc(factor)}</em>`).join('')}</div></div><div class="claim-actions"><button type="button" data-live-boundary-index="${index}">按建议合并确认</button></div></div>`).join('')}` : '';
     const pendingHtml = pendingCandidateSegments.map(segment => `<div class="review-claim"><div><small>候选人回答 #${esc(segment.sequence)}</small><span>${esc(segment.text.slice(0, 180))}${segment.text.length > 180 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-edit="${esc(segment.id)}">修改</button><button type="button" data-live-confirm="${esc(segment.id)}">确认证据</button></div></div>`).join('');
     const scoringLabel = record => record.scoring_status === 'scored' ? '已评分' : record.scoring_status === 'failed' ? `评分失败${record.scoring_error ? '：' + record.scoring_error : ''}` : '评分中…';
-    const confirmedHtml = confirmedRecords.slice(-5).reverse().map(record => `<div class="review-claim confirmed"><div><small>已归档 · ${esc(record.competency)} · ${esc(scoringLabel(record))}</small><span>${esc(record.answer.slice(0, 160))}${record.answer.length > 160 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-reevaluate="${esc(record.id)}">重评</button><button type="button" data-live-revoke="${esc(record.id)}">撤销</button></div></div>`).join('');
+    const confirmedHtml = confirmedRecords.slice(-5).reverse().map(record => `<div class="review-claim confirmed"><div><small>已归档 · ${esc(record.competency)} · ${esc(scoringLabel(record))}</small><span>${esc(record.answer.slice(0, 160))}${record.answer.length > 160 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-score-review="${esc(record.id)}">人工复核评分</button><button type="button" data-live-reevaluate="${esc(record.id)}">AI 重评</button><button type="button" data-live-revoke="${esc(record.id)}">撤销</button></div></div>`).join('');
     $('live-review').innerHTML = `<div class="review-summary"><strong>${pendingCandidateSegments.length} 条待确认</strong><span>${confirmedCount} 条已归档 · ${esc(readiness)}</span></div>${rollingHtml}${boundaryHtml}${pendingHtml || '<p class="review-more">暂无待确认候选人回答。</p>'}${confirmedHtml ? `<div class="review-subtitle">最近归档证据</div>${confirmedHtml}` : ''}`;
   }
   $('live-competencies').className = competencies.length ? 'progress-list' : 'progress-list empty-state';
@@ -493,20 +493,21 @@ function renderMock() {
     // 上一题/下一题/结束 are always available during an active session so the
     // user can navigate freely; 重新来 only appears once the current question
     // has been answered.
-    const finishBtn=$('mock-finish'); const nextBtn=$('mock-next'); const prevBtn=$('mock-prev'); const retryBtn=$('mock-retry'); const retryMainBtn=$('mock-retry-main');
+    const finishBtn=$('mock-finish'); const nextBtn=$('mock-next'); const prevBtn=$('mock-prev'); const retryBtn=$('mock-retry'); const retryMainBtn=$('mock-retry-main'); const reviewBtn=$('mock-review-score');
     const isActive = session?.status==='active';
     if (finishBtn) finishBtn.style.display = isActive ? 'inline-block' : 'none';
     if (nextBtn) nextBtn.style.display = isActive ? 'inline-block' : 'none';
     if (prevBtn) prevBtn.style.display = (isActive && index > 0) ? 'inline-block' : 'none';
     if (retryMainBtn) { retryMainBtn.style.display = (isActive && mainResponse && (session?.pending_follow_up || currentResponse?.is_follow_up)) ? 'inline-block' : 'none'; retryMainBtn.dataset.responseId = mainResponse?.id || ''; }
     if (retryBtn) { retryBtn.style.display = (isActive && currentAnswered) ? 'inline-block' : 'none'; retryBtn.textContent = currentResponse?.is_follow_up ? '重答当前追问' : '重新来'; retryBtn.dataset.responseId = currentResponse?.id || ''; }
+    if (reviewBtn) { reviewBtn.style.display = (isActive && currentAnswered) ? 'inline-block' : 'none'; reviewBtn.dataset.scoreReview = currentResponse?.id || ''; }
     actions.classList.toggle('hidden', !isActive || isRetrying);
     if (isActive && retryBtn) retryBtn.disabled = false;
   }
   const last=displayResponse; const node=$('coach-result');
   const showEval = !!last;
-  if (!showEval) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
-  const e=last.evaluation; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div>${list('改进建议',e.feedback)}<div class="result-block"><h4>事实安全回答框架</h4><p>${esc(e.improved_answer)}</p></div>`;
+  if (!showEval) { const pendingReviews=(session?.responses||[]).filter(item=>item.evaluation?.review_status==='pending'); node.className=pendingReviews.length?'review-queue':'empty-state'; node.innerHTML=pendingReviews.length?`<div class="review-subtitle">尚待人工复核的规则评分</div>${pendingReviews.map(item=>`<div class="review-claim"><div><small>${esc(item.competency)}</small><span>${esc(item.question)}</span></div><div class="claim-actions"><button type="button" data-score-review="${esc(item.id)}">人工复核评分</button></div></div>`).join('')}`:'提交回答后显示内容、深度、结构和影响力评分。'; return; }
+  const e=last.evaluation; const sourceLabel=e.scoring_source==='human'?'人工已复核':e.scoring_source==='deterministic_rule'?'规则评分 · 待复核':'AI 评分'; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div><div class="claim-actions"><small>${esc(sourceLabel)}</small><button type="button" data-score-review="${esc(last.id)}">人工复核评分</button></div>${list('改进建议',e.feedback)}<div class="result-block"><h4>事实安全回答框架</h4><p>${esc(e.improved_answer)}</p></div>`;
 }
 
 async function ensureSession() { if (state.sessionId) return true; $('session-dialog').showModal(); toast('请先创建一个会话'); return false; }
@@ -592,6 +593,17 @@ document.addEventListener('click', async event => {
 
 $('cancel-claim').onclick=()=>$('claim-dialog').close();
 $('save-claim').onclick=async()=>{const dialog=$('claim-dialog');try{const data=await api(`/api/resumes/${state.sessionId}/claims/${dialog.dataset.claimId}`,{method:'PATCH',body:JSON.stringify({status:'modified',statement:$('claim-statement').value,note:$('claim-note').value})});state.session=data.state;dialog.close();renderState();toast('修改后的事实已确认，后续 Agent 将使用新表述');}catch(error){toast(error.message,true)}};
+
+function openScoreReview(recordId) {
+  const records=[...(state.session?.mock_session?.responses||[]),...(state.session?.live_interview_records||[])];
+  const record=records.find(item=>item.id===recordId);if(!record)return;
+  const evaluation=record.evaluation||{};const evidence=(state.session?.evidence||[]).find(item=>item.source_record_id===recordId);
+  const dialog=$('score-review-dialog');dialog.dataset.recordId=recordId;
+  $('review-content').value=Math.round((evaluation.content||0)*100);$('review-depth').value=Math.round((evaluation.technical_depth||0)*100);$('review-structure').value=Math.round((evaluation.structure||0)*100);$('review-impact').value=Math.round((evaluation.impact||0)*100);$('review-polarity').value=evidence?.polarity||'neutral';$('review-note').value='';dialog.showModal();
+}
+document.addEventListener('click',event=>{const button=event.target.closest('[data-score-review]');if(button)openScoreReview(button.dataset.scoreReview);});
+$('cancel-score-review').onclick=()=>$('score-review-dialog').close();
+$('score-review-form').onsubmit=async event=>{event.preventDefault();const dialog=$('score-review-dialog');const score=id=>Number($(id).value)/100;try{const data=await api(`/api/evaluations/${state.sessionId}/answers/${dialog.dataset.recordId}/review`,{method:'PATCH',body:JSON.stringify({content:score('review-content'),technical_depth:score('review-depth'),structure:score('review-structure'),impact:score('review-impact'),evidence_polarity:$('review-polarity').value,note:$('review-note').value})});state.session=data.state;dialog.close();renderAll();toast('人工评分已确认，旧报告已失效，请重新生成');}catch(error){toast(error.message,true)}};
 
 async function resolveEntity(accept){const dialog=$('entity-dialog');const proposedName=accept?$('entity-name').value.trim():'';if(accept&&!proposedName){toast('请填写确认后的实体名称',true);return;}try{const data=await api(`/api/intelligence/${state.sessionId}/entities/${dialog.dataset.resolutionId}`,{method:'PATCH',body:JSON.stringify({accept,proposed_name:proposedName})});state.session=data.state;dialog.close();hydrateSessionForms();renderState();toast(accept?'实体名称已确认':'已保留原名称');}catch(error){toast(error.message,true)}}
 $('accept-entity').onclick=()=>resolveEntity(true);$('reject-entity').onclick=()=>resolveEntity(false);

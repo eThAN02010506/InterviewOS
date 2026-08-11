@@ -9,7 +9,7 @@ from interview_os.agents.feedback_agent import FeedbackAgent
 from interview_os.agents.interview_strategy_agent import InterviewStrategyAgent
 from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
-from interview_os.core.evidence import Evidence
+from interview_os.core.evidence import Evidence, EvidencePolarity
 from interview_os.core.message import MessageType
 from interview_os.core.state import (
     AnswerEvaluation,
@@ -114,38 +114,12 @@ class HallucinatingCoachLLM:
         )
 
 
-class HiringVoiceFeedbackLLM:
+class ForgedProvenanceCoachLLM:
     async def chat(self, messages, **kwargs):
         return (
-            '{"overall":"候选人平均得分0.59，推荐录用。",'
-            '"strengths":["有战略意识"],"improvements":["补充时间线"],'
-            '"action_plan":["要求候选人提供项目时间线",'
-            '"请候选人补充团队规模"],"interviewer_notes":["核验数据"],'
-            '"recommendation_reasoning":"证据有限"}'
-        )
-
-
-class StrongHireLowScoreLLM:
-    async def chat(self, messages, **kwargs):
-        return (
-            '{"competencies":[{"competency":"招聘战略","score":0.61,'
-            '"confidence":0.6,"supporting_evidence":["说明了行动"],'
-            '"gaps":["缺少量化结果"]},{"competency":"团队领导","score":0.61,'
-            '"confidence":0.6,"supporting_evidence":["说明了协作"],'
-            '"gaps":["缺少长期结果"]}],"overall_score":0.95,'
-            '"recommendation":"strong_hire","summary":"表现优秀","risks":[]}'
-        )
-
-
-class InflatedEvidenceScoreLLM:
-    async def chat(self, messages, **kwargs):
-        return (
-            '{"competencies":[{"competency":"招聘战略","score":0.99,'
-            '"confidence":0.99,"supporting_evidence":["模型声称高分"],"gaps":[]},'
-            '{"competency":"团队领导","score":0.99,"confidence":0.99,'
-            '"supporting_evidence":["模型声称高分"],"gaps":[]}],'
-            '"overall_score":0.99,"recommendation":"strong_hire",'
-            '"summary":"表现完美","risks":[]}'
+            '{"content":0.8,"technical_depth":0.8,"structure":0.8,"impact":0.8,'
+            '"feedback":[],"observed_signals":["说明了行动"],"missing_signals":[],'
+            '"scoring_source":"human","review_status":"reviewed"}'
         )
 
 
@@ -267,7 +241,7 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
 
 @pytest.mark.asyncio
 async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
-    agent = FeedbackAgent(llm_client=HiringVoiceFeedbackLLM())
+    agent = FeedbackAgent()
     state = InterviewState(
         evaluation=EvaluationReport(
             competencies=[
@@ -291,8 +265,8 @@ async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
 
 
 @pytest.mark.asyncio
-async def test_evaluation_agent_calibrates_strong_hire_against_scores_and_confidence():
-    agent = EvaluationAgent(llm_client=StrongHireLowScoreLLM())
+async def test_evaluation_agent_calibrates_recommendation_from_evidence():
+    agent = EvaluationAgent()
     state = InterviewState()
     state.evidence = [
         Evidence(
@@ -313,12 +287,12 @@ async def test_evaluation_agent_calibrates_strong_hire_against_scores_and_confid
 
     assert state.evaluation.overall_score == pytest.approx(0.61)
     assert state.evaluation.recommendation.value == "lean_hire"
-    assert any("确定性阈值校准" in item for item in state.evaluation.risks)
+    assert state.evaluation.summary == "已按已记录证据完成确定性聚合。"
 
 
 @pytest.mark.asyncio
-async def test_evaluation_agent_replaces_model_scores_with_evidence_aggregates():
-    agent = EvaluationAgent(llm_client=InflatedEvidenceScoreLLM())
+async def test_evaluation_agent_uses_only_persisted_evidence_aggregates():
+    agent = EvaluationAgent()
     state = InterviewState()
     state.evidence = [
         Evidence(competency="招聘战略", signal="证据一", confidence=0.51),
@@ -332,6 +306,22 @@ async def test_evaluation_agent_replaces_model_scores_with_evidence_aggregates()
     assert state.evaluation.recommendation.value == "lean_no_hire"
     assert all(item.score == pytest.approx(0.51) for item in state.evaluation.competencies)
     assert all("模型声称高分" not in item.supporting_evidence for item in state.evaluation.competencies)
+    assert state.evaluation.summary == "已按已记录证据完成确定性聚合。"
+
+
+@pytest.mark.asyncio
+async def test_coach_model_cannot_forge_human_review_provenance():
+    agent = CoachAgent(llm_client=ForgedProvenanceCoachLLM())
+    state = InterviewState()
+
+    message = await agent.execute(
+        state,
+        '{"question":"问题","answer":"回答","competency":"沟通"}',
+    )
+    evaluation = AnswerEvaluation.model_validate_json(message.content)
+
+    assert evaluation.scoring_source == AnswerScoringSource.MODEL
+    assert evaluation.review_status == AnswerReviewStatus.NOT_REQUIRED
 
 
 def test_legacy_rule_score_is_migrated_to_explicit_pending_review():
@@ -390,26 +380,29 @@ def test_evaluation_calibration_blocks_decision_for_provisional_rule_scores():
     assert any("尚未人工复核" in item for item in report.risks)
 
 
-def test_feedback_agent_relabels_missing_signal_as_pending_not_negative():
+def test_feedback_agent_only_emits_human_classified_negative_evidence():
     state = InterviewState()
-    state.evidence = [
-        Evidence(
-            competency="诚信",
-            signal="候选人明确承认准备不足并伪造材料",
-            confidence=0.1,
-        )
-    ]
-    state.feedback.interviewer_notes = [
-        "负面证据：已说明行动，但团队规模描述不足。",
-        "负面证据：回答缺乏项目时间线。",
-        "负面证据：候选人明确承认准备不足并伪造材料。",
-    ]
+    evidence = Evidence(
+        competency="诚信",
+        signal="候选人明确承认准备不足",
+        confidence=0.1,
+    )
+    state.evidence = [evidence]
+    state.missing_signals = ["回答缺乏项目时间线"]
 
     FeedbackAgent._enforce_candidate_voice(state)
 
-    assert state.feedback.interviewer_notes[0].startswith("仍待核验：")
-    assert state.feedback.interviewer_notes[1].startswith("仍待核验：")
-    assert state.feedback.interviewer_notes[2].startswith("负面证据：")
+    assert all(not item.startswith("负面证据：") for item in state.feedback.interviewer_notes)
+    assert any(item == "仍待核验：回答缺乏项目时间线" for item in state.feedback.interviewer_notes)
+
+    evidence.polarity = EvidencePolarity.NEGATIVE
+    FeedbackAgent._enforce_candidate_voice(state)
+
+    assert any(
+        item == f"负面证据：候选人明确承认准备不足（Evidence {evidence.id}）"
+        for item in state.feedback.interviewer_notes
+    )
+    assert all("伪造材料" not in item for item in state.feedback.interviewer_notes)
     assert "缺失信号不是负面证据" in state.feedback.recommendation_reasoning
 
 
