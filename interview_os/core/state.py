@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 from interview_os.core.evidence import Evidence
 
@@ -309,6 +309,18 @@ class MockInterviewPlan(BaseModel):
     questions: list[InterviewQuestion] = Field(default_factory=list)
 
 
+class AnswerScoringSource(str, Enum):
+    MODEL = "model"
+    DETERMINISTIC_RULE = "deterministic_rule"
+    HUMAN = "human"
+
+
+class AnswerReviewStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    REVIEWED = "reviewed"
+
+
 class AnswerEvaluation(BaseModel):
     content: float = Field(
         ge=0.0,
@@ -323,6 +335,25 @@ class AnswerEvaluation(BaseModel):
     improved_answer: str = ""
     observed_signals: list[str] = Field(default_factory=list)
     missing_signals: list[str] = Field(default_factory=list)
+    scoring_source: AnswerScoringSource = AnswerScoringSource.MODEL
+    review_status: AnswerReviewStatus = AnswerReviewStatus.NOT_REQUIRED
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_provisional_scores(cls, value: Any) -> Any:
+        """Give persisted pre-provenance rule scores an explicit review state."""
+        if not isinstance(value, dict) or "scoring_source" in value or "review_status" in value:
+            return value
+        feedback = " ".join(str(item) for item in value.get("feedback", []))
+        legacy_rule_score = "人工复核" in feedback and (
+            "规则评分" in feedback or "自动评分输出无效" in feedback
+        )
+        if legacy_rule_score:
+            migrated = dict(value)
+            migrated["scoring_source"] = AnswerScoringSource.DETERMINISTIC_RULE
+            migrated["review_status"] = AnswerReviewStatus.PENDING
+            return migrated
+        return value
 
     @field_validator("content", "technical_depth", "structure", "impact", mode="before")
     @classmethod

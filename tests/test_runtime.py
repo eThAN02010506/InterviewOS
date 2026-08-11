@@ -199,6 +199,34 @@ async def test_local_llm_chat_returns_redacted_error_after_retry(caplog):
 
 
 @pytest.mark.asyncio
+async def test_local_llm_chat_retries_malformed_success_before_safe_fallback():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={})
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="gpt-oss-20b",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.chat([{"role": "user", "content": "private resume"}])
+
+    assert result == "[LLM Error: invalid response]"
+    assert calls == 2
+    assert client.settings_status()["metrics"]["failures"] == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_local_llm_chat_stream_failure_raises_redacted_error():
     import httpx
 

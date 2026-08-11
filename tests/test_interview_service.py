@@ -683,10 +683,10 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
 
     state = await service.run_evaluation(session_id)
-    assert state.evaluation.overall_score == pytest.approx(0.78)
+    assert state.evaluation.overall_score == pytest.approx(0.75)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == ["Prepare one scaling story"]
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.78)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.75)
     assert state.current_stage.value == "completed"
     await storage.close()
 

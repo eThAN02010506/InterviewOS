@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
 from interview_os.core.state import (
+    AnswerReviewStatus,
+    AnswerScoringSource,
     CompetencyEvaluation,
     EvaluationReport,
     HiringRecommendation,
@@ -47,28 +49,8 @@ class EvaluationAgent(Agent):
             self.record_degradation(
                 "Structured evaluation failed; aggregated recorded evidence without adding facts"
             )
-        evidence_competencies = {
-            evidence.competency.strip().casefold() for evidence in state.evidence if evidence.competency
-        }
-        reported_competencies = {
-            item.competency.strip().casefold() for item in report.competencies if item.competency
-        }
-        ungrounded_competencies = reported_competencies - evidence_competencies
-        if state.evidence and (not reported_competencies or ungrounded_competencies):
-            logger.warning(
-                "Evaluation report omitted or invented competency results; using evidence aggregate"
-            )
-            report = self._fallback_report(state)
-            self.record_degradation(
-                "Structured evaluation competencies were not grounded; aggregated recorded evidence"
-            )
-        provisional_scoring = any(
-            any("规则评分" in feedback for feedback in response.evaluation.feedback)
-            for response in state.mock_session.responses
-        ) or any(
-            any("规则评分" in feedback for feedback in record.evaluation.feedback)
-            for record in state.live_interview_records
-        )
+        self._ground_competencies(report, state)
+        provisional_scoring = self._has_provisional_scores(state)
         self._calibrate_recommendation(report, provisional_scoring=provisional_scoring)
         state.evaluation = report
         state.enforce_evaluation_evidence_floor()
@@ -79,6 +61,39 @@ class EvaluationAgent(Agent):
             dict.fromkeys(gap for item in report.competencies for gap in item.gaps)
         )
         return self.make_response(report.model_dump_json())
+
+    @staticmethod
+    def _has_provisional_scores(state: InterviewState) -> bool:
+        evaluations = [
+            response.evaluation for response in state.mock_session.responses
+        ] + [record.evaluation for record in state.live_interview_records]
+        has_unreviewed_rule_score = any(
+            evaluation.scoring_source == AnswerScoringSource.DETERMINISTIC_RULE
+            and evaluation.review_status != AnswerReviewStatus.REVIEWED
+            for evaluation in evaluations
+        )
+        has_unfinished_live_score = any(
+            record.scoring_status != "scored" for record in state.live_interview_records
+        )
+        return has_unreviewed_rule_score or has_unfinished_live_score
+
+    @classmethod
+    def _ground_competencies(cls, report: EvaluationReport, state: InterviewState) -> None:
+        """Replace model-controlled numeric fields with persisted evidence aggregates."""
+        grounded = cls._fallback_report(state)
+        if not report.competencies:
+            report.summary = report.summary or grounded.summary
+            report.risks = list(dict.fromkeys([*report.risks, *grounded.risks]))
+        reported_by_name = {
+            item.competency.strip().casefold(): item
+            for item in report.competencies
+            if item.competency.strip()
+        }
+        for item in grounded.competencies:
+            model_item = reported_by_name.get(item.competency.strip().casefold())
+            if model_item is not None:
+                item.gaps = list(dict.fromkeys([*model_item.gaps, *item.gaps]))
+        report.competencies = grounded.competencies
 
     @staticmethod
     def _calibrate_recommendation(

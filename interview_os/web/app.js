@@ -476,30 +476,34 @@ function renderMock() {
   const framework=$('mock-framework'); const frameworkText=$('mock-framework-text');
   const currentResponses = current ? [...(session?.responses||[])].reverse().filter(response => response.question_id === current.id) : [];
   const currentResponse = session?.pending_follow_up ? currentResponses.find(response => response.question === questionText) : currentResponses[0];
-  if (mockRetry && (!currentResponse || currentResponse.id !== mockRetryResponseId)) { mockRetry=false; mockRetryResponseId=''; }
-  const justAnswered = !!currentResponse;
-  const displayedQuestionText = justAnswered ? currentResponse.question : questionText;
-  const displayedAsFollowUp = justAnswered ? currentResponse.is_follow_up : !!session?.pending_follow_up;
+  const mainResponse = currentResponses.find(response => !response.is_follow_up);
+  let retryResponse = mockRetry ? currentResponses.find(response => response.id === mockRetryResponseId) : null;
+  if (mockRetry && !retryResponse) { mockRetry=false; mockRetryResponseId=''; retryResponse=null; }
+  const displayResponse = retryResponse || currentResponse;
+  const justAnswered = !!displayResponse;
+  const displayedQuestionText = justAnswered ? displayResponse.question : questionText;
+  const displayedAsFollowUp = justAnswered ? displayResponse.is_follow_up : !!session?.pending_follow_up;
   const currentAnswered = !!currentResponse;
-  const isRetrying = !!(mockRetry && currentResponse);
+  const isRetrying = !!(mockRetry && retryResponse);
   $('answer-form').style.display = current && (!justAnswered || isRetrying) ? 'block' : 'none';
-  if (framework) { const hasFw = current && current.answer_framework && !justAnswered && !isRetrying; framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
+  if (framework) { const hasFw = current && current.answer_framework && (!justAnswered || (isRetrying && !retryResponse.is_follow_up)); framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
   const actions=$('mock-actions');
   if (actions) {
     // 上一题/下一题/结束 are always available during an active session so the
     // user can navigate freely; 重新来 only appears once the current question
     // has been answered.
-    const finishBtn=$('mock-finish'); const nextBtn=$('mock-next'); const prevBtn=$('mock-prev'); const retryBtn=$('mock-retry');
+    const finishBtn=$('mock-finish'); const nextBtn=$('mock-next'); const prevBtn=$('mock-prev'); const retryBtn=$('mock-retry'); const retryMainBtn=$('mock-retry-main');
     const isActive = session?.status==='active';
     if (finishBtn) finishBtn.style.display = isActive ? 'inline-block' : 'none';
     if (nextBtn) nextBtn.style.display = isActive ? 'inline-block' : 'none';
     if (prevBtn) prevBtn.style.display = (isActive && index > 0) ? 'inline-block' : 'none';
-    if (retryBtn) { retryBtn.style.display = (isActive && currentAnswered) ? 'inline-block' : 'none'; retryBtn.dataset.responseId = currentResponse?.id || ''; }
+    if (retryMainBtn) { retryMainBtn.style.display = (isActive && mainResponse && (session?.pending_follow_up || currentResponse?.is_follow_up)) ? 'inline-block' : 'none'; retryMainBtn.dataset.responseId = mainResponse?.id || ''; }
+    if (retryBtn) { retryBtn.style.display = (isActive && currentAnswered) ? 'inline-block' : 'none'; retryBtn.textContent = currentResponse?.is_follow_up ? '重答当前追问' : '重新来'; retryBtn.dataset.responseId = currentResponse?.id || ''; }
     actions.classList.toggle('hidden', !isActive || isRetrying);
     if (isActive && retryBtn) retryBtn.disabled = false;
   }
-  const last=currentResponse; const node=$('coach-result');
+  const last=displayResponse; const node=$('coach-result');
   const showEval = !!last;
   if (!showEval) { node.className='empty-state'; node.textContent='提交回答后显示内容、深度、结构和影响力评分。'; return; }
   const e=last.evaluation; node.className=''; node.innerHTML=`<div class="score-grid">${[['内容',e.content],['深度',e.technical_depth],['结构',e.structure],['影响',e.impact]].map(([n,v])=>`<div class="score"><span>${n}</span><strong>${Math.round(v*100)}</strong></div>`).join('')}</div>${list('改进建议',e.feedback)}<div class="result-block"><h4>事实安全回答框架</h4><p>${esc(e.improved_answer)}</p></div>`;
@@ -598,6 +602,7 @@ $('enterprise-form').onsubmit=async e=>{e.preventDefault();const form=e.currentT
 $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/start`,{method:'POST'});await loadSession();toast('模拟面试已开始');}catch(error){toast(error.message,true)}};
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value,retry:mockRetry,retry_response_id:mockRetryResponseId||null})});$('mock-answer').value='';mockRetry=false;mockRetryResponseId='';await loadSession();toast('回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 $('mock-retry').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';$('mock-answer').value='';renderMock();};
+$('mock-retry-main').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';$('mock-answer').value='';renderMock();};
 $('mock-next').onclick=async()=>{if(!await ensureSession())return;mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
 $('mock-prev').onclick=async()=>{if(!await ensureSession())return;mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/previous`,{method:'POST'});await loadSession();toast('上一题');}catch(error){toast(error.message,true)}};
 $('mock-finish').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/finish`,{method:'POST'});await loadSession();toast('面试已结束');}catch(error){toast(error.message,true)}};

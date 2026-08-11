@@ -124,8 +124,9 @@ initial fixed plan.
 
 ## Final Evaluation
 
-`EvaluationAgent` separates competency score from evidence confidence and aggregates
-only persisted evidence. `FeedbackAgent` derives two views from the same structured
+`EvaluationAgent` separates competency score from assessment confidence and rebuilds
+every numeric competency field and supporting signal from persisted `Evidence` rows;
+model-generated numbers never enter the hiring threshold calculation. `FeedbackAgent` derives two views from the same structured
 report, then enforces a role boundary: candidate `overall` cannot contain hiring
 language and candidate action items cannot contain interviewer-to-candidate commands.
 Recruitment recommendations and verification notes remain in interviewer-only fields.
@@ -136,10 +137,13 @@ Before persistence, `EvaluationAgent` recomputes the overall score from competen
 scores and maps recommendation labels through fixed score/confidence thresholds.
 `strong_hire` requires score >= 0.85 and mean confidence >= 0.75; conflicting model
 labels are replaced and the calibration is retained as a report risk.
-Provisional deterministic answer scores form a hard decision boundary: if any remain
-unreviewed, the recommendation is `insufficient_evidence` even when the numeric score
-would otherwise cross a hire threshold. Feedback post-validation also relabels missing
-descriptions from “negative evidence” to “pending verification”.
+`AnswerEvaluation` persists structured `scoring_source` and `review_status` provenance.
+Provisional deterministic answer scores and unfinished live scoring form a hard
+decision boundary: if any remain unreviewed, the recommendation is
+`insufficient_evidence` even when the numeric score would otherwise cross a hire
+threshold. A compatibility validator migrates known pre-provenance rule-score records
+once during state loading. Feedback post-validation retains a negative note only when
+it repeats a persisted evidence signal; unsupported notes become “pending verification”.
 `FeedbackAgent` then replaces free-form recommendation prose with a deterministic
 explanation of the final calibrated enum and score. This makes the decision header
 and reasoning one atomic, internally consistent view.

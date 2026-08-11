@@ -163,9 +163,11 @@ Structured calls use a low temperature. When the configured model is `gpt-oss`, 
 OpenAI-compatible request sends `chat_template_kwargs.reasoning_effort=low`, the
 location llama.cpp's GPT-OSS Jinja template actually reads. This prevents the model
 from exhausting its completion budget in hidden reasoning and returning empty JSON.
-Transient local-model connection, timeout, and HTTP 5xx failures are retried once in
-the transport adapter before structured-output retries begin. Provider exception and
-response text are never returned to agents or written to logs.
+Transient local-model connection, timeout, HTTP 429/5xx, and malformed successful
+responses are retried once in the transport adapter before structured-output retries
+begin. A `200` without usable `choices.message.content` becomes a redacted model error
+instead of escaping as `KeyError`. Provider exception and response text are never
+returned to agents or written to logs.
 If the configured model still returns invalid scoring JSON, the coach applies a
 transparent deterministic rubric based on answer detail, concrete actions, structure,
 results, and verified metrics. The UI identifies this as a rule score requiring human
@@ -210,7 +212,9 @@ so a slow, failed, or duplicate-only refill cannot leave an active interview
 without a current question. An answered question can only be submitted again
 through explicit retry; the service replaces its response and linked evidence
 instead of silently creating duplicates. Replacing a main answer also invalidates
-the follow-up responses and evidence derived from that superseded answer. Final evaluation transitions through a
+the follow-up responses and evidence derived from that superseded answer. When both a
+main answer and follow-up exist, the UI exposes separate “重答主问题” and “重答当前追问”
+actions so the backend's precise replacement behavior remains reachable. Final evaluation transitions through a
 recoverable `evaluating` state: model failure preserves every answer and returns
 the session to `active`, allowing the user to finish again. Process-local refill
 flags and an interrupted `evaluating` state are restored to retryable values after
@@ -242,14 +246,17 @@ Candidate-facing `overall` and `action_plan` fields are post-validated: hiring o
 employment recommendations are replaced with a preparation-only evidence summary,
 and interviewer commands such as “要求候选人…” are converted into direct candidate
 practice actions. Hiring decisions remain exclusive to the interviewer workspace.
-Interviewer recommendations are also deterministic: the final `overall_score` is
-recomputed from persisted competency scores, then the recommendation is calibrated
-against score and mean evidence confidence. `strong_hire` requires at least 0.85 score
-and 0.75 confidence; a model cannot label a 0.61 report “strong hire”.
-Any response still carrying an unreviewed deterministic rule score makes the entire
-hiring recommendation `insufficient_evidence`, regardless of the numeric average.
-Missing descriptions are normalized to “pending verification” and cannot be presented
-as negative evidence; genuine adverse statements remain explicitly negative.
+Interviewer recommendations are also deterministic: every competency score,
+confidence, and supporting signal is rebuilt from persisted `Evidence` records before
+the final `overall_score` and recommendation thresholds are applied. Model-returned
+numeric values and unsupported supporting evidence are discarded. `strong_hire`
+requires at least 0.85 score and 0.75 aggregate confidence, so a model cannot promote
+weak evidence by returning matching competency names with invented high scores.
+Each answer evaluation persists `scoring_source` and `review_status`; an unreviewed
+deterministic rule score (including migrated legacy records) makes the entire hiring
+recommendation `insufficient_evidence`, regardless of the numeric average. Negative
+interviewer notes must repeat a persisted evidence signal. Unsupported negative or
+missing descriptions are normalized to “pending verification”.
 The interviewer recommendation explanation is generated deterministically from the
 final calibrated enum and score, so model prose cannot say `lean_no_hire` while the
 decision header correctly says `insufficient_evidence`.

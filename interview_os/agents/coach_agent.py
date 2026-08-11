@@ -10,7 +10,12 @@ from pydantic import BaseModel, ValidationError
 from interview_os.core.agent import Agent
 from interview_os.core.evidence import Evidence, EvidenceSource
 from interview_os.core.message import Message
-from interview_os.core.state import AnswerEvaluation, InterviewState
+from interview_os.core.state import (
+    AnswerEvaluation,
+    AnswerReviewStatus,
+    AnswerScoringSource,
+    InterviewState,
+)
 from interview_os.models.prompt_templates import ANSWER_COACH_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -201,4 +206,6 @@ class CoachAgent(Agent):
             feedback=feedback[:3],
             observed_signals=observed[:3],
             missing_signals=missing[:3],
+            scoring_source=AnswerScoringSource.DETERMINISTIC_RULE,
+            review_status=AnswerReviewStatus.PENDING,
         )

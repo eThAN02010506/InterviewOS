@@ -13,10 +13,13 @@ from interview_os.core.evidence import Evidence
 from interview_os.core.message import MessageType
 from interview_os.core.state import (
     AnswerEvaluation,
+    AnswerReviewStatus,
+    AnswerScoringSource,
     CompetencyEvaluation,
     EvaluationReport,
     InterviewState,
     JobDescription,
+    LiveInterviewRecord,
     QuestionSuggestion,
     QuestionSuggestionType,
     TranscriptSegment,
@@ -131,6 +134,18 @@ class StrongHireLowScoreLLM:
             '"confidence":0.6,"supporting_evidence":["说明了协作"],'
             '"gaps":["缺少长期结果"]}],"overall_score":0.95,'
             '"recommendation":"strong_hire","summary":"表现优秀","risks":[]}'
+        )
+
+
+class InflatedEvidenceScoreLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"competencies":[{"competency":"招聘战略","score":0.99,'
+            '"confidence":0.99,"supporting_evidence":["模型声称高分"],"gaps":[]},'
+            '{"competency":"团队领导","score":0.99,"confidence":0.99,'
+            '"supporting_evidence":["模型声称高分"],"gaps":[]}],'
+            '"overall_score":0.99,"recommendation":"strong_hire",'
+            '"summary":"表现完美","risks":[]}'
         )
 
 
@@ -301,6 +316,61 @@ async def test_evaluation_agent_calibrates_strong_hire_against_scores_and_confid
     assert any("确定性阈值校准" in item for item in state.evaluation.risks)
 
 
+@pytest.mark.asyncio
+async def test_evaluation_agent_replaces_model_scores_with_evidence_aggregates():
+    agent = EvaluationAgent(llm_client=InflatedEvidenceScoreLLM())
+    state = InterviewState()
+    state.evidence = [
+        Evidence(competency="招聘战略", signal="证据一", confidence=0.51),
+        Evidence(competency="招聘战略", signal="证据二", confidence=0.51),
+        Evidence(competency="团队领导", signal="证据三", confidence=0.51),
+    ]
+
+    await agent.execute(state)
+
+    assert state.evaluation.overall_score == pytest.approx(0.51)
+    assert state.evaluation.recommendation.value == "lean_no_hire"
+    assert all(item.score == pytest.approx(0.51) for item in state.evaluation.competencies)
+    assert all("模型声称高分" not in item.supporting_evidence for item in state.evaluation.competencies)
+
+
+def test_legacy_rule_score_is_migrated_to_explicit_pending_review():
+    evaluation = AnswerEvaluation.model_validate(
+        {
+            "content": 0.4,
+            "technical_depth": 0.4,
+            "structure": 0.4,
+            "impact": 0.4,
+            "feedback": ["自动评分输出无效，本回答需要人工复核。"],
+        }
+    )
+
+    assert evaluation.scoring_source == AnswerScoringSource.DETERMINISTIC_RULE
+    assert evaluation.review_status == AnswerReviewStatus.PENDING
+
+
+def test_provisional_detection_uses_structured_score_provenance():
+    evaluation = CoachAgent._deterministic_evaluation("我先分析问题，然后推动解决。")
+    state = InterviewState(
+        live_interview_records=[
+            LiveInterviewRecord(
+                question="请介绍案例",
+                answer="我先分析问题，然后推动解决。",
+                competency="问题解决",
+                evaluation=evaluation,
+                scoring_status="scored",
+            )
+        ]
+    )
+
+    assert evaluation.scoring_source == AnswerScoringSource.DETERMINISTIC_RULE
+    assert evaluation.review_status == AnswerReviewStatus.PENDING
+    assert EvaluationAgent._has_provisional_scores(state)
+
+    evaluation.review_status = AnswerReviewStatus.REVIEWED
+    assert not EvaluationAgent._has_provisional_scores(state)
+
+
 def test_evaluation_calibration_blocks_decision_for_provisional_rule_scores():
     report = EvaluationReport(
         competencies=[
@@ -322,10 +392,17 @@ def test_evaluation_calibration_blocks_decision_for_provisional_rule_scores():
 
 def test_feedback_agent_relabels_missing_signal_as_pending_not_negative():
     state = InterviewState()
+    state.evidence = [
+        Evidence(
+            competency="诚信",
+            signal="候选人明确承认准备不足并伪造材料",
+            confidence=0.1,
+        )
+    ]
     state.feedback.interviewer_notes = [
         "负面证据：已说明行动，但团队规模描述不足。",
         "负面证据：回答缺乏项目时间线。",
-        "负面证据：候选人明确承认伪造材料。",
+        "负面证据：候选人明确承认准备不足并伪造材料。",
     ]
 
     FeedbackAgent._enforce_candidate_voice(state)

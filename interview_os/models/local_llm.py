@@ -26,6 +26,10 @@ class LLMStreamError(RuntimeError):
     """Raised after a streaming transport fails, without exposing it as model text."""
 
 
+class LLMResponseError(ValueError):
+    """Raised when a successful provider response lacks usable model content."""
+
+
 def _approx_tokens(text: str) -> int:
     """Rough token estimate for streaming (no server usage count available)."""
     return max(1, len(text) // 4)
@@ -104,14 +108,23 @@ class LocalLLMClient(LLMClient):
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    usage = data.get("usage") or {}
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    if not isinstance(choices, list) or not choices:
+                        raise LLMResponseError("Missing completion choices")
+                    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                    content = message.get("content") if isinstance(message, dict) else None
+                    if not isinstance(content, str) or not content.strip():
+                        raise LLMResponseError("Missing completion content")
+                    usage = data.get("usage")
+                    if not isinstance(usage, dict):
+                        usage = {}
                     self._metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
                     self._metrics["completion_tokens"] += int(usage.get("completion_tokens") or 0)
-                    return data["choices"][0]["message"]["content"]
+                    return content
                 except httpx.HTTPError as exc:
                     self._metrics["failures"] += 1
                     retryable = not isinstance(exc, httpx.HTTPStatusError) or (
-                        exc.response.status_code >= 500
+                        exc.response.status_code == 429 or exc.response.status_code >= 500
                     )
                     if attempt == 0 and retryable:
                         logger.warning(
@@ -122,6 +135,17 @@ class LocalLLMClient(LLMClient):
                         continue
                     logger.error("LLM chat failed after retry (%s)", type(exc).__name__)
                     return "[LLM Error: request failed]"
+                except (ValueError, TypeError) as exc:
+                    self._metrics["failures"] += 1
+                    if attempt == 0:
+                        logger.warning(
+                            "LLM chat returned an invalid response; retrying once (%s)",
+                            type(exc).__name__,
+                        )
+                        await asyncio.sleep(0.25)
+                        continue
+                    logger.error("LLM chat returned invalid responses (%s)", type(exc).__name__)
+                    return "[LLM Error: invalid response]"
             return "[LLM Error: request failed]"
         finally:
             self._metrics["total_latency_ms"] += (perf_counter() - started) * 1000

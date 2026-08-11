@@ -106,10 +106,9 @@ class FeedbackAgent(Agent):
                 f"准备并练习：{clean}" if clean != item.strip() and clean else item
             )
         report.action_plan = grounded_actions
-        missing_language = re.compile(r"(?:缺少|缺乏|不足|未提及|未说明|待核验|尚无)")
         report.interviewer_notes = [
             re.sub(r"^负面证据[：:]", "仍待核验：", item)
-            if item.startswith("负面证据") and missing_language.search(item)
+            if item.startswith("负面证据") and not FeedbackAgent._negative_note_is_grounded(item, state)
             else item
             for item in report.interviewer_notes
         ]
@@ -132,3 +131,19 @@ class FeedbackAgent(Agent):
                 f"总分 {state.evaluation.overall_score:.2f}；该结论依据持久化胜任力分数、"
                 "证据置信度和固定阈值生成。仍缺信号需单独核验，不能当作负面证据。"
             )
+
+    @staticmethod
+    def _negative_note_is_grounded(item: str, state: InterviewState) -> bool:
+        """Require a negative note to repeat a persisted evidence signal."""
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).casefold()
+
+        detail = normalize(re.sub(r"^负面证据[：:]", "", item))
+        if not detail:
+            return False
+        for evidence in state.evidence:
+            signal = normalize(evidence.signal)
+            if len(signal) >= 4 and (signal in detail or detail in signal):
+                return True
+        return False
