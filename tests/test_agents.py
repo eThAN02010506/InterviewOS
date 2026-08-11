@@ -324,13 +324,15 @@ def test_feedback_agent_relabels_missing_signal_as_pending_not_negative():
     state = InterviewState()
     state.feedback.interviewer_notes = [
         "负面证据：已说明行动，但团队规模描述不足。",
+        "负面证据：回答缺乏项目时间线。",
         "负面证据：候选人明确承认伪造材料。",
     ]
 
     FeedbackAgent._enforce_candidate_voice(state)
 
     assert state.feedback.interviewer_notes[0].startswith("仍待核验：")
-    assert state.feedback.interviewer_notes[1].startswith("负面证据：")
+    assert state.feedback.interviewer_notes[1].startswith("仍待核验：")
+    assert state.feedback.interviewer_notes[2].startswith("负面证据：")
     assert "缺失信号不是负面证据" in state.feedback.recommendation_reasoning
 
 

@@ -106,7 +106,7 @@ class FeedbackAgent(Agent):
                 f"准备并练习：{clean}" if clean != item.strip() and clean else item
             )
         report.action_plan = grounded_actions
-        missing_language = re.compile(r"(?:缺少|不足|未提及|未说明|待核验|尚无)")
+        missing_language = re.compile(r"(?:缺少|缺乏|不足|未提及|未说明|待核验|尚无)")
         report.interviewer_notes = [
             re.sub(r"^负面证据[：:]", "仍待核验：", item)
             if item.startswith("负面证据") and missing_language.search(item)
