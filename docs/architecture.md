@@ -81,6 +81,10 @@ OpenAI-compatible response emits final JSON content.
 scores plus bounded feedback/signals. A deterministic post-validation layer displays
 the verbatim submitted answer inside a STAR completion scaffold; legacy model rewrites
 are discarded, with an explicit warning when they contain unsupported numeric facts.
+When model scoring JSON remains invalid, a bounded deterministic rubric derives scores
+from observable answer features (detail length, action/structure/result markers, and
+verified metrics). It records a degradation event and never presents the result as an
+equivalent substitute for human review.
 
 `LocalLLMClient.chat` separates transport recovery from model-output recovery. One
 bounded retry handles connection/timeouts and HTTP 5xx responses; only successfully

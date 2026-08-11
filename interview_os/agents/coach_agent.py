@@ -59,16 +59,8 @@ class CoachAgent(Agent):
             )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse answer evaluation: %s", exc)
-            evaluation = AnswerEvaluation(
-                content=0.4,
-                technical_depth=0.4,
-                structure=0.4,
-                impact=0.4,
-                feedback=["自动评分输出无效，本回答需要人工复核。"],
-                improved_answer=coach_input.answer,
-                observed_signals=[],
-                missing_signals=["AI structured scoring failed; human review required"],
-            )
+            self.record_degradation("Invalid structured answer score; deterministic rubric used")
+            evaluation = self._deterministic_evaluation(coach_input.answer)
         self._build_grounded_improvement(evaluation, coach_input.answer)
 
         ev = Evidence(
@@ -143,3 +135,70 @@ class CoachAgent(Agent):
             missing = "需要核验并补充真实量化结果"
             if missing not in evaluation.missing_signals:
                 evaluation.missing_signals.append(missing)
+
+    @staticmethod
+    def _deterministic_evaluation(answer: str) -> AnswerEvaluation:
+        """Score answer features transparently when model JSON is unusable."""
+        clean = re.sub(r"\s+", " ", answer).strip()
+        action_markers = re.findall(
+            r"我(?:先|再|通过|建立|制定|设计|推动|负责|主导)|"
+            r"(?:分析|监控|复盘|调整|协作|解决|实施|优化)",
+            clean,
+            re.IGNORECASE,
+        )
+        structure_markers = re.findall(
+            r"(?:首先|其次|然后|最后|最终|背景|目标|挑战|行动|结果|因为|因此|但是)",
+            clean,
+            re.IGNORECASE,
+        )
+        impact_markers = re.findall(
+            r"(?:最终|结果|支持|获得|认可|交付|改善|提升|降低|缩短|增长|影响)",
+            clean,
+            re.IGNORECASE,
+        )
+        data_markers = re.findall(
+            r"(?:数据|指标|转化率|接受率|周期|漏斗|分析|ATS)",
+            clean,
+            re.IGNORECASE,
+        )
+        verified_metric = bool(
+            re.search(r"\d+(?:[.,]\d+)?\s*(?:%|％|人|天|周|月|年|倍)", clean)
+            and not re.search(r"(?:没有|缺少|未提供|待核对|不会编造).{0,12}(?:数字|数据|百分比|指标)", clean)
+        )
+
+        content = min(0.8, 0.4 + len(clean) / 1200)
+        depth = min(0.75, 0.4 + min(len(action_markers), 4) * 0.08)
+        structure = min(0.75, 0.4 + min(len(structure_markers), 4) * 0.08)
+        impact = min(0.75, 0.4 + min(len(impact_markers), 3) * 0.08)
+
+        observed = []
+        if action_markers:
+            observed.append("回答描述了候选人的具体行动")
+        if data_markers:
+            observed.append("回答提到了数据或招聘指标的使用")
+        if impact_markers:
+            observed.append("回答说明了结果或业务影响")
+
+        missing = []
+        if not verified_metric:
+            missing.append("缺少已核验的量化结果")
+        if len(structure_markers) < 2:
+            missing.append("可以更明确地区分背景、行动与结果")
+        if len(action_markers) < 2:
+            missing.append("需要补充关键决策或执行步骤")
+
+        feedback = ["本次模型结构化评分无效，以下为可解释规则评分，建议人工复核。"]
+        if not verified_metric:
+            feedback.append("请从 ATS 或原始材料核对真实指标后再补充，不要估算数字。")
+        if len(structure_markers) < 2:
+            feedback.append("建议按 STAR 顺序明确呈现背景、任务、行动和结果。")
+
+        return AnswerEvaluation(
+            content=round(content, 2),
+            technical_depth=round(depth, 2),
+            structure=round(structure, 2),
+            impact=round(impact, 2),
+            feedback=feedback[:3],
+            observed_signals=observed[:3],
+            missing_signals=missing[:3],
+        )

@@ -166,6 +166,10 @@ from exhausting its completion budget in hidden reasoning and returning empty JS
 Transient local-model connection, timeout, and HTTP 5xx failures are retried once in
 the transport adapter before structured-output retries begin. Provider exception and
 response text are never returned to agents or written to logs.
+If the configured model still returns invalid scoring JSON, the coach applies a
+transparent deterministic rubric based on answer detail, concrete actions, structure,
+results, and verified metrics. The UI identifies this as a rule score requiring human
+review; it no longer assigns every failed response the same arbitrary 40 points.
 Public fact cards are created only from substantive source snippets; image captions,
 navigation text, and page titles remain visible as raw sources but are not promoted
 to verified facts. Multi-entity person/company searches recognize either quoted

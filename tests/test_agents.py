@@ -175,6 +175,32 @@ async def test_coach_degrades_to_reviewable_low_confidence_evidence():
 
 
 @pytest.mark.asyncio
+async def test_coach_deterministic_fallback_rewards_grounded_detail():
+    agent = CoachAgent(llm_client=InvalidLLM())
+    state = InterviewState()
+    detailed = (
+        "我先与业务负责人明确目标，再建立人才地图并每周复盘招聘漏斗。"
+        "我根据转化率和交付周期调整渠道，最终支持了工程团队扩张；"
+        "具体百分比仍需从 ATS 核对。"
+    )
+
+    message = await agent.execute(
+        state,
+        '{"question":"请说明招聘策略","answer":"'
+        + detailed
+        + '","competency":"招聘战略"}',
+    )
+
+    evaluation = AnswerEvaluation.model_validate_json(message.content)
+    assert evaluation.content > 0.4
+    assert evaluation.technical_depth >= 0.64
+    assert evaluation.structure >= 0.56
+    assert evaluation.impact > 0.4
+    assert "缺少已核验的量化结果" in evaluation.missing_signals
+    assert detailed in evaluation.improved_answer
+
+
+@pytest.mark.asyncio
 async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     agent = CoachAgent(llm_client=HallucinatingCoachLLM())
     state = InterviewState()
