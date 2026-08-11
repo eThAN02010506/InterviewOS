@@ -90,6 +90,27 @@ def test_fact_cards_preserve_source_and_status():
     assert state.fact_cards[0].source_quality == "official"
 
 
+def test_fact_cards_ignore_image_captions_even_from_official_pages():
+    state = InterviewState()
+    state.company.name = "Zuora"
+    state.company.public_sources = [
+        {
+            "url": "https://www.zuora.com/careers",
+            "title": "Careers at Zuora",
+            "snippet": (
+                "A woman with long brown hair wearing a black top is smiling "
+                "with her arms crossed against a plain light background."
+            ),
+            "source_quality": "official",
+            "is_official": True,
+        }
+    ]
+
+    build_fact_cards(state)
+
+    assert state.fact_cards == []
+
+
 def test_fact_cards_include_past_employer_sources():
     state = InterviewState()
     state.past_employer_sources = [

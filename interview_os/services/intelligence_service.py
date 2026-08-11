@@ -232,14 +232,23 @@ def decide_fact_card(
 
 def _fact_claim(source: dict[str, Any], subject: str) -> str:
     text = _clean_public_text(str(source.get("snippet") or source.get("text") or ""))
-    title = _clean_public_text(str(source.get("title", "")))
     sentences = [
         item.strip(" -—:：")
         for item in re.split(r"(?<=[。！？.!?])\s+|[\r\n]+", text)
         if 18 <= len(item.strip()) <= 220
     ]
     boilerplate = ("首页", "登录", "注册", "搜索", "新闻 专栏", "Image ", "全部删除")
-    candidates = [item for item in sentences if sum(token in item for token in boilerplate) < 2]
+    image_caption = re.compile(
+        r"^(?:an?\s+)?(?:image|photo|headshot|portrait|woman|man|person)\b|"
+        r"\b(?:wearing|smiling|arms crossed|plain (?:light |dark )?background)\b",
+        re.IGNORECASE,
+    )
+    candidates = [
+        item
+        for item in sentences
+        if sum(token in item for token in boilerplate) < 2
+        and not image_caption.search(item)
+    ]
     if candidates:
         candidates.sort(
             key=lambda item: (
@@ -256,7 +265,10 @@ def _fact_claim(source: dict[str, Any], subject: str) -> str:
             reverse=True,
         )
         return candidates[0][:220]
-    return title[:180]
+    # Page titles remain available in the source list, but they are not a
+    # factual claim by themselves. Do not promote a title or image caption into
+    # a verified fact card.
+    return ""
 
 
 def _clean_public_text(value: str) -> str:

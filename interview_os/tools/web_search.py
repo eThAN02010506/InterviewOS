@@ -36,14 +36,20 @@ class SearchResult(BaseModel):
 
 def assess_source_quality(results: list[SearchResult], query: str) -> list[SearchResult]:
     """Attach transparent heuristics; relevance never implies factual truth."""
-    quoted = re.search(r'"([^"\n]+)"', query)
-    entity = re.sub(r"[^a-z0-9]", "", (quoted.group(1) if quoted else "").lower())
+    # Person research commonly quotes both the interviewer and their company.
+    # A corporate press release is official for that query when its domain
+    # matches either quoted entity, not only the first one.
+    entities = {
+        compact
+        for quoted in re.findall(r'"([^"\n]+)"', query)
+        if (compact := re.sub(r"[^a-z0-9]", "", quoted.lower()))
+    }
     reputable_domains = ("reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com")
     domains = [urlparse(item.url).hostname or "" for item in results]
     independent_domains = len(set(domains))
     for item, domain in zip(results, domains, strict=True):
         compact_domain = re.sub(r"[^a-z0-9]", "", domain.lower().removeprefix("www."))
-        item.is_official = bool(entity and entity in compact_domain)
+        item.is_official = any(entity in compact_domain for entity in entities)
         if item.is_official:
             item.source_quality = "official"
             item.source_quality_reason = "URL domain appears to match the quoted entity"

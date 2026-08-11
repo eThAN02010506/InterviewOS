@@ -79,6 +79,9 @@ OpenAI-compatible response emits final JSON content.
 Search results carry source quality, official-domain and independent-domain signals.
 These are prompt evidence labels rather than truth scores: secondary-source claims
 remain attributed, and absence from the public web is not treated as falsehood.
+Official-domain matching considers every quoted entity in a joint person/company
+query. Fact-card extraction discards image captions, navigation boilerplate, and
+title-only fallbacks; these remain auditable in the underlying source list.
 
 ## Mock Interview State Machine
 

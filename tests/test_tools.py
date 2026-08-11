@@ -162,6 +162,21 @@ def test_source_quality_marks_entity_domain_as_official():
     assert results[0].corroboration_count == 2
 
 
+def test_source_quality_recognizes_company_domain_in_multi_entity_query():
+    results = assess_source_quality(
+        [
+            SearchResult(
+                title="Founder interview",
+                url="https://www.zuora.com/press-release/founder-interview",
+            )
+        ],
+        '"Tien Tzuo" "Zuora" founder interview public views',
+    )
+
+    assert results[0].is_official is True
+    assert results[0].source_quality == "official"
+
+
 def test_search_result_merge_preserves_order_and_deduplicates_urls():
     merged = merge_search_results(
         [{"url": "https://a.example/", "title": "A"}],
