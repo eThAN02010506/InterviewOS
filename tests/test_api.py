@@ -140,6 +140,8 @@ def test_session_resume_analysis_flow(tmp_path):
         assert "本人确认 · 未外部核验" in script.text
         assert "恢复待核验" in script.text
         assert "restoreAuthenticatedSession" in script.text
+        assert "displayedQuestionText = justAnswered ? currentResponse.question" in script.text
+        assert "displayedAsFollowUp = justAnswered ? currentResponse.is_follow_up" in script.text
         info = client.get("/", headers={"Accept": "application/json"})
         assert info.json()["name"] == "InterviewOS"
 

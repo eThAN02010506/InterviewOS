@@ -478,11 +478,13 @@ function renderMock() {
   const currentResponse = session?.pending_follow_up ? currentResponses.find(response => response.question === questionText) : currentResponses[0];
   if (mockRetry && (!currentResponse || currentResponse.id !== mockRetryResponseId)) { mockRetry=false; mockRetryResponseId=''; }
   const justAnswered = !!currentResponse;
+  const displayedQuestionText = justAnswered ? currentResponse.question : questionText;
+  const displayedAsFollowUp = justAnswered ? currentResponse.is_follow_up : !!session?.pending_follow_up;
   const currentAnswered = !!currentResponse;
   const isRetrying = !!(mockRetry && currentResponse);
   $('answer-form').style.display = current && (!justAnswered || isRetrying) ? 'block' : 'none';
   if (framework) { const hasFw = current && current.answer_framework && !justAnswered && !isRetrying; framework.classList.toggle('hidden', !hasFw); if (hasFw) frameworkText.textContent = current.answer_framework; }
-  $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${session?.pending_follow_up?'证据追问':esc(current.competency||'综合能力')}</small>${esc(questionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
+  $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
   const actions=$('mock-actions');
   if (actions) {
     // 上一题/下一题/结束 are always available during an active session so the

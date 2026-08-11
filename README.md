@@ -193,6 +193,11 @@ After candidate preparation, run an interactive mock interview:
 6. `POST /api/mock-interviews/{session_id}/finish` ends the interview and runs
    the evaluation.
 
+Immediately after a main or follow-up answer is submitted, the question panel keeps
+showing the exact `MockAnswerRecord.question` associated with the visible coaching
+result. It switches to the next main question only after explicit navigation, so a
+follow-up score is never displayed beside its parent question text.
+
 The mock interview is **unlimited**: it never auto-completes after a fixed
 question list. The question pool starts from the strategy's likely questions
 plus job-competency templates, and a background refill keeps ~3 questions

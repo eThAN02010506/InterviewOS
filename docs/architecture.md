@@ -110,6 +110,9 @@ response ID, which replaces its response and linked evidence without confusing a
 follow-up with its parent. Retrying a main response invalidates child follow-ups and
 their evidence because they were elicited from the superseded answer. `CoachAgent` returns a bounded `AnswerEvaluation`;
 its four-score average becomes evidence confidence.
+After submission, the client renders the latest response's persisted `question` and
+`is_follow_up` fields beside its evaluation. It does not derive that label from the
+already-cleared pending-follow-up state or the parent question cursor.
 
 Model refills run outside the session lock and append under the lock. A unique local
 question bridges an exhausted pool immediately, and persisted in-flight flags are
