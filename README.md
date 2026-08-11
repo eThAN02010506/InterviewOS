@@ -85,7 +85,9 @@ The system is built around a few product rules:
   exist, downstream preparation Agents receive only confirmed or user-modified
   claims. A directly pasted resume with no review record is labelled as unverified
   candidate self-report and may guide preparation, but cannot become evaluation
-  evidence.
+  evidence. The UI labels confirmation as candidate/user confirmation rather than
+  external truth verification, keeps reviewed items visible, and lets reviewers
+  restore an item to unverified status after a mistaken action.
 - A session is one candidate evidence boundary. Before any real answer, transcript,
   evidence, or recording exists, changing the resume invalidates every derived
   strategy, blueprint, mock plan, and report. After interview activity exists, the

@@ -149,6 +149,14 @@ def test_employment_claim_requires_timeline_signal():
     assert employment == ["2020-01 Example Company Senior Manager"]
 
 
+def test_dated_degree_line_is_not_duplicated_as_employment():
+    claims = ResumeProcessor._find_claims(
+        "1997-09 to Navy University of Engineering Computer Science | Bachelor 2001-07"
+    )
+
+    assert [claim.category for claim in claims] == ["education"]
+
+
 def test_vertical_date_range_merges_end_date_and_recognizes_english_company():
     # A vertical date layout: start + employer on one line, end date alone next.
     text = (

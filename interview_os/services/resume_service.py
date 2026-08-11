@@ -210,7 +210,20 @@ class ResumeProcessor:
             statement = line.strip()
             if not 8 <= len(statement) <= 300:
                 continue
+            degree_line = bool(
+                re.search(
+                    r"\b(?:bachelor|master|ph\.?d\.?|doctorate|degree)\b|"
+                    r"博士|硕士|本科|学位",
+                    statement,
+                    re.IGNORECASE,
+                )
+            )
             for category, pattern, method in patterns:
+                # A dated degree line often also matches the generic English
+                # employment timeline pattern ("YYYY-MM to Institution"). It
+                # is one education claim, not simultaneous employment.
+                if category == "employment" and degree_line:
+                    continue
                 if category == "employment" and not re.search(
                     r"\b(?:19|20)\d{2}\b|\d{4}[-/.]\d{1,2}", statement
                 ):

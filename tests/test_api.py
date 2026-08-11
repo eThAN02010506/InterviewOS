@@ -135,7 +135,11 @@ def test_session_resume_analysis_flow(tmp_path):
         home = client.get("/")
         assert home.status_code == 200
         assert "面试智能工作台" in home.text
-        assert client.get("/static/app.js").status_code == 200
+        script = client.get("/static/app.js")
+        assert script.status_code == 200
+        assert "本人确认 · 未外部核验" in script.text
+        assert "恢复待核验" in script.text
+        assert "restoreAuthenticatedSession" in script.text
         info = client.get("/", headers={"Accept": "application/json"})
         assert info.json()["name"] == "InterviewOS"
 
@@ -196,6 +200,10 @@ def test_resume_upload_and_human_confirmation_flow(tmp_path):
             f"/api/resumes/{session_id}/claims/{claim['id']}",
             json={"status": "confirmed", "note": "候选人已确认"},
         )
+        restored = client.patch(
+            f"/api/resumes/{session_id}/claims/{claim['id']}",
+            json={"status": "unverified"},
+        )
         invalid = client.post(
             f"/api/resumes/{session_id}/upload",
             files={"file": ("old.doc", b"legacy", "application/msword")},
@@ -203,6 +211,8 @@ def test_resume_upload_and_human_confirmation_flow(tmp_path):
 
     assert confirmed.status_code == 200
     assert confirmed.json()["state"]["resume_review"]["claims"][0]["status"] == "confirmed"
+    assert restored.status_code == 200
+    assert restored.json()["state"]["resume_review"]["claims"][0]["status"] == "unverified"
     assert invalid.status_code == 422
 
 

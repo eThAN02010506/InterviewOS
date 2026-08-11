@@ -370,15 +370,24 @@ function renderResumeReview() {
   const targets = [$('candidate-resume-review'), $('enterprise-resume-review')];
   targets.forEach(node => {
     if (!review?.metadata?.filename) { node.innerHTML = ''; node.classList.remove('visible'); return; }
-    const unresolved = (review.claims || []).filter(claim => claim.status === 'unverified');
+    const claims = review.claims || [];
+    const unresolved = claims.filter(claim => claim.status === 'unverified');
+    const reviewed = claims.filter(claim => claim.status !== 'unverified');
+    const statusLabels = {
+      confirmed:'本人确认 · 未外部核验', modified:'已修订确认 · 未外部核验',
+      needs_documents:'待补充材料', disputed:'存在争议', ignored:'已忽略'
+    };
+    const pendingClaim = claim => `<div class="review-claim"><div><small>${esc(claim.category)} · 简历自述 · 待核验</small><span>${esc(claim.statement)}</span></div><div class="claim-actions"><button type="button" data-claim-action="confirmed" data-claim-id="${esc(claim.id)}">本人确认</button><button type="button" data-claim-action="modified" data-claim-id="${esc(claim.id)}">修改并确认</button><button type="button" data-claim-action="needs_documents" data-claim-id="${esc(claim.id)}">要求材料</button><button type="button" data-claim-action="ignored" data-claim-id="${esc(claim.id)}">忽略</button></div></div>`;
+    const reviewedClaim = claim => `<div class="review-claim reviewed"><div><small>${esc(claim.category)} · ${esc(statusLabels[claim.status] || claim.status)}</small><span>${esc(claim.statement)}</span>${claim.note ? `<em>${esc(claim.note)}</em>` : ''}</div><div class="claim-actions"><button type="button" data-claim-action="unverified" data-claim-id="${esc(claim.id)}">恢复待核验</button></div></div>`;
     node.classList.add('visible');
     const structuredHtml = (review.structured_by === 'llm' && review.structured?.length)
       ? `<div class="review-subtitle">AI 结构化板块（${esc(review.structured_by)}）</div>${review.structured.map(s => `<div class="review-claim structured"><div><small>${esc(s.category)}${s.date_range ? ` · ${esc(s.date_range)}` : ''}</small><strong>${esc(s.institution)}${s.title ? ` — ${esc(s.title)}` : ''}</strong>${s.description ? `<span>${esc(s.description)}</span>` : ''}</div></div>`).join('')}` : '';
     node.innerHTML = `<div class="review-summary"><strong>${esc(review.metadata.filename)}</strong><span>${review.metadata.character_count} 字 · ${review.issues.length} 项提示 · ${unresolved.length} 项待确认</span></div>
       ${structuredHtml}
       ${(review.issues || []).map(issue => `<div class="review-issue ${esc(issue.severity)}"><b>${esc(issue.severity === 'warning' ? '请检查' : '提示')}</b><span>${esc(issue.message)}</span></div>`).join('')}
-      ${unresolved.slice(0, 8).map(claim => `<div class="review-claim"><div><small>${esc(claim.category)}</small><span>${esc(claim.statement)}</span></div><div class="claim-actions"><button type="button" data-claim-action="confirmed" data-claim-id="${esc(claim.id)}">确认</button><button type="button" data-claim-action="modified" data-claim-id="${esc(claim.id)}">修改</button><button type="button" data-claim-action="needs_documents" data-claim-id="${esc(claim.id)}">要材料</button><button type="button" data-claim-action="ignored" data-claim-id="${esc(claim.id)}">忽略</button></div></div>`).join('')}
-      ${unresolved.length > 8 ? `<p class="review-more">另有 ${unresolved.length - 8} 项，可在后续审阅中处理。</p>` : ''}`;
+      ${unresolved.slice(0, 8).map(pendingClaim).join('')}
+      ${unresolved.length > 8 ? `<p class="review-more">继续处理后将自动显示剩余 ${unresolved.length - 8} 项。</p>` : ''}
+      ${reviewed.length ? `<div class="review-subtitle">已处理（不等于外部真实性验证）</div>${reviewed.map(reviewedClaim).join('')}` : ''}`;
   });
 }
 
@@ -531,7 +540,7 @@ document.addEventListener('click', async event => {
   }
   try {
     const data = await api(`/api/resumes/${state.sessionId}/claims/${button.dataset.claimId}`, {method:'PATCH', body:JSON.stringify({status:button.dataset.claimAction})});
-    state.session = data.state; renderState(); toast({confirmed:'已确认，后续 Agent 可使用',needs_documents:'已标记为需要材料',ignored:'已忽略，后续 Agent 不会使用'}[button.dataset.claimAction]||'已更新');
+    state.session = data.state; renderState(); toast({confirmed:'已记录为本人确认，仍未外部核验',needs_documents:'已标记为需要材料',ignored:'已忽略，后续 Agent 不会使用',unverified:'已恢复为简历自述·待核验'}[button.dataset.claimAction]||'已更新');
   } catch (error) { toast(error.message, true); }
 });
 
@@ -906,4 +915,11 @@ if (navigation.interviewer.some(([view]) => view === requestedView)) state.role 
 if (navigation.candidate.some(([view]) => view === requestedView)) state.role = 'candidate';
 setView(viewMeta[requestedView] ? requestedView : `${state.role}-home`);
 checkHealth();
-if (!state.token) { showLogin(); } else { loadSessions(); }
+async function restoreAuthenticatedSession() {
+  try {
+    const user = await api('/api/auth/me');
+    $('user-chip').textContent = user.username;
+    await loadSessions();
+  } catch (error) { toast(error.message, true); }
+}
+if (!state.token) { showLogin(); } else { restoreAuthenticatedSession(); }
