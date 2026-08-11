@@ -186,9 +186,10 @@ async def test_coach_degrades_to_reviewable_low_confidence_evidence():
     state = InterviewState()
     message = await agent.execute(state, '{"question":"Q","answer":"A","competency":"Design"}')
     evaluation = AnswerEvaluation.model_validate_json(message.content)
-    assert evaluation.overall_score() == pytest.approx(0.4)
+    assert evaluation.overall_score() == pytest.approx(0.3875)
+    assert evaluation.spoken_analysis.calibration_notes
     assert "人工复核" in evaluation.feedback[0]
-    assert state.evidence[0].confidence == pytest.approx(0.4)
+    assert state.evidence[0].confidence == pytest.approx(0.3875)
 
 
 @pytest.mark.asyncio
@@ -220,7 +221,11 @@ async def test_coach_deterministic_fallback_rewards_grounded_detail():
         "impact",
     ]
     assert all(item.evidence and item.suggestion for item in evaluation.dimension_feedback)
-    assert any("可核验" in item.suggestion for item in evaluation.dimension_feedback)
+    assert evaluation.spoken_analysis.semantic_steps
+    assert any(
+        item.requirement == "给出结果与验证方式" and item.status == "partial"
+        for item in evaluation.spoken_analysis.question_coverage
+    )
     assert "缺少已核验的量化结果" in evaluation.missing_signals
     assert detailed in evaluation.improved_answer
 

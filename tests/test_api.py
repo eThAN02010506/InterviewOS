@@ -897,7 +897,9 @@ def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
     assert initial["evidence_count"] == 0
     assert one_evidence["priority"] == "medium"
     assert one_evidence["evidence_count"] == 1
-    assert two_evidence["priority"] == "low"
+    # Two low-evidence answers still need follow-up: count alone cannot erase the
+    # missing case/result signals exposed by score calibration.
+    assert two_evidence["priority"] == "medium"
     assert two_evidence["evidence_count"] == 2
     planned_events = [item for item in events if item["action"] == "live_question_planned"]
     assert planned_events

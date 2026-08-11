@@ -503,14 +503,15 @@ async def test_confirm_creates_placeholder_and_scores_in_background(scoring_serv
     refreshed = await scoring_service.get_state(session_id)
     record = refreshed.live_interview_records[0]
     assert record.scoring_status == "scored"
-    assert record.evaluation.overall_score() == 0.8
+    assert record.evaluation.overall_score() == 0.65
+    assert record.evaluation.spoken_analysis.calibration_notes
     matching = [
         item
         for item in refreshed.evidence
         if item.source_record_id == record.id
     ]
     assert len(matching) == 1
-    assert matching[0].confidence == 0.8
+    assert matching[0].confidence == 0.65
     assert matching[0].signal == "我对比了缓存与数据库扩容方案。"
     assert matching[0].polarity == EvidencePolarity.NEUTRAL
 

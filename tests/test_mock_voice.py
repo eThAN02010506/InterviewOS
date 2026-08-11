@@ -98,6 +98,7 @@ def _make_app(tmp_path, asr, *, tts=None):
         omni_client=_OmniFallback(),
         tts_client=tts,
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+        recordings_dir=tmp_path / "recordings",
     )
 
 
@@ -109,6 +110,7 @@ def _make_app_with_omni(tmp_path, asr, omni):
         asr_client=asr,
         omni_client=omni,
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+        recordings_dir=tmp_path / "recordings",
     )
 
 
@@ -135,9 +137,10 @@ def test_mock_transcribe_returns_text(tmp_path):
         )
         assert resp.status_code == 200
         assert "压测" in resp.json()["text"]
+        assert resp.json()["recording_id"]
         assert resp.json()["speech_feedback"]["source"] == "text_fallback"
         assert "不进入" in resp.json()["speech_feedback"]["disclaimer"]
-        # Pure transcription: no answer was submitted, transcription is not stored.
+        # Staging audio does not create an answer record until the user submits it.
         state = client.get(f"/api/interviews/sessions/{sid}", headers=_auth(token)).json()["state"]
         assert not (state.get("mock_interview") or {}).get("answers")
 
@@ -152,6 +155,7 @@ def test_mock_transcribe_rejects_prohibited_audio_model_inferences(tmp_path):
     with TestClient(_make_app_with_omni(tmp_path, asr, _OmniProhibited())) as client:
         token = _register(client)
         sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        client.post(f"/api/mock-interviews/{sid}/start", headers=_auth(token))
         resp = client.post(
             f"/api/mock-interviews/{sid}/transcribe",
             files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
@@ -205,6 +209,7 @@ def test_mock_transcribe_anonymous_uses_local_owner(tmp_path):
         # Anonymous requests fall back to the legacy 'local' owner: it can create
         # and transcribe its own session, but cannot touch another account's.
         sid = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(f"/api/mock-interviews/{sid}/start")
         resp = client.post(
             f"/api/mock-interviews/{sid}/transcribe",
             files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
@@ -241,6 +246,65 @@ def test_asr_preview_is_provisional_and_does_not_mutate_transcript(tmp_path):
     assert preview.status_code == 200
     assert preview.json()["text"] == "这是实时草稿"
     assert state["live_interview"]["segments"] == []
+
+
+def test_submitted_mock_recording_can_be_replayed_only_by_owner(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"text": "我负责方案选择，最终 P95 降低 40%。"}
+            )
+        ),
+    )
+    with TestClient(_make_app(tmp_path, asr)) as client:
+        alice = _register(client, "alice")
+        bob = _register(client, "bob")
+        headers = _auth(alice)
+        sid = client.post("/api/interviews/sessions", json={}, headers=headers).json()["id"]
+        prepared = client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": sid,
+                "resume_text": "Python engineer",
+                "job_description": "Platform Engineer\n岗位职责：设计分布式平台\n任职要求：熟悉 Python",
+                "company_name": "Example",
+            },
+            headers=headers,
+        )
+        assert prepared.status_code == 200
+        started = client.post(
+            f"/api/mock-interviews/{sid}/start", headers=headers
+        ).json()
+        transcribed = client.post(
+            f"/api/mock-interviews/{sid}/transcribe",
+            files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
+            headers=headers,
+        ).json()
+        submitted = client.post(
+            f"/api/mock-interviews/{sid}/answers",
+            json={
+                "question_id": started["current_question"]["id"],
+                "answer": transcribed["text"],
+                "recording_id": transcribed["recording_id"],
+            },
+            headers=headers,
+        )
+        record = submitted.json()["mock_session"]["responses"][-1]
+        replay = client.get(
+            f"/api/mock-interviews/{sid}/answers/{record['id']}/audio",
+            headers=headers,
+        )
+        denied = client.get(
+            f"/api/mock-interviews/{sid}/answers/{record['id']}/audio",
+            headers=_auth(bob),
+        )
+
+    assert submitted.status_code == 200
+    assert record["audio_file"].endswith(".wav")
+    assert replay.status_code == 200
+    assert replay.content == _FAKE_WAV
+    assert denied.status_code == 404
 
 
 def test_current_mock_question_can_be_synthesized_but_other_id_cannot(tmp_path):

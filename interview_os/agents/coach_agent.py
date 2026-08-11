@@ -11,6 +11,7 @@ from interview_os.core.agent import Agent
 from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.message import Message
+from interview_os.core.spoken_answer import analyze_spoken_answer, calibrate_evaluation
 from interview_os.core.state import (
     AnswerEvaluation,
     AnswerEvaluationDraft,
@@ -75,6 +76,8 @@ class CoachAgent(Agent):
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
         self._build_grounded_improvement(evaluation, coach_input.answer)
+        analysis = analyze_spoken_answer(coach_input.question, coach_input.answer)
+        calibrate_evaluation(evaluation, analysis)
         apply_specific_feedback(
             evaluation,
             coach_input.answer,

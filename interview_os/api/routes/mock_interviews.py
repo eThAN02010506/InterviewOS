@@ -1,11 +1,12 @@
 """Interactive mock interview endpoints."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import MockAnswerRequest, MockSessionResponse
@@ -60,6 +61,7 @@ async def submit_mock_answer(session_id: str, req: MockAnswerRequest, service: S
         req.answer,
         retry=req.retry,
         retry_response_id=req.retry_response_id,
+        recording_id=req.recording_id,
     )
     return _response(session_id, state, service)
 
@@ -100,7 +102,33 @@ async def transcribe_mock_answer(session_id: str, service: Service, file: Annota
         text,
         content_type=file.content_type or "application/octet-stream",
     )
-    return {"text": text, "speech_feedback": speech_feedback.model_dump(mode="json")}
+    recording_id = uuid4()
+    extension = Path(file.filename or "answer.wav").suffix.lstrip(".") or "wav"
+    await service.save_mock_answer_audio(
+        session_id, recording_id, content, extension=extension
+    )
+    return {
+        "text": text,
+        "recording_id": str(recording_id),
+        "speech_feedback": speech_feedback.model_dump(mode="json"),
+    }
+
+
+@router.get("/{session_id}/answers/{response_id}/audio")
+async def get_mock_answer_audio(session_id: str, response_id: UUID, service: Service):
+    state = await service.get_state(session_id)
+    record = next((item for item in state.mock_session.responses if item.id == response_id), None)
+    if record is None or not record.audio_file:
+        raise HTTPException(status_code=404, detail="该回答没有录音")
+    path = service.get_mock_answer_audio_path(session_id, record.audio_file)
+    if path is None:
+        raise HTTPException(status_code=404, detail="录音文件不存在")
+    media_type = {
+        ".wav": "audio/wav",
+        ".webm": "audio/webm",
+        ".m4a": "audio/mp4",
+    }.get(path.suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @router.post("/{session_id}/questions/{question_id}/speech")

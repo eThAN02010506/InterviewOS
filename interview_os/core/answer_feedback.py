@@ -40,12 +40,6 @@ def build_dimension_feedback(
         clean,
         re.IGNORECASE,
     )
-    structure_markers = re.findall(
-        r"(?:首先|其次|然后|最后|最终|背景|目标|挑战|行动|结果|复盘|因为|因此)|"
-        r"\b(?:first|then|finally|situation|task|action|result|because)\b",
-        clean,
-        re.IGNORECASE,
-    )
     impact_markers = re.findall(
         r"(?:最终|结果|支持|获得|交付|改善|提升|降低|缩短|增长|影响|复盘|学到)|"
         r"\b(?:result|improved|reduced|increased|delivered|learned|reflection)\b",
@@ -60,34 +54,61 @@ def build_dimension_feedback(
     gap = evaluation.missing_signals[0] if evaluation.missing_signals else "缺少第二个独立证据点"
     target = f"围绕“{question[:60]}”" if question.strip() else "围绕当前问题"
     competency_text = f"“{competency}”" if competency.strip() else "目标能力"
+    analysis = evaluation.spoken_analysis
+    covered = [item for item in analysis.question_coverage if item.status == "covered"]
+    missing = [item for item in analysis.question_coverage if item.status == "missing"]
+    step_labels = "、".join(item.label for item in analysis.semantic_steps[:6]) or "尚未提取清晰步骤"
+    filler_total = sum(analysis.filler_counts.values())
+    personal = next(
+        (
+            item
+            for item in analysis.question_coverage
+            if item.requirement == "明确个人职责与关键决策"
+        ),
+        None,
+    )
+    outcome = next(
+        (item for item in analysis.question_coverage if item.requirement == "给出结果与验证方式"),
+        None,
+    )
 
     specs = [
         (
             "content",
             evaluation.content,
             (
-                f"回答约 {len(clean)} 字；可追溯原文片段：“{clean[:80]}”。"
+                f"问题要求覆盖 {len(analysis.question_coverage)} 项，已明确覆盖 {len(covered)} 项；"
+                f"主要步骤：{step_labels}。"
                 if clean
                 else f"回答为空，尚未提供可直接支持{competency_text}的行为证据。"
             ),
-            f"{target}补齐一个可核验案例，并优先解决：{gap}。",
+            f"{target}优先补齐：{missing[0].requirement if missing else gap}。",
         ),
         (
             "technical_depth",
             evaluation.technical_depth,
-            f"识别到 {len(action_markers)} 个行动、决策或权衡表达。",
+            (
+                f"个人职责与决策：{personal.status}；证据：{personal.evidence or '未找到明确的“我负责/我决定”表述'}。"
+                if personal
+                else f"识别到 {len(action_markers)} 个行动、决策或权衡表达。"
+            ),
             "补充你亲自做出的关键决定、至少一个备选方案，以及选择当前方案的约束和理由。",
         ),
         (
             "structure",
             evaluation.structure,
-            f"识别到 {len(structure_markers)} 个结构连接或 STAR(R) 阶段标记。",
+            f"提取到 {len(analysis.semantic_steps)} 个语义步骤；填充词约 {filler_total} 处，重复修正 {analysis.repetition_count} 处。",
             "按“情境/目标 → 你的任务 → 关键行动 → 结果 → 复盘”重排，每段只承担一个信息功能。",
         ),
         (
             "impact",
             evaluation.impact,
-            f"识别到 {len(impact_markers)} 个结果或复盘表达、{len(metrics)} 个数值线索。",
+            (
+                f"结果覆盖：{outcome.status}；证据：{outcome.evidence or '未找到实际结果'}；"
+                f"数值线索 {len(metrics)} 个。"
+                if outcome
+                else f"识别到 {len(impact_markers)} 个结果或复盘表达、{len(metrics)} 个数值线索。"
+            ),
             "补充已核验的结果、指标口径和时间范围；没有数字时说明可观察变化及你从中学到什么。",
         ),
     ]

@@ -725,9 +725,10 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     # User ends the interview manually; evaluation runs because answers exist.
     state = await service.finish_mock_interview(session_id)
     assert state.mock_session.status.value == "completed"
-    assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.75)
+    assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.6875)
+    assert state.mock_session.responses[0].evaluation.spoken_analysis.calibration_notes
     assert state.evidence[-1].competency == "System Design"
-    assert state.evidence[-1].confidence == pytest.approx(0.75)
+    assert state.evidence[-1].confidence == pytest.approx(0.6125)
     assert "evaluation" in state.next_action.lower()
     await storage.close()
 
@@ -771,13 +772,13 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
 
     state = await service.finish_mock_interview(session_id)
-    assert state.evaluation.overall_score == pytest.approx(0.75)
+    assert state.evaluation.overall_score == pytest.approx(0.6125)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == [
         "准备并练习：Business impact",
         "准备并练习：需要更多独立回答交叉验证",
     ]
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.75)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.6125)
     assert state.current_stage.value == "completed"
     await storage.close()
 

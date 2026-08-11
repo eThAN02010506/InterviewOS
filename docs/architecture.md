@@ -125,7 +125,11 @@ answered; an already answered question requires explicit retry bound to the exac
 response ID, which replaces its response and linked evidence without confusing a
 follow-up with its parent. Retrying a main response invalidates child follow-ups and
 their evidence because they were elicited from the superseded answer. `CoachAgent` returns a bounded `AnswerEvaluation`;
-its four-score average becomes evidence confidence.
+its four-score average becomes evidence confidence. Before persistence,
+`spoken_answer` keeps raw and cleaned transcripts separate, classifies the answer
+type, extracts ordered steps with source excerpts, derives question coverage, and
+applies downward-only score caps when model scores exceed observable evidence.
+Calibration reasons remain in `AnswerEvaluation.spoken_analysis` for UI audit.
 After submission, the client renders the latest response's persisted `question` and
 `is_follow_up` fields beside its evaluation. It does not derive that label from the
 already-cleared pending-follow-up state or the parent question cursor.
@@ -139,8 +143,12 @@ bounded operationally by the user-controlled interview duration rather than by a
 initial fixed plan.
 
 Mock audio has three separate data paths. ASR previews are cumulative, rate-limited
-snapshots and never mutate session state. The stopped recording is transcribed once
-and remains a browser-local object URL for replay. Every callback captures its source
+snapshots and never mutate session state. The stopped recording is transcribed once,
+atomically staged under a session-scoped opaque ID, and bound to one response only
+when the answer is submitted. The browser uses a local object URL immediately; after
+a refresh it fetches the file through an owner-checked endpoint. Retry deletes the
+superseded audio, while unbound staging files become cleanup candidates after 24
+hours. Every callback captures its source
 session and generation; session changes stop tracks, revoke URLs, and invalidate late
 ASR responses. TTS accepts only the current owned question ID, optionally resolves an
 exact persisted response question, and returns audio without persisting it. An abort

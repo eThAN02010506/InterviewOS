@@ -493,6 +493,58 @@ class InterviewService:
         )
         return transcript
 
+    async def save_mock_answer_audio(
+        self, session_id: str, recording_id: UUID, content: bytes, *, extension: str = "wav"
+    ) -> str:
+        """Persist a candidate-owned mock recording until it is linked to an answer."""
+        runtime = await self._get_runtime(session_id)
+        ext = extension.lstrip(".").lower()
+        if ext not in {"wav", "webm", "m4a"}:
+            ext = "wav"
+        filename = f"mock-{session_id}-{recording_id}.{ext}"
+        async with self._lock_for(session_id):
+            self._recordings_dir.mkdir(parents=True, exist_ok=True)
+            target = self._recordings_dir / filename
+            temporary = target.with_suffix(f".{ext}.tmp")
+            temporary.write_bytes(content)
+            os.replace(temporary, target)
+            referenced = {
+                item.audio_file for item in runtime.state.mock_session.responses if item.audio_file
+            }
+            cutoff = datetime.now(timezone.utc).timestamp() - 86400
+            for candidate in self._recordings_dir.glob(f"mock-{session_id}-*"):
+                try:
+                    if (
+                        candidate.name not in referenced
+                        and candidate != target
+                        and candidate.stat().st_mtime < cutoff
+                    ):
+                        candidate.unlink(missing_ok=True)
+                except OSError:
+                    continue
+        self._record_debug(
+            "mock_answer_audio_staged",
+            session_id,
+            detail=f"recording_id={recording_id}; bytes={len(content)}",
+        )
+        return filename
+
+    def _pending_mock_audio_path(self, session_id: str, recording_id: UUID) -> Path | None:
+        for ext in ("wav", "webm", "m4a"):
+            candidate = self._recordings_dir / f"mock-{session_id}-{recording_id}.{ext}"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def get_mock_answer_audio_path(self, session_id: str, stored_filename: str) -> Path | None:
+        pattern = re.compile(
+            rf"^mock-{re.escape(session_id)}-[0-9a-f-]{{36}}\.(?:wav|webm|m4a)$"
+        )
+        if not pattern.fullmatch(stored_filename):
+            return None
+        candidate = self._recordings_dir / stored_filename
+        return candidate if candidate.is_file() else None
+
     async def analyze_mock_speech_delivery(
         self,
         session_id: str,
@@ -2142,12 +2194,23 @@ class InterviewService:
         *,
         retry: bool = False,
         retry_response_id: UUID | None = None,
+        recording_id: UUID | None = None,
     ) -> InterviewState:
         """Evaluate one mock answer. Does NOT advance the interview — the caller
         (frontend) chooses 重新来 / 下一题 / 结束面试 afterwards."""
         runtime = await self._get_runtime(session_id)
+        staged_audio: Path | None = None
+        stale_audio_files: list[str] = []
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
+            if recording_id is not None:
+                staged_audio = self._pending_mock_audio_path(session_id, recording_id)
+                if staged_audio is None:
+                    raise MockInterviewStateError("Recording does not belong to this session")
+            if staged_audio is not None and any(
+                item.audio_file == staged_audio.name for item in mock_session.responses
+            ):
+                raise MockInterviewStateError("Recording has already been submitted")
             questions = runtime.state.mock_interview.questions
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
@@ -2212,6 +2275,7 @@ class InterviewService:
                     mock_session.pending_follow_up = ""
                     mock_session.pending_parent_question_id = None
                 replaced_ids = {item.id for item in replaced_records}
+                stale_audio_files = [item.audio_file for item in replaced_records if item.audio_file]
                 mock_session.responses = [
                     item for item in mock_session.responses if item.id not in replaced_ids
                 ]
@@ -2234,6 +2298,7 @@ class InterviewService:
                     content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
                 ),
                 is_follow_up=is_follow_up,
+                audio_file=staged_audio.name if staged_audio is not None else "",
             )
             payload = json.dumps(
                 {
@@ -2264,6 +2329,13 @@ class InterviewService:
                 mock_session.pending_parent_question_id = None
             runtime.state.next_action = "回答已评价：请选择 重新来 / 下一题 / 结束面试"
             await self._persist(session_id, runtime.state)
+        for filename in stale_audio_files:
+            path = self.get_mock_answer_audio_path(session_id, filename)
+            if path is not None and filename != record.audio_file:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Could not remove replaced mock recording: %s", type(exc).__name__)
         return runtime.state
 
     async def advance_mock_interview(self, session_id: str) -> InterviewState:

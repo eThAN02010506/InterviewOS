@@ -262,6 +262,10 @@ textarea { resize: vertical; line-height: 1.55; }
 .result-block { margin: 18px 0; }
 .result-block h4 { margin: 0 0 7px; color: var(--muted); font-size: 11px; }
 .result-block ul { margin: 0; padding-left: 18px; line-height: 1.75; }
+.semantic-steps { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
+.semantic-steps li { padding-left: 4px; color: var(--muted); }
+.semantic-steps strong, .semantic-steps span { display: block; }
+.semantic-steps strong { margin-bottom: 2px; color: var(--ink); font-size: 11px; }
 .source-list a { display: block; padding: 12px 0; color: inherit; border-top: 1px solid var(--line); text-decoration: none; }
 .source-list a:first-child { border: 0; }
 .source-list strong, .source-list small { display: block; }

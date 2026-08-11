@@ -349,6 +349,35 @@ class SpeechDeliveryFeedback(BaseModel):
     disclaimer: str = "仅用于表达训练，不进入胜任力证据或录用评价。"
 
 
+class SemanticAnswerStep(BaseModel):
+    """One source-grounded step found in a spoken answer."""
+
+    label: str
+    evidence: str
+
+
+class QuestionCoverageItem(BaseModel):
+    """Whether the answer covers one requirement implied by the question."""
+
+    requirement: str
+    status: str = "missing"  # covered | partial | missing
+    evidence: str = ""
+    suggestion: str = ""
+
+
+class SpokenAnswerAnalysis(BaseModel):
+    """Auditable analysis derived from raw spoken-answer text."""
+
+    raw_transcript: str = ""
+    cleaned_transcript: str = ""
+    answer_type: str = "general"
+    filler_counts: dict[str, int] = Field(default_factory=dict)
+    repetition_count: int = 0
+    semantic_steps: list[SemanticAnswerStep] = Field(default_factory=list)
+    question_coverage: list[QuestionCoverageItem] = Field(default_factory=list)
+    calibration_notes: list[str] = Field(default_factory=list)
+
+
 class AnswerEvaluationDraft(BaseModel):
     """Untrusted model output; intentionally excludes provenance fields."""
 
@@ -384,6 +413,7 @@ class AnswerEvaluationDraft(BaseModel):
 class AnswerEvaluation(AnswerEvaluationDraft):
     scoring_source: AnswerScoringSource = AnswerScoringSource.MODEL
     review_status: AnswerReviewStatus = AnswerReviewStatus.NOT_REQUIRED
+    spoken_analysis: SpokenAnswerAnalysis = Field(default_factory=SpokenAnswerAnalysis)
 
     @model_validator(mode="before")
     @classmethod
@@ -411,6 +441,7 @@ class MockAnswerRecord(BaseModel):
     answer: str
     evaluation: AnswerEvaluation
     is_follow_up: bool = False
+    audio_file: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

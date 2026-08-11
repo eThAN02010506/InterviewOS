@@ -238,11 +238,22 @@ audio/preview`; the provisional text appears in the answer box but is never
 persisted as transcript or evidence. Stopping the recording sends one stable WAV
 to `POST /api/mock-interviews/{session_id}/transcribe`, keeps the original browser
 recording available in an audio player, and lets the candidate edit the final
-text before submitting. The recording is not uploaded for storage.
+text before submitting. The server stages that recording under an opaque ID;
+submitting the answer binds it to the response. An owner-checked audio endpoint
+allows replay after refresh or navigation, retry removes superseded audio, and
+unsubmitted staging files become cleanup candidates after 24 hours.
 Recording, replay, provisional ASR, and delivery feedback are scoped to the session
 where recording started. Switching sessions stops active capture, revokes browser
 object URLs, clears coaching output, and prevents a late transcription response from
 being applied to the newly selected candidate.
+
+Every submitted answer also gets auditable spoken-answer analysis. The original
+transcript remains evidence while a separate cleaned semantic draft removes
+non-semantic fillers. Deterministic analysis classifies the requested answer type,
+extracts ordered steps with source excerpts, and checks coverage of the case,
+method, execution, personal-decision, and result requirements. A downward-only
+second pass caps model scores that exceed observable evidence and exposes every
+adjustment in the UI.
 
 The current question can be read aloud through the configurable OpenAI-compatible
 TTS client (`8002` / Qwen3-TTS by default). The server only accepts the current
