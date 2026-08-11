@@ -149,13 +149,11 @@ ANSWER_COACH_PROMPT = (
     "Question: {question}\n"
     "Answer: {answer}\n"
     "Competency: {competency}\n\n"
-    "Output JSON with numeric scores from 0.0 to 1.0 for content_score, technical_depth, "
-    "structure, and impact; plus feedback, observed_signals, missing_signals as lists "
-    "of strings, and improved_answer. content_score must be a number, never the answer text. "
-    "Base signals only on the submitted answer. The improved answer may reorganize or clarify "
-    "the response but MUST NOT add employers, dates, team sizes, money, percentages, metrics, "
-    "tools, or outcomes absent from the submitted answer. Use [需补充真实数据] when a useful "
-    "fact is missing. Use Chinese for feedback and the improved answer.\n"
+    "Return one JSON object immediately with numeric scores from 0.0 to 1.0 for the exact keys "
+    "content_score, technical_depth, structure, and impact. Also return feedback, "
+    "observed_signals, and missing_signals, each with at most 3 short Chinese strings. "
+    "content_score must be a number, never the answer text. Base every signal only on the "
+    "submitted answer. Do not generate an improved answer and do not explain outside JSON.\n"
 )
 
 EVALUATION_PROMPT = (

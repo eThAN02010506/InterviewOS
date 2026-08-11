@@ -188,9 +188,10 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     )
 
     evaluation = AnswerEvaluation.model_validate_json(message.content)
-    assert evaluation.improved_answer.endswith(original)
+    assert original in evaluation.improved_answer
     assert "80" not in evaluation.improved_answer
     assert "250" not in evaluation.improved_answer
+    assert "STAR 补充框架" in evaluation.improved_answer
     assert any("未提供的数字" in item for item in evaluation.feedback)
     assert "需要核验并补充真实量化结果" in evaluation.missing_signals
 

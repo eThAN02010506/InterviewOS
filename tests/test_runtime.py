@@ -117,7 +117,8 @@ async def test_local_gpt_oss_uses_low_reasoning_effort_to_preserve_final_content
 
     def handler(request):
         payload = json.loads(request.content)
-        assert payload["reasoning_effort"] == "low"
+        assert payload["chat_template_kwargs"]["reasoning_effort"] == "low"
+        assert "reasoning_effort" not in payload
         assert payload["temperature"] == pytest.approx(0.2)
         return httpx.Response(
             200,

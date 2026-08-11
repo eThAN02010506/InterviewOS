@@ -69,7 +69,7 @@ class CoachAgent(Agent):
                 observed_signals=[],
                 missing_signals=["AI structured scoring failed; human review required"],
             )
-        self._ground_improved_answer(evaluation, coach_input.answer)
+        self._build_grounded_improvement(evaluation, coach_input.answer)
 
         ev = Evidence(
             competency=coach_input.competency,
@@ -108,13 +108,13 @@ class CoachAgent(Agent):
         return self.make_response(evaluation.model_dump_json())
 
     @staticmethod
-    def _ground_improved_answer(evaluation: AnswerEvaluation, answer: str) -> None:
-        """Reject model rewrites that introduce unsupported numeric facts.
+    def _build_grounded_improvement(evaluation: AnswerEvaluation, answer: str) -> None:
+        """Build a useful coaching scaffold without model-generated claims.
 
-        A coaching rewrite may improve structure and wording, but it must never
-        fabricate dates, percentages, headcount, money, or performance metrics.
-        Numeric claims are deterministic to audit and cover the highest-risk
-        hallucinations observed with local models.
+        Local models can fabricate employers, meetings, tools, or outcomes even
+        without adding numbers. The model therefore scores and identifies gaps,
+        while this deterministic layer preserves the original answer verbatim and
+        provides only explicit placeholders for facts the candidate should add.
         """
 
         def numeric_facts(value: str) -> set[str]:
@@ -127,14 +127,19 @@ class CoachAgent(Agent):
             }
 
         unsupported = numeric_facts(evaluation.improved_answer) - numeric_facts(answer)
-        if not unsupported:
-            return
         evaluation.improved_answer = (
-            "基于已提供事实的版本（未新增未经核验的数据）：\n\n" + answer.strip()
+            "已提供事实（原文保留）：\n"
+            + answer.strip()
+            + "\n\nSTAR 补充框架（请只填写真实、可核验的信息）：\n"
+            "- 情境：[补充业务背景与目标]\n"
+            "- 任务：[补充你的具体职责与约束]\n"
+            "- 行动：[按步骤重组上面的真实行动]\n"
+            "- 结果：[补充已核验的结果；没有数据时明确说明]"
         )
-        warning = "模型优化稿引入了原回答未提供的数字，已移除；请从 ATS 或原始材料核对后补充。"
-        if warning not in evaluation.feedback:
-            evaluation.feedback.append(warning)
-        missing = "需要核验并补充真实量化结果"
-        if missing not in evaluation.missing_signals:
-            evaluation.missing_signals.append(missing)
+        if unsupported:
+            warning = "模型草稿引入了原回答未提供的数字，已丢弃；请从 ATS 或原始材料核对。"
+            if warning not in evaluation.feedback:
+                evaluation.feedback.append(warning)
+            missing = "需要核验并补充真实量化结果"
+            if missing not in evaluation.missing_signals:
+                evaluation.missing_signals.append(missing)

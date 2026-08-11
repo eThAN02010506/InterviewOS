@@ -72,14 +72,15 @@ response bodies, provider error text, and credentials are excluded from logs and
 debug events.
 
 Structured agent calls use temperature `0.2`. `LocalLLMClient` detects `gpt-oss`
-models and supplies `reasoning_effort=low` unless explicitly overridden. This keeps
+models and supplies `chat_template_kwargs.reasoning_effort=low` unless explicitly
+overridden. This is the field consumed by llama.cpp's GPT-OSS Jinja template and keeps
 the model's hidden reasoning from consuming the complete token budget before the
 OpenAI-compatible response emits final JSON content.
 
-`CoachAgent` applies a deterministic post-validation boundary to generated answer
-rewrites. Any numeric token absent from the submitted answer invalidates the rewrite;
-scores may remain, but the displayed improved answer falls back to the candidate's
-original facts with an explicit verification warning.
+`CoachAgent` does not trust model-written replacement answers. The model returns only
+scores plus bounded feedback/signals. A deterministic post-validation layer displays
+the verbatim submitted answer inside a STAR completion scaffold; legacy model rewrites
+are discarded, with an explicit warning when they contain unsupported numeric facts.
 
 `LocalLLMClient.chat` separates transport recovery from model-output recovery. One
 bounded retry handles connection/timeouts and HTTP 5xx responses; only successfully

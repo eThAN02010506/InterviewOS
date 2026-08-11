@@ -160,7 +160,8 @@ Workflow progress is stored under `state.workflow`. Clients can poll the existin
 session endpoint while a workflow request is running. Invalid structured LLM output
 marks the workflow as `failed` and preserves the failing step and error message.
 Structured calls use a low temperature. When the configured model is `gpt-oss`, the
-OpenAI-compatible request also sends `reasoning_effort=low`; this prevents the model
+OpenAI-compatible request sends `chat_template_kwargs.reasoning_effort=low`, the
+location llama.cpp's GPT-OSS Jinja template actually reads. This prevents the model
 from exhausting its completion budget in hidden reasoning and returning empty JSON.
 Transient local-model connection, timeout, and HTTP 5xx failures are retried once in
 the transport adapter before structured-output retries begin. Provider exception and
@@ -215,10 +216,11 @@ the answer box, and lets the candidate edit before submitting.
 Each answer receives validated 0–1 scores for content, technical depth, structure,
 and impact. The average becomes evidence confidence for the question competency;
 observed and missing signals remain attached to the persisted answer and evidence.
-The coaching rewrite may restructure the submitted answer, but it cannot introduce
-new numeric facts. If a local model invents dates, percentages, headcount, money, or
-metrics, InterviewOS deterministically rejects that rewrite, preserves the original
-answer, and asks the candidate to verify real data from ATS or source materials.
+The model does not generate a replacement answer. It scores the submission and returns
+at most three feedback/signal items; InterviewOS deterministically displays the exact
+original answer inside a STAR completion scaffold. This prevents model-written names,
+meetings, tools, dates, percentages, headcount, money, and outcomes from becoming
+candidate claims. Any legacy model draft carrying unsupported numbers is discarded.
 If no LLM is configured, or the optional per-question framework pass is incomplete,
 every question receives a deterministic candidate-aware answer framework.
 

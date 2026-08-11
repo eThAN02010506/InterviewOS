@@ -85,8 +85,13 @@ class LocalLLMClient(LLMClient):
         # an empty `content` field at its default effort. llama.cpp's compatible
         # endpoint accepts this standard hint and still allows an explicit caller
         # override through kwargs.
-        if "gpt-oss" in self.model.lower() and "reasoning_effort" not in payload:
-            payload["reasoning_effort"] = "low"
+        if "gpt-oss" in self.model.lower():
+            template_kwargs = dict(payload.get("chat_template_kwargs") or {})
+            # llama.cpp reads GPT-OSS effort from the Jinja template kwargs,
+            # not from the OpenAI top-level compatibility key.
+            requested_effort = payload.pop("reasoning_effort", "low")
+            template_kwargs.setdefault("reasoning_effort", requested_effort)
+            payload["chat_template_kwargs"] = template_kwargs
         started = perf_counter()
         try:
             for attempt in range(2):
@@ -143,8 +148,11 @@ class LocalLLMClient(LLMClient):
             "stream": True,
             **kwargs,
         }
-        if "gpt-oss" in self.model.lower() and "reasoning_effort" not in payload:
-            payload["reasoning_effort"] = "low"
+        if "gpt-oss" in self.model.lower():
+            template_kwargs = dict(payload.get("chat_template_kwargs") or {})
+            requested_effort = payload.pop("reasoning_effort", "low")
+            template_kwargs.setdefault("reasoning_effort", requested_effort)
+            payload["chat_template_kwargs"] = template_kwargs
         started = perf_counter()
         self._metrics["requests"] += 1
         try:
