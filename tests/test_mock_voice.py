@@ -1,4 +1,5 @@
 """Mock interview spoken-answer transcription endpoint tests."""
+
 from __future__ import annotations
 
 import httpx
@@ -79,9 +80,7 @@ class _FakeTTS:
 
 
 def _register(client: TestClient, username: str = "alice") -> str:
-    resp = client.post(
-        "/api/auth/register", json={"username": username, "password": "pw-123456"}
-    )
+    resp = client.post("/api/auth/register", json={"username": username, "password": "pw-123456"})
     return resp.json()["token"]
 
 
@@ -122,9 +121,7 @@ def test_mock_transcribe_returns_text(tmp_path):
         assert request.url.path == "/v1/audio/transcriptions"
         return httpx.Response(200, json={"text": "我平时用压测比较两个方案，P95 降低 40%。"})
 
-    asr = ASRClient(
-        base_url="http://asr.test:9001", transport=httpx.MockTransport(asr_handler)
-    )
+    asr = ASRClient(base_url="http://asr.test:9001", transport=httpx.MockTransport(asr_handler))
     with TestClient(_make_app(tmp_path, asr)) as client:
         token = _register(client)
         sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
@@ -172,7 +169,8 @@ def test_mock_transcribe_rejects_prohibited_audio_model_inferences(tmp_path):
 
 def test_mock_transcribe_empty_audio_422(tmp_path):
     asr = ASRClient(
-        base_url="http://asr.test:9001", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": ""}))
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": ""})),
     )
     with TestClient(_make_app(tmp_path, asr)) as client:
         token = _register(client)
@@ -185,9 +183,35 @@ def test_mock_transcribe_empty_audio_422(tmp_path):
         assert resp.status_code == 422
 
 
+def test_mock_transcribe_rejects_unsupported_or_mislabeled_audio(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"text": "不应调用"})
+        ),
+    )
+    with TestClient(_make_app(tmp_path, asr)) as client:
+        token = _register(client)
+        sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        unsupported = client.post(
+            f"/api/mock-interviews/{sid}/transcribe",
+            files={"file": ("answer.mp3", b"ID3fake", "audio/mpeg")},
+            headers=_auth(token),
+        )
+        mislabeled = client.post(
+            f"/api/mock-interviews/{sid}/transcribe",
+            files={"file": ("answer.wav", b"not-a-wave", "audio/wav")},
+            headers=_auth(token),
+        )
+
+    assert unsupported.status_code == 415
+    assert mislabeled.status_code == 422
+
+
 def test_mock_transcribe_cross_account_404(tmp_path):
     asr = ASRClient(
-        base_url="http://asr.test:9001", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": "x"}))
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": "x"})),
     )
     with TestClient(_make_app(tmp_path, asr)) as client:
         alice = _register(client, "alice")
@@ -203,7 +227,8 @@ def test_mock_transcribe_cross_account_404(tmp_path):
 
 def test_mock_transcribe_anonymous_uses_local_owner(tmp_path):
     asr = ASRClient(
-        base_url="http://asr.test:9001", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": "x"}))
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"text": "x"})),
     )
     with TestClient(_make_app(tmp_path, asr)) as client:
         # Anonymous requests fall back to the legacy 'local' owner: it can create
@@ -217,7 +242,9 @@ def test_mock_transcribe_anonymous_uses_local_owner(tmp_path):
         assert resp.status_code == 200
         # A real account's session is invisible to anonymous.
         token = _register(client, "bob")
-        bob_sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        bob_sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()[
+            "id"
+        ]
         assert (
             client.post(
                 f"/api/mock-interviews/{bob_sid}/transcribe",
@@ -273,9 +300,7 @@ def test_submitted_mock_recording_can_be_replayed_only_by_owner(tmp_path):
             headers=headers,
         )
         assert prepared.status_code == 200
-        started = client.post(
-            f"/api/mock-interviews/{sid}/start", headers=headers
-        ).json()
+        started = client.post(f"/api/mock-interviews/{sid}/start", headers=headers).json()
         transcribed = client.post(
             f"/api/mock-interviews/{sid}/transcribe",
             files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
@@ -305,6 +330,60 @@ def test_submitted_mock_recording_can_be_replayed_only_by_owner(tmp_path):
     assert replay.status_code == 200
     assert replay.content == _FAKE_WAV
     assert denied.status_code == 404
+
+
+def test_mock_answer_audio_can_be_deleted_without_deleting_answer(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"text": "我先比较方案，再验证结果。"})
+        ),
+    )
+    with TestClient(_make_app(tmp_path, asr)) as client:
+        token = _register(client)
+        headers = _auth(token)
+        sid = client.post("/api/interviews/sessions", json={}, headers=headers).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": sid,
+                "resume_text": "Python engineer",
+                "job_description": "Platform Engineer\n岗位职责：设计平台",
+                "company_name": "Example",
+            },
+            headers=headers,
+        )
+        started = client.post(f"/api/mock-interviews/{sid}/start", headers=headers).json()
+        transcribed = client.post(
+            f"/api/mock-interviews/{sid}/transcribe",
+            files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
+            headers=headers,
+        ).json()
+        submitted = client.post(
+            f"/api/mock-interviews/{sid}/answers",
+            json={
+                "question_id": started["current_question"]["id"],
+                "answer": transcribed["text"],
+                "recording_id": transcribed["recording_id"],
+            },
+            headers=headers,
+        ).json()
+        response_id = submitted["mock_session"]["responses"][-1]["id"]
+        deleted = client.delete(
+            f"/api/mock-interviews/{sid}/answers/{response_id}/audio",
+            headers=headers,
+        )
+        replay = client.get(
+            f"/api/mock-interviews/{sid}/answers/{response_id}/audio",
+            headers=headers,
+        )
+        state = client.get(f"/api/mock-interviews/{sid}", headers=headers).json()
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True}
+    assert replay.status_code == 404
+    assert state["mock_session"]["responses"][-1]["answer"] == transcribed["text"]
+    assert state["mock_session"]["responses"][-1]["audio_file"] == ""
 
 
 def test_current_mock_question_can_be_synthesized_but_other_id_cannot(tmp_path):
@@ -346,9 +425,7 @@ def test_current_mock_question_can_be_synthesized_but_other_id_cannot(tmp_path):
 def test_answered_follow_up_speech_uses_response_question(tmp_path):
     asr = ASRClient(
         base_url="http://asr.test:9001",
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json={"text": "x"})
-        ),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"text": "x"})),
     )
     tts = _FakeTTS()
     with TestClient(_make_app(tmp_path, asr, tts=tts)) as client:

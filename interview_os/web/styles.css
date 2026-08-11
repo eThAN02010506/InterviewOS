@@ -266,6 +266,14 @@ textarea { resize: vertical; line-height: 1.55; }
 .semantic-steps li { padding-left: 4px; color: var(--muted); }
 .semantic-steps strong, .semantic-steps span { display: block; }
 .semantic-steps strong { margin-bottom: 2px; color: var(--ink); font-size: 11px; }
+.coach-summary { margin: 4px 0 16px; padding: 16px; border: 1px solid #b9ccc2; border-radius: 12px; background: #f4faf7; }
+.coach-summary > small, .coach-summary > strong { display: block; }
+.coach-summary > small { margin-bottom: 5px; color: var(--green); text-transform: uppercase; }
+.coach-summary > strong { line-height: 1.55; }
+.coach-details { margin-top: 14px; border-top: 1px solid var(--line); }
+.coach-details > summary { padding: 13px 0; color: var(--green); cursor: pointer; font-weight: 700; }
+.retry-comparison { padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.retry-comparison .score small { display: block; margin-top: 3px; color: var(--muted); }
 .source-list a { display: block; padding: 12px 0; color: inherit; border-top: 1px solid var(--line); text-decoration: none; }
 .source-list a:first-child { border: 0; }
 .source-list strong, .source-list small { display: block; }

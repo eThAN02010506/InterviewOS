@@ -224,7 +224,9 @@ so a slow, failed, or duplicate-only refill cannot leave an active interview
 without a current question. An answered question can only be submitted again
 through explicit retry; the service replaces its response and linked evidence
 instead of silently creating duplicates. Replacing a main answer also invalidates
-the follow-up responses and evidence derived from that superseded answer. When both a
+the follow-up responses and evidence derived from that superseded answer. Superseded
+records move to an immutable attempt history only after the replacement has been
+scored successfully, so provider failure cannot erase the current answer. When both a
 main answer and follow-up exist, the UI exposes separate “重答主问题” and “重答当前追问”
 actions so the backend's precise replacement behavior remains reachable. Final evaluation transitions through a
 recoverable `evaluating` state: model failure preserves every answer and returns
@@ -240,8 +242,11 @@ to `POST /api/mock-interviews/{session_id}/transcribe`, keeps the original brows
 recording available in an audio player, and lets the candidate edit the final
 text before submitting. The server stages that recording under an opaque ID;
 submitting the answer binds it to the response. An owner-checked audio endpoint
-allows replay after refresh or navigation, retry removes superseded audio, and
-unsubmitted staging files become cleanup candidates after 24 hours.
+allows replay after refresh or navigation. Retry keeps the prior attempt and its
+recording for side-by-side coaching; the user can explicitly delete either recording
+without deleting its text or score. Unsubmitted staging files become cleanup
+candidates after 24 hours, while active and archived response recordings are retained.
+Uploads are limited to signature-validated WAV, WebM, and M4A files (25 MB maximum).
 Recording, replay, provisional ASR, and delivery feedback are scoped to the session
 where recording started. Switching sessions stops active capture, revokes browser
 object URLs, clears coaching output, and prevents a late transcription response from
@@ -249,11 +254,14 @@ being applied to the newly selected candidate.
 
 Every submitted answer also gets auditable spoken-answer analysis. The original
 transcript remains evidence while a separate cleaned semantic draft removes
-non-semantic fillers. Deterministic analysis classifies the requested answer type,
+non-semantic fillers. The `evidence-v2` bilingual, cross-domain rubric classifies the
+requested answer type,
 extracts ordered steps with source excerpts, and checks coverage of the case,
 method, execution, personal-decision, and result requirements. A downward-only
 second pass caps model scores that exceed observable evidence and exposes every
-adjustment in the UI.
+adjustment plus the pre-calibration score in the UI. Input modality is explicit:
+typed answers are not penalized for conversational transition words, while ASR/live
+ASR answers may receive a structure cap only for strong fillers or repeated repairs.
 
 The current question can be read aloud through the configurable OpenAI-compatible
 TTS client (`8002` / Qwen3-TTS by default). The server only accepts the current
@@ -263,6 +271,10 @@ so navigation cannot replace the visible question with stale speech. The endpoin
 cannot be used as an arbitrary speech proxy.
 After transcription, the configured `8004` omni model may analyze only changeable
 delivery features: pace, pauses, fillers, volume stability, intonation, and clarity.
+Transcription returns immediately with deterministic feedback; deeper audio analysis
+runs in the background and the UI polls for the persisted result. Answer scoring shows
+waiting stages, then prioritizes one actionable improvement; full rubric evidence is
+collapsed on demand and retries show score/coverage deltas against the previous attempt.
 It is forbidden from evaluating accent, personality, health, demographic traits,
 or hire suitability. Provider output is screened again on the server; prohibited
 inferences are discarded rather than displayed. If audio analysis fails, violates

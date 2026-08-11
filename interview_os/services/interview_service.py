@@ -125,6 +125,7 @@ SPEECH_FEEDBACK_PROHIBITED_TERMS = (
     "age",
 )
 
+
 class SessionNotFoundError(LookupError):
     pass
 
@@ -182,6 +183,9 @@ class InterviewService:
         self._runtimes: dict[tuple[str, str], AgentRuntime] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._recordings_dir = recordings_dir or Path("data/recordings")
+        self._mock_speech_feedback: dict[
+            tuple[str, str, UUID], tuple[str, SpeechDeliveryFeedback, float]
+        ] = {}
         self.resume_processor = ResumeProcessor()
 
     def set_live_audio_mode(self, mode: str) -> None:
@@ -252,7 +256,9 @@ class InterviewService:
         async with self._lock_for(session_id):
             live = runtime.state.live_interview
             if live.status != LiveInterviewStatus.ACTIVE:
-                raise LiveInterviewStateError("Live interview must be active before adding transcript")
+                raise LiveInterviewStateError(
+                    "Live interview must be active before adding transcript"
+                )
             duplicate = self._find_duplicate_live_segment(live.segments, clean_text, speaker)
             if duplicate is not None:
                 live.duplicate_segments_dropped += 1
@@ -281,7 +287,9 @@ class InterviewService:
                 self._refresh_live_coverage_guidance(runtime.state)
                 await self._persist(session_id, runtime.state)
         if duplicate_detected:
-            self._record_debug("live_transcript_duplicate_dropped", session_id, detail=duplicate_detail)
+            self._record_debug(
+                "live_transcript_duplicate_dropped", session_id, detail=duplicate_detail
+            )
             return runtime.state
         self._record_debug(
             "live_transcript_added",
@@ -309,7 +317,10 @@ class InterviewService:
             segment = next((item for item in live.segments if item.id == segment_id), None)
             if segment is None:
                 raise LiveInterviewStateError("Transcript segment was not found")
-            if any(segment_id in record.transcript_segment_ids for record in runtime.state.live_interview_records):
+            if any(
+                segment_id in record.transcript_segment_ids
+                for record in runtime.state.live_interview_records
+            ):
                 raise LiveInterviewStateError("Confirmed evidence segments cannot be edited")
             if clean_text is not None:
                 segment.text = clean_text
@@ -325,9 +336,7 @@ class InterviewService:
         self._record_debug(
             "live_transcript_updated",
             session_id,
-            detail=(
-                f"speaker={segment.speaker.value}; chars={len(segment.text)}"
-            ),
+            detail=(f"speaker={segment.speaker.value}; chars={len(segment.text)}"),
         )
         return runtime.state
 
@@ -362,9 +371,7 @@ class InterviewService:
                 content, content_type=content_type, context=context, stream=False
             )
             suggestion_text = result if isinstance(result, str) else ""
-            await self._inject_audio_direct_suggestion(
-                session_id, runtime, suggestion_text
-            )
+            await self._inject_audio_direct_suggestion(session_id, runtime, suggestion_text)
             self._record_debug(
                 "audio_direct_suggestion",
                 session_id,
@@ -466,6 +473,8 @@ class InterviewService:
             if filename.lower().endswith(".wav")
             else "audio/webm"
             if filename.lower().endswith(".webm")
+            else "audio/mp4"
+            if filename.lower().endswith(".m4a")
             else "application/octet-stream"
         )
         started = perf_counter()
@@ -509,7 +518,12 @@ class InterviewService:
             temporary.write_bytes(content)
             os.replace(temporary, target)
             referenced = {
-                item.audio_file for item in runtime.state.mock_session.responses if item.audio_file
+                item.audio_file
+                for item in (
+                    *runtime.state.mock_session.responses,
+                    *runtime.state.mock_session.attempt_history,
+                )
+                if item.audio_file
             }
             cutoff = datetime.now(timezone.utc).timestamp() - 86400
             for candidate in self._recordings_dir.glob(f"mock-{session_id}-*"):
@@ -537,13 +551,66 @@ class InterviewService:
         return None
 
     def get_mock_answer_audio_path(self, session_id: str, stored_filename: str) -> Path | None:
-        pattern = re.compile(
-            rf"^mock-{re.escape(session_id)}-[0-9a-f-]{{36}}\.(?:wav|webm|m4a)$"
-        )
+        pattern = re.compile(rf"^mock-{re.escape(session_id)}-[0-9a-f-]{{36}}\.(?:wav|webm|m4a)$")
         if not pattern.fullmatch(stored_filename):
             return None
         candidate = self._recordings_dir / stored_filename
         return candidate if candidate.is_file() else None
+
+    async def cleanup_orphaned_mock_audio(self, *, max_age_seconds: int = 86400) -> int:
+        """Remove expired staged files while retaining every persisted attempt."""
+        referenced: set[str] = set()
+        for state in await self.storage.list_all_session_states():
+            mock = state.get("mock_session")
+            if not isinstance(mock, dict):
+                continue
+            for bucket in ("responses", "attempt_history"):
+                records = mock.get(bucket)
+                if not isinstance(records, list):
+                    continue
+                referenced.update(
+                    str(item.get("audio_file"))
+                    for item in records
+                    if isinstance(item, dict) and item.get("audio_file")
+                )
+        cutoff = datetime.now(timezone.utc).timestamp() - max(0, max_age_seconds)
+        removed = 0
+        if not self._recordings_dir.exists():
+            return removed
+        for candidate in self._recordings_dir.glob("mock-*"):
+            try:
+                if candidate.name not in referenced and candidate.stat().st_mtime < cutoff:
+                    candidate.unlink(missing_ok=True)
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+    async def delete_mock_answer_audio(self, session_id: str, response_id: UUID) -> bool:
+        runtime = await self._get_runtime(session_id)
+        filename = ""
+        async with self._lock_for(session_id):
+            records = [
+                *runtime.state.mock_session.responses,
+                *runtime.state.mock_session.attempt_history,
+            ]
+            record = next((item for item in records if item.id == response_id), None)
+            if record is None:
+                raise MockInterviewStateError("Mock answer was not found")
+            filename = record.audio_file
+            if not filename:
+                return False
+            path = self.get_mock_answer_audio_path(session_id, filename)
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise WorkflowExecutionError(
+                        "Unable to delete the local mock recording"
+                    ) from exc
+            record.audio_file = ""
+            await self._persist(session_id, runtime.state)
+        return True
 
     async def analyze_mock_speech_delivery(
         self,
@@ -555,37 +622,9 @@ class InterviewService:
     ) -> SpeechDeliveryFeedback:
         """Return coaching-only delivery feedback with a safe local fallback."""
         await self._get_runtime(session_id)
+        fallback = self._build_mock_speech_fallback(content, transcript, content_type)
         duration = self._wav_duration_seconds(content) if "wav" in content_type else 0.0
         clean = transcript.strip()
-        filler_count = sum(clean.count(word) for word in ("嗯", "啊", "然后", "就是", "那个"))
-        chars_per_minute = round(len(clean) * 60 / duration) if duration > 0 else 0
-        pace = (
-            f"约 {chars_per_minute} 字/分钟，语速偏快，关键结论后可停顿 1–2 秒。"
-            if chars_per_minute > 300
-            else f"约 {chars_per_minute} 字/分钟，语速偏慢，可先说结论再补证据。"
-            if 0 < chars_per_minute < 120
-            else f"约 {chars_per_minute} 字/分钟，处于易跟随区间。"
-            if chars_per_minute
-            else "未获得可靠音频时长，无法计算语速。"
-        )
-        fallback = SpeechDeliveryFeedback(
-            pace=pace,
-            fillers=(
-                f"转写中识别到约 {filler_count} 处常见填充词，可用短停顿替代。"
-                if filler_count
-                else "转写中未识别到明显填充词。"
-            ),
-            clarity=(
-                "转写文本过短，暂时无法判断表达清晰度。"
-                if len(clean) < 20
-                else "转写文本可读；请用“结论—行动—结果”的句式进一步提高清晰度。"
-            ),
-            strengths=["已完成可回放的口语回答，可对照转写文本自查。"],
-            improvements=[
-                "回放时只检查一个目标：每个关键结论后留出 1–2 秒停顿。",
-                "下次开头先用一句话给出结论，再说行动和可量化结果。",
-            ],
-        )
         if self.omni_client is None or not hasattr(self.omni_client, "analyze_speaking_style"):
             return fallback
         started = perf_counter()
@@ -647,6 +686,120 @@ class InterviewService:
             duration_ms=(perf_counter() - started) * 1000,
         )
         return feedback
+
+    def _build_mock_speech_fallback(
+        self, content: bytes, transcript: str, content_type: str
+    ) -> SpeechDeliveryFeedback:
+        duration = self._wav_duration_seconds(content) if "wav" in content_type else 0.0
+        clean = transcript.strip()
+        filler_count = sum(clean.count(word) for word in ("嗯", "啊", "然后", "就是", "那个"))
+        chars_per_minute = round(len(clean) * 60 / duration) if duration > 0 else 0
+        pace = (
+            f"约 {chars_per_minute} 字/分钟，语速偏快，关键结论后可停顿 1–2 秒。"
+            if chars_per_minute > 300
+            else f"约 {chars_per_minute} 字/分钟，语速偏慢，可先说结论再补证据。"
+            if 0 < chars_per_minute < 120
+            else f"约 {chars_per_minute} 字/分钟，处于易跟随区间。"
+            if chars_per_minute
+            else "未获得可靠音频时长，无法计算语速。"
+        )
+        return SpeechDeliveryFeedback(
+            pace=pace,
+            fillers=(
+                f"转写中识别到约 {filler_count} 处常见填充词，可用短停顿替代。"
+                if filler_count
+                else "转写中未识别到明显填充词。"
+            ),
+            clarity=(
+                "转写文本过短，暂时无法判断表达清晰度。"
+                if len(clean) < 20
+                else "转写文本可读；请用“结论—行动—结果”的句式进一步提高清晰度。"
+            ),
+            strengths=["已完成可回放的口语回答，可对照转写文本自查。"],
+            improvements=[
+                "回放时只检查一个目标：每个关键结论后留出 1–2 秒停顿。",
+                "下次开头先用一句话给出结论，再说行动和可量化结果。",
+            ],
+        )
+
+    def schedule_mock_speech_delivery_analysis(
+        self,
+        session_id: str,
+        recording_id: UUID,
+        content: bytes,
+        transcript: str,
+        *,
+        content_type: str,
+    ) -> SpeechDeliveryFeedback:
+        """Return text feedback immediately and enrich it from audio in background."""
+        owner = current_owner()
+        now = datetime.now(timezone.utc).timestamp()
+        expired = [
+            key
+            for key, (_, _, created_at) in self._mock_speech_feedback.items()
+            if created_at < now - 3600
+        ]
+        for key in expired:
+            self._mock_speech_feedback.pop(key, None)
+        fallback = self._build_mock_speech_fallback(content, transcript, content_type)
+        key = (owner, session_id, recording_id)
+        self._mock_speech_feedback[key] = ("analyzing", fallback, now)
+        self._background.schedule(
+            self._analyze_mock_speech_delivery_task(
+                session_id,
+                recording_id,
+                content,
+                transcript,
+                content_type=content_type,
+                owner=owner,
+            )
+        )
+        return fallback
+
+    async def _analyze_mock_speech_delivery_task(
+        self,
+        session_id: str,
+        recording_id: UUID,
+        content: bytes,
+        transcript: str,
+        *,
+        content_type: str,
+        owner: str,
+    ) -> None:
+        feedback = await self.analyze_mock_speech_delivery(
+            session_id, content, transcript, content_type=content_type
+        )
+        key = (owner, session_id, recording_id)
+        self._mock_speech_feedback[key] = (
+            "completed",
+            feedback,
+            datetime.now(timezone.utc).timestamp(),
+        )
+        runtime = self._runtimes.get((owner, session_id))
+        if runtime is None:
+            return
+        filename_prefix = f"mock-{session_id}-{recording_id}."
+        async with self._lock_for(session_id):
+            records = [
+                *runtime.state.mock_session.responses,
+                *runtime.state.mock_session.attempt_history,
+            ]
+            record = next(
+                (item for item in records if item.audio_file.startswith(filename_prefix)),
+                None,
+            )
+            if record is not None:
+                record.speech_delivery = feedback
+                await self._persist(session_id, runtime.state)
+
+    async def get_mock_speech_delivery_status(
+        self, session_id: str, recording_id: UUID
+    ) -> tuple[str, SpeechDeliveryFeedback]:
+        await self._get_runtime(session_id)
+        value = self._mock_speech_feedback.get((current_owner(), session_id, recording_id))
+        if value is None:
+            raise MockInterviewStateError("Speech feedback was not found")
+        return value[0], value[1]
 
     @staticmethod
     def _speech_feedback_is_compliant(result: dict[str, Any]) -> bool:
@@ -799,9 +952,7 @@ class InterviewService:
                 )
             self._refresh_live_question_usage(runtime.state)
             await self._persist(session_id, runtime.state)
-        self._record_debug(
-            "live_question_decided", session_id, detail=f"status={status.value}"
-        )
+        self._record_debug("live_question_decided", session_id, detail=f"status={status.value}")
         return runtime.state
 
     async def confirm_live_answer(
@@ -848,7 +999,9 @@ class InterviewService:
             if len(ordered_answer_segments) != len(unique_answer_ids):
                 raise LiveInterviewStateError("Candidate answer segment was not found")
             if any(item.speaker != TranscriptSpeaker.CANDIDATE for item in ordered_answer_segments):
-                raise LiveInterviewStateError("Only candidate transcript segments can become evidence")
+                raise LiveInterviewStateError(
+                    "Only candidate transcript segments can become evidence"
+                )
             if any(not item.stable or not item.confirmed for item in ordered_answer_segments):
                 raise LiveInterviewStateError("Transcript segment must be stable and confirmed")
             if any(
@@ -880,6 +1033,11 @@ class InterviewService:
                 evaluation=AnswerEvaluation(
                     content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
                 ),
+                answer_modality=(
+                    "typed"
+                    if all(item.source == "manual" for item in ordered_answer_segments)
+                    else "live_asr"
+                ),
                 source="live_interview",
                 transcript_segment_ids=segment_ids,
                 scoring_status="scoring",
@@ -902,9 +1060,7 @@ class InterviewService:
             self._refresh_live_coverage_guidance(runtime.state)
             runtime.state.next_action = "Review more live evidence or generate evaluation"
             await self._persist(session_id, runtime.state)
-            self._background.schedule(
-                self._score_live_record_task(session_id, record.id)
-            )
+            self._background.schedule(self._score_live_record_task(session_id, record.id))
         self._record_debug(
             "live_answer_confirmed",
             session_id,
@@ -934,7 +1090,9 @@ class InterviewService:
             if record is None:
                 raise LiveInterviewStateError("Live evidence record was not found")
             if record.source != "live_interview":
-                raise LiveInterviewStateError("Only live interview evidence can be re-evaluated here")
+                raise LiveInterviewStateError(
+                    "Only live interview evidence can be re-evaluated here"
+                )
             if question.strip():
                 record.question = question.strip()
             if competency.strip():
@@ -1002,6 +1160,7 @@ class InterviewService:
                     "evidence_source": "live_interview",
                     "record_id": str(record.id),
                     "persist_evidence": False,
+                    "answer_modality": record.answer_modality,
                 },
                 ensure_ascii=False,
             ),
@@ -1064,11 +1223,7 @@ class InterviewService:
             )
             return
         record = next(
-            (
-                item
-                for item in runtime.state.live_interview_records
-                if item.id == record_id
-            ),
+            (item for item in runtime.state.live_interview_records if item.id == record_id),
             None,
         )
         if record is None:
@@ -1079,11 +1234,7 @@ class InterviewService:
             logger.error("Live scoring failed for %s: %s", record_id, exc)
             async with self._lock_for(session_id):
                 current = next(
-                    (
-                        item
-                        for item in runtime.state.live_interview_records
-                        if item.id == record_id
-                    ),
+                    (item for item in runtime.state.live_interview_records if item.id == record_id),
                     None,
                 )
                 if current is None:
@@ -1101,11 +1252,7 @@ class InterviewService:
             return
         async with self._lock_for(session_id):
             current = next(
-                (
-                    item
-                    for item in runtime.state.live_interview_records
-                    if item.id == record_id
-                ),
+                (item for item in runtime.state.live_interview_records if item.id == record_id),
                 None,
             )
             if current is None:
@@ -1149,18 +1296,13 @@ class InterviewService:
         live = runtime.state.live_interview
         if live.status != LiveInterviewStatus.ACTIVE:
             return
-        if any(
-            item.status == QuestionSuggestionStatus.PENDING for item in live.suggestions
-        ):
+        if any(item.status == QuestionSuggestionStatus.PENDING for item in live.suggestions):
             return
         live_evidence = [
-            item for item in runtime.state.live_interview_records
-            if item.source == "live_interview"
+            item for item in runtime.state.live_interview_records if item.source == "live_interview"
         ]
         recorded_segment_ids = {
-            segment_id
-            for record in live_evidence
-            for segment_id in record.transcript_segment_ids
+            segment_id for record in live_evidence for segment_id in record.transcript_segment_ids
         }
         has_pending_candidate = any(
             item.speaker == TranscriptSpeaker.CANDIDATE
@@ -1189,11 +1331,7 @@ class InterviewService:
         parts: list[str] = []
         competencies = "、".join(state.job.competencies) or state.job.title or "目标岗位"
         covered = "、".join(
-            dict.fromkeys(
-                item.competency
-                for item in state.evidence
-                if item.competency.strip()
-            )
+            dict.fromkeys(item.competency for item in state.evidence if item.competency.strip())
         )
         anchor = f"岗位能力：{competencies}"
         if covered:
@@ -1201,9 +1339,7 @@ class InterviewService:
         parts.append(anchor)
 
         stable_segments = [
-            item
-            for item in state.live_interview.segments
-            if item.stable and item.confirmed
+            item for item in state.live_interview.segments if item.stable and item.confirmed
         ][-LIVE_RECENT_SEGMENT_WINDOW:]
         if stable_segments:
             speaker_labels = {
@@ -1244,9 +1380,7 @@ class InterviewService:
         if not clean or clean.startswith("[LLM Error"):
             clean = "请再补充说明一下你刚才提到的方案权衡与结果。"
         competency = (
-            runtime.state.job.competencies[0]
-            if runtime.state.job.competencies
-            else "综合能力"
+            runtime.state.job.competencies[0] if runtime.state.job.competencies else "综合能力"
         )
         suggestion = QuestionSuggestion(
             suggested_question=clean[:4000],
@@ -1268,9 +1402,7 @@ class InterviewService:
             runtime.state.next_action = "Interviewer reviews the audio-direct suggestion"
             await self._persist(session_id, runtime.state)
 
-    async def stream_live_suggestion(
-        self, session_id: str
-    ) -> AsyncIterator[dict[str, str]]:
+    async def stream_live_suggestion(self, session_id: str) -> AsyncIterator[dict[str, str]]:
         """Stream a next-question suggestion token by token.
 
         Yields each text chunk as the model generates it, then persists the
@@ -1346,9 +1478,7 @@ class InterviewService:
         started: float,
     ) -> tuple[InterviewState, str]:
         """Transcribe a dialog, auto-splitting speakers, then append segments."""
-        diarized = await self.omni_client.transcribe_diarize(
-            content, content_type=content_type
-        )
+        diarized = await self.omni_client.transcribe_diarize(content, content_type=content_type)
         merged = self._merge_diarized_segments(diarized)
         if not merged:
             raise LiveInterviewStateError("音频直连未能识别对话中的说话人，请重试或手动输入")
@@ -1393,7 +1523,9 @@ class InterviewService:
             and item.id not in recorded_segment_ids
         ]
         if not pending_ids:
-            raise LiveInterviewStateError("No pending candidate answers require evidence confirmation")
+            raise LiveInterviewStateError(
+                "No pending candidate answers require evidence confirmation"
+            )
         state = runtime.state
         for segment_id in pending_ids:
             state = await self.confirm_live_answer(
@@ -1711,7 +1843,8 @@ class InterviewService:
             if explicit_count:
                 runtime.state.job_review.is_title_only = False
                 runtime.state.job_review.completeness_score = max(
-                    runtime.state.job_review.completeness_score, min(1.0, 0.45 + explicit_count * 0.05)
+                    runtime.state.job_review.completeness_score,
+                    min(1.0, 0.45 + explicit_count * 0.05),
                 )
             await self._persist(session_id, runtime.state)
             self._record_debug(
@@ -1770,9 +1903,7 @@ class InterviewService:
                 )
         if reviewed:
             employers = [
-                entry
-                for entry in employers
-                if entry["company"].lower() in confirmed_context
+                entry for entry in employers if entry["company"].lower() in confirmed_context
             ]
         if not employers and not reviewed:
             # Fall back to parsing raw text lines "YYYY-MM to COMPANY".
@@ -1812,15 +1943,13 @@ class InterviewService:
             long_tenure = tenure_span >= 3
             name_tokens = set(re.findall(r"[A-Za-z0-9]+", company.lower()))
             name_terms = set(re.findall(r"[一-鿿]{2,}", company))
-            related = bool(
-                (name_tokens & current_tokens)
-                or (name_terms & current_terms)
-            )
+            related = bool((name_tokens & current_tokens) or (name_terms & current_terms))
             if recent or long_tenure or related:
                 entry["_recent"] = recent
                 entry["_tenure"] = tenure_span
                 entry["_related"] = related
                 candidates.append(entry)
+
         # Priority: recent and related > long tenure > recency alone.
         def priority(entry: dict[str, Any]) -> tuple[int, int]:
             p = 0
@@ -1850,9 +1979,7 @@ class InterviewService:
         collected: list[dict[str, Any]] = []
         for company in employers:
             collected.extend(
-                await self._search_employer(
-                    company, corroborating_entity=state.interviewer.name
-                )
+                await self._search_employer(company, corroborating_entity=state.interviewer.name)
             )
         if not collected:
             return ""
@@ -2103,8 +2230,7 @@ class InterviewService:
             logger.warning("Public JD research failed (%s)", type(exc).__name__)
             return job_description, [], "failed"
         title_tokens = {
-            token.casefold()
-            for token in re.findall(r"[A-Za-z0-9]{3,}|[\u4e00-\u9fff]{2,}", title)
+            token.casefold() for token in re.findall(r"[A-Za-z0-9]{3,}|[\u4e00-\u9fff]{2,}", title)
         }
         relevant = []
         for result in results:
@@ -2155,9 +2281,7 @@ class InterviewService:
                 if status == "consent_required"
                 else "未找到可靠公开 JD；当前问题只能按职位名称生成通用准备方向。"
             )
-            state.job_review.warnings = list(
-                dict.fromkeys([warning, *state.job_review.warnings])
-            )
+            state.job_review.warnings = list(dict.fromkeys([warning, *state.job_review.warnings]))
             await self._persist(session_id, state)
         self._record_debug(
             "job_jd_research_completed",
@@ -2200,7 +2324,6 @@ class InterviewService:
         (frontend) chooses 重新来 / 下一题 / 结束面试 afterwards."""
         runtime = await self._get_runtime(session_id)
         staged_audio: Path | None = None
-        stale_audio_files: list[str] = []
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
             if recording_id is not None:
@@ -2208,7 +2331,11 @@ class InterviewService:
                 if staged_audio is None:
                     raise MockInterviewStateError("Recording does not belong to this session")
             if staged_audio is not None and any(
-                item.audio_file == staged_audio.name for item in mock_session.responses
+                item.audio_file == staged_audio.name
+                for item in (
+                    *mock_session.responses,
+                    *mock_session.attempt_history,
+                )
             ):
                 raise MockInterviewStateError("Recording has already been submitted")
             questions = runtime.state.mock_interview.questions
@@ -2232,7 +2359,9 @@ class InterviewService:
                 else None
             )
             if retry_response_id is not None and retry_target is None:
-                raise MockInterviewStateError("Retry response does not belong to the current question")
+                raise MockInterviewStateError(
+                    "Retry response does not belong to the current question"
+                )
             is_follow_up = (
                 retry_target.is_follow_up
                 if retry_target is not None
@@ -2260,11 +2389,12 @@ class InterviewService:
                     "This question was already answered; submit with retry=true to replace it"
                 )
 
+            replaced_records: list[MockAnswerRecord] = []
             if retry and prior is not None:
-                # Drop the previous answer for this question and its linked
-                # evidence so a retry replaces it instead of duplicating.
+                # Identify the replacement set before model work, but do not
+                # mutate live state until a valid new evaluation exists.
                 replaced_records = [prior]
-                if not prior.is_follow_up:
+                if prior is not None and not prior.is_follow_up:
                     # Follow-up answers were elicited from the old main answer;
                     # retaining them would leave stale evidence in the report.
                     replaced_records.extend(
@@ -2272,22 +2402,6 @@ class InterviewService:
                         for item in mock_session.responses
                         if item.question_id == question.id and item.is_follow_up
                     )
-                    mock_session.pending_follow_up = ""
-                    mock_session.pending_parent_question_id = None
-                replaced_ids = {item.id for item in replaced_records}
-                stale_audio_files = [item.audio_file for item in replaced_records if item.audio_file]
-                mock_session.responses = [
-                    item for item in mock_session.responses if item.id not in replaced_ids
-                ]
-                runtime.state.evidence = [
-                    item
-                    for item in runtime.state.evidence
-                    if not (
-                        item.source == EvidenceSource.MOCK_INTERVIEW
-                        and item.source_record_id is not None
-                        and item.source_record_id in replaced_ids
-                    )
-                ]
 
             record = MockAnswerRecord(
                 question_id=question.id,
@@ -2297,8 +2411,15 @@ class InterviewService:
                 evaluation=AnswerEvaluation(
                     content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
                 ),
+                answer_modality="asr" if staged_audio is not None else "typed",
                 is_follow_up=is_follow_up,
                 audio_file=staged_audio.name if staged_audio is not None else "",
+                speech_delivery=(
+                    self._mock_speech_feedback[(current_owner(), session_id, recording_id)][1]
+                    if recording_id is not None
+                    and (current_owner(), session_id, recording_id) in self._mock_speech_feedback
+                    else SpeechDeliveryFeedback()
+                ),
             )
             payload = json.dumps(
                 {
@@ -2307,6 +2428,8 @@ class InterviewService:
                     "competency": question.competency or "Answer Quality",
                     "evidence_source": "mock_interview",
                     "record_id": str(record.id),
+                    "persist_evidence": False,
+                    "answer_modality": record.answer_modality,
                 }
             )
             message = await runtime.run("coach_agent", payload)
@@ -2317,7 +2440,37 @@ class InterviewService:
                     "Coach agent did not return a valid answer evaluation"
                 ) from exc
             record.evaluation = evaluation
+            if replaced_records:
+                replaced_ids = {item.id for item in replaced_records}
+                mock_session.attempt_history.extend(
+                    item.model_copy(deep=True) for item in replaced_records
+                )
+                mock_session.responses = [
+                    item for item in mock_session.responses if item.id not in replaced_ids
+                ]
+                runtime.state.evidence = [
+                    item
+                    for item in runtime.state.evidence
+                    if not (
+                        item.source == EvidenceSource.MOCK_INTERVIEW
+                        and item.source_record_id in replaced_ids
+                    )
+                ]
+                if prior is not None and not prior.is_follow_up:
+                    mock_session.pending_follow_up = ""
+                    mock_session.pending_parent_question_id = None
             mock_session.responses.append(record)
+            runtime.state.evidence.append(
+                Evidence(
+                    competency=record.competency or "Answer Quality",
+                    signal=answer[:200],
+                    confidence=evaluation.overall_score(),
+                    source=EvidenceSource.MOCK_INTERVIEW,
+                    source_record_id=record.id,
+                    polarity=EvidencePolarity.NEUTRAL,
+                    notes="; ".join(evaluation.missing_signals),
+                )
+            )
             self._invalidate_final_reports(
                 runtime.state, "Mock answer evidence changed; regenerate evaluation"
             )
@@ -2329,13 +2482,6 @@ class InterviewService:
                 mock_session.pending_parent_question_id = None
             runtime.state.next_action = "回答已评价：请选择 重新来 / 下一题 / 结束面试"
             await self._persist(session_id, runtime.state)
-        for filename in stale_audio_files:
-            path = self.get_mock_answer_audio_path(session_id, filename)
-            if path is not None and filename != record.audio_file:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError as exc:
-                    logger.warning("Could not remove replaced mock recording: %s", type(exc).__name__)
         return runtime.state
 
     async def advance_mock_interview(self, session_id: str) -> InterviewState:
@@ -2365,10 +2511,12 @@ class InterviewService:
                     ),
                     None,
                 )
-                last_follow_up = (
-                    last_response is not None and last_response.is_follow_up
+                last_follow_up = last_response is not None and last_response.is_follow_up
+                last_main = (
+                    last_response
+                    if last_response is not None and not last_response.is_follow_up
+                    else None
                 )
-                last_main = last_response if last_response is not None and not last_response.is_follow_up else None
                 if (
                     not last_follow_up
                     and last_main is not None
@@ -2442,7 +2590,9 @@ class InterviewService:
                 async with self._lock_for(session_id):
                     runtime.state.mock_session.status = MockSessionStatus.ACTIVE
                     runtime.state.mock_session.completed_at = None
-                    runtime.state.next_action = "Final evaluation failed; retry ending the interview"
+                    runtime.state.next_action = (
+                        "Final evaluation failed; retry ending the interview"
+                    )
                     await self._persist(session_id, runtime.state)
                 raise
             async with self._lock_for(session_id):
@@ -2464,9 +2614,7 @@ class InterviewService:
             mock_session.refill_in_flight = True
             self._record_debug("mock_refill_scheduled", session_id)
             owner = current_owner()
-            self._background.schedule(
-                self._refill_mock_questions_task(session_id, owner=owner)
-            )
+            self._background.schedule(self._refill_mock_questions_task(session_id, owner=owner))
 
     async def _refill_mock_questions_task(self, session_id: str, *, owner: str) -> None:
         """Background: generate more mock questions when the cache runs low."""
@@ -2475,7 +2623,8 @@ class InterviewService:
             return
         agent = runtime.get_agent("mock_interview_agent")
         recent = [
-            f"{item.competency}：{item.answer[:120]}" for item in runtime.state.mock_session.responses
+            f"{item.competency}：{item.answer[:120]}"
+            for item in runtime.state.mock_session.responses
         ]
         new_questions: list[Any] = []
         try:
@@ -2484,9 +2633,7 @@ class InterviewService:
                     runtime.state, recent_answers=recent
                 )
         except Exception as exc:  # noqa: BLE001 - background boundary
-            logger.error(
-                "Mock question refill failed for %s (%s)", session_id, type(exc).__name__
-            )
+            logger.error("Mock question refill failed for %s (%s)", session_id, type(exc).__name__)
             new_questions = []
         async with self._lock_for(session_id):
             current = self._runtimes.get((owner, session_id))
@@ -2496,16 +2643,16 @@ class InterviewService:
             mock_session.refill_in_flight = False
             if mock_session.status == MockSessionStatus.ACTIVE and new_questions:
                 existing_ids = {q.id for q in current.state.mock_interview.questions}
-                existing_texts = {q.question.strip() for q in current.state.mock_interview.questions}
+                existing_texts = {
+                    q.question.strip() for q in current.state.mock_interview.questions
+                }
                 added = 0
                 for q in new_questions:
                     if q.id not in existing_ids and q.question.strip() not in existing_texts:
                         current.state.mock_interview.questions.append(q)
                         existing_texts.add(q.question.strip())
                         added += 1
-                self._record_debug(
-                    "mock_refill_completed", session_id, detail=f"added={added}"
-                )
+                self._record_debug("mock_refill_completed", session_id, detail=f"added={added}")
             await self._persist(session_id, current.state)
 
     async def run_evaluation(self, session_id: str) -> InterviewState:
@@ -2556,11 +2703,7 @@ class InterviewService:
             if record is None:
                 raise EvaluationStateError("Answer record was not found")
             linked_evidence = next(
-                (
-                    item
-                    for item in runtime.state.evidence
-                    if item.source_record_id == record_id
-                ),
+                (item for item in runtime.state.evidence if item.source_record_id == record_id),
                 None,
             )
             if linked_evidence is None:
@@ -2581,9 +2724,7 @@ class InterviewService:
             clean_note = note.strip()
             if clean_note:
                 review_feedback = f"人工复核：{clean_note}"
-                evaluation.feedback = list(
-                    dict.fromkeys([*evaluation.feedback, review_feedback])
-                )
+                evaluation.feedback = list(dict.fromkeys([*evaluation.feedback, review_feedback]))
             record.evaluation = evaluation
             if isinstance(record, LiveInterviewRecord):
                 record.scoring_status = "scored"
@@ -2598,11 +2739,7 @@ class InterviewService:
             )
             runtime.state.next_action = "Regenerate evaluation after human score review"
             runtime.state.missing_signals = list(
-                dict.fromkeys(
-                    gap
-                    for item in records
-                    for gap in item.evaluation.missing_signals
-                )
+                dict.fromkeys(gap for item in records for gap in item.evaluation.missing_signals)
             )
             self._refresh_live_coverage_guidance(runtime.state)
             await self._persist(session_id, runtime.state)
@@ -2787,6 +2924,7 @@ class InterviewService:
                             "answer": answer,
                             "competency": competency,
                             "evidence_source": "live_interview",
+                            "answer_modality": "typed",
                         },
                         ensure_ascii=False,
                     ),
@@ -2863,9 +3001,7 @@ class InterviewService:
                 runtime.state.interviewer = interviewer
             # Record explicit public-research authorization so the past-employer
             # search respects it even in the non-autopilot workflow paths.
-            runtime.state.autopilot.authorized_public_research = (
-                authorized_public_research
-            )
+            runtime.state.autopilot.authorized_public_research = authorized_public_research
             runtime.state.workflow = WorkflowProgress(
                 name=name,
                 status=WorkflowStatus.RUNNING,
@@ -2895,9 +3031,7 @@ class InterviewService:
                     # After candidate/job/company analysis, research the
                     # candidate's recent/important past employers so strategy and
                     # design agents can reference what those companies do.
-                    if any(
-                        agent_name == "candidate_agent" for agent_name, _ in initial
-                    ):
+                    if any(agent_name == "candidate_agent" for agent_name, _ in initial):
                         block = await self._research_employers_inline(runtime.state)
                         if block:
                             runtime.state.past_employer_block = block
@@ -2980,7 +3114,9 @@ class InterviewService:
                 card = decide_fact_card(runtime.state, card_id, action=action, note=note)
             except (LookupError, ValueError) as exc:
                 raise ResumeReviewStateError(str(exc)) from exc
-            runtime.state.next_action = "Use confirmed fact cards or continue public research review"
+            runtime.state.next_action = (
+                "Use confirmed fact cards or continue public research review"
+            )
             await self._persist(session_id, runtime.state)
             self._record_debug(
                 "fact_card_decided",
@@ -3098,7 +3234,11 @@ class InterviewService:
             score -= 0.04
             factors.append("回答较短，可能只是补充短句")
         last_text = candidate_run[-1].text
-        if re.search(r"(以上|大概就是|基本就是|总结|最后|最终|就这些|谢谢|that's all)", last_text, re.IGNORECASE):
+        if re.search(
+            r"(以上|大概就是|基本就是|总结|最后|最终|就这些|谢谢|that's all)",
+            last_text,
+            re.IGNORECASE,
+        ):
             score += 0.08
             factors.append("末段出现回答结束信号")
         if any(item.source == "asr" for item in candidate_run):
@@ -3107,9 +3247,7 @@ class InterviewService:
 
     def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
         live = state.live_interview
-        stable_segments = [
-            item for item in live.segments if item.stable and item.confirmed
-        ]
+        stable_segments = [item for item in live.segments if item.stable and item.confirmed]
         if len(stable_segments) <= LIVE_RECENT_SEGMENT_WINDOW:
             live.rolling_summary = ""
             live.summarized_until_sequence = 0
@@ -3178,7 +3316,7 @@ class InterviewService:
                 reason = "已有 1 条证据，但缺少交叉验证，建议再问一个独立场景。"
                 question_type = "follow_up"
                 sample = f"刚才关于“{competency}”的例子还有哪些量化结果或风险权衡？"
-            elif strongest < WEAK_SIGNAL_THRESHOLD:
+            elif strongest <= WEAK_SIGNAL_THRESHOLD:
                 priority = "medium"
                 reason = "已有多条证据，但评分信号偏弱，需要更具体的行为和结果。"
                 question_type = "deep_dive"
@@ -3239,7 +3377,9 @@ class InterviewService:
                 )
             )
         status_order = {"pending": 0, "suggested": 1, "used": 2}
-        usage.sort(key=lambda item: (status_order.get(item.status, 3), item.round_name, item.question))
+        usage.sort(
+            key=lambda item: (status_order.get(item.status, 3), item.round_name, item.question)
+        )
         state.live_interview.question_usage = usage[:QUESTION_USAGE_MAX_ITEMS]
 
     def _refresh_live_action_card(self, state: InterviewState) -> None:
@@ -3248,9 +3388,7 @@ class InterviewService:
             item for item in state.live_interview_records if item.source == "live_interview"
         ]
         recorded_segment_ids = {
-            segment_id
-            for record in live_evidence
-            for segment_id in record.transcript_segment_ids
+            segment_id for record in live_evidence for segment_id in record.transcript_segment_ids
         }
         pending_candidate_segments = [
             item
@@ -3282,9 +3420,7 @@ class InterviewService:
         covered_competencies = {
             item.competency for item in state.evidence if item.competency.strip()
         }
-        evidence_status = (
-            f"{total_evidence} 条证据 · {len(covered_competencies)} 个能力覆盖"
-        )
+        evidence_status = f"{total_evidence} 条证据 · {len(covered_competencies)} 个能力覆盖"
         top_gap = live.coverage_guidance[0] if live.coverage_guidance else None
         source_refs = [
             f"segments={len(live.segments)}",
@@ -3415,7 +3551,10 @@ class InterviewService:
                 refs=[f"gap={top_gap.competency}", f"priority={top_gap.priority}"],
             )
             return
-        if total_evidence < MIN_EVIDENCE_COUNT or len(covered_competencies) < MIN_COMPETENCY_COVERAGE:
+        if (
+            total_evidence < MIN_EVIDENCE_COUNT
+            or len(covered_competencies) < MIN_COMPETENCY_COVERAGE
+        ):
             live.action_card = card(
                 "plan_gap_question",
                 "high",
@@ -3455,10 +3594,7 @@ class InterviewService:
                 for interview_round in state.blueprint.rounds
                 for question in interview_round.questions
             ],
-            *[
-                question.competency
-                for question in state.mock_interview.questions
-            ],
+            *[question.competency for question in state.mock_interview.questions],
         ]
         return list(dict.fromkeys(item.strip() for item in values if item.strip()))
 
@@ -3560,7 +3696,9 @@ class InterviewService:
             session_id, state.model_dump(mode="json"), owner_id=current_owner()
         )
 
-    def get_cached_runtime(self, session_id: str, *, owner_id: str | None = None) -> AgentRuntime | None:
+    def get_cached_runtime(
+        self, session_id: str, *, owner_id: str | None = None
+    ) -> AgentRuntime | None:
         """Return a cached runtime for a session.
 
         The debug console (localhost-only) inspects any session, so by default

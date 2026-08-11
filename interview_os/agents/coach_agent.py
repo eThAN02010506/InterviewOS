@@ -31,6 +31,7 @@ class CoachInput(BaseModel):
     evidence_source: EvidenceSource = EvidenceSource.MOCK_INTERVIEW
     record_id: str | None = None
     persist_evidence: bool = True
+    answer_modality: str = "typed"
 
 
 class CoachAgent(Agent):
@@ -76,7 +77,11 @@ class CoachAgent(Agent):
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
         self._build_grounded_improvement(evaluation, coach_input.answer)
-        analysis = analyze_spoken_answer(coach_input.question, coach_input.answer)
+        analysis = analyze_spoken_answer(
+            coach_input.question,
+            coach_input.answer,
+            answer_modality=coach_input.answer_modality,
+        )
         calibrate_evaluation(evaluation, analysis)
         apply_specific_feedback(
             evaluation,

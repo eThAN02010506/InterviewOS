@@ -166,6 +166,20 @@ class Storage:
                 for record in result.scalars()
             ]
 
+    async def list_all_session_states(self) -> list[dict[str, Any]]:
+        """Return all persisted state blobs for local maintenance tasks."""
+        async with self.session_factory() as session:
+            result = await session.execute(select(InterviewSession.state_json))
+            states: list[dict[str, Any]] = []
+            for raw_state in result.scalars():
+                try:
+                    value = json.loads(raw_state)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(value, dict):
+                    states.append(value)
+            return states
+
     async def save_evidence(self, session_id: str, evidence: dict[str, Any]) -> None:
         async with self.session_factory() as session:
             record = EvidenceRecord(session_id=session_id, **evidence)

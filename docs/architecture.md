@@ -146,16 +146,30 @@ Mock audio has three separate data paths. ASR previews are cumulative, rate-limi
 snapshots and never mutate session state. The stopped recording is transcribed once,
 atomically staged under a session-scoped opaque ID, and bound to one response only
 when the answer is submitted. The browser uses a local object URL immediately; after
-a refresh it fetches the file through an owner-checked endpoint. Retry deletes the
-superseded audio, while unbound staging files become cleanup candidates after 24
-hours. Every callback captures its source
+a refresh it fetches the file through an owner-checked endpoint. The upload boundary
+accepts only signature-validated WAV/WebM/M4A data. Retry performs model work before
+mutating state, then atomically moves superseded responses into `attempt_history` and
+replaces their active Evidence; prior recordings remain available for comparison or
+explicit deletion. Startup and per-save cleanup remove only expired unbound files and
+protect both active and archived recordings. Every callback captures its source
 session and generation; session changes stop tracks, revoke URLs, and invalidate late
 ASR responses. TTS accepts only the current owned question ID, optionally resolves an
 exact persisted response question, and returns audio without persisting it. An abort
 controller plus session/question identity check prevents stale TTS races. Optional omni delivery analysis
-has a 25-second service timeout and may discuss only changeable speaking behavior;
+is scheduled after stable transcription so the HTTP transcription response is not held
+for its 25-second timeout. A process-local status cache supports polling, and completed
+feedback is attached to an active or archived response when one already references the
+recording. It may discuss only changeable speaking behavior;
 its result also passes a server-side prohibited-inference filter. Rejected or failed
 output degrades to deterministic coaching and is never an Evidence input.
+
+Answer scoring records its input modality (`typed`, `asr`, or `live_asr`) and uses the
+versioned `evidence-v2` bilingual, cross-domain deterministic analyzer around the model
+draft. The analyzer stores raw and cleaned text, semantic steps, question coverage, and
+pre-calibration scores. Calibration is downward-only; ambiguous typed transition words
+never trigger a speech penalty, while strong ASR fillers/repeated repairs may cap only
+the structure dimension. This metadata travels with the answer and makes every final
+score adjustment auditable.
 
 Public title-only JD context is an internal, untrusted prompt input. It is filtered
 by title relevance, labeled inferred, and never replaces the user's stored raw JD.

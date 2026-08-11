@@ -18,7 +18,7 @@ ANSWER = (
 
 
 def test_spoken_answer_extracts_method_but_does_not_invent_a_case_or_result():
-    analysis = analyze_spoken_answer(QUESTION, ANSWER)
+    analysis = analyze_spoken_answer(QUESTION, ANSWER, answer_modality="asr")
     statuses = {item.requirement: item.status for item in analysis.question_coverage}
     labels = {item.label for item in analysis.semantic_steps}
 
@@ -35,7 +35,7 @@ def test_spoken_answer_extracts_method_but_does_not_invent_a_case_or_result():
 
 
 def test_score_calibration_caps_unsupported_dimensions():
-    analysis = analyze_spoken_answer(QUESTION, ANSWER)
+    analysis = analyze_spoken_answer(QUESTION, ANSWER, answer_modality="asr")
     evaluation = AnswerEvaluation(
         content=0.8,
         technical_depth=0.7,
@@ -50,3 +50,66 @@ def test_score_calibration_caps_unsupported_dimensions():
     assert evaluation.structure == 0.55
     assert evaluation.impact == 0.35
     assert len(evaluation.spoken_analysis.calibration_notes) == 4
+
+
+def test_english_behavioral_answer_is_classified_and_covered():
+    analysis = analyze_spoken_answer(
+        "Tell me about a time you handled a production incident.",
+        (
+            "During a checkout incident, I owned mitigation. I compared the logs, "
+            "rolled back the release, and added an alert. Error rate returned below "
+            "1% in 20 minutes."
+        ),
+        answer_modality="typed",
+    )
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert analysis.answer_type == "behavioral_example"
+    assert statuses["提供一个真实案例"] == "covered"
+    assert statuses["明确个人职责与关键决策"] == "covered"
+    assert statuses["给出结果与验证方式"] == "covered"
+
+
+def test_chinese_technical_answer_recognizes_latency_metric_and_result():
+    analysis = analyze_spoken_answer(
+        "你如何定位并解决数据库延迟问题？",
+        "我负责排查慢查询，先分析执行计划，再增加组合索引，P95 从 500ms 降到 120ms。",
+        answer_modality="typed",
+    )
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert analysis.answer_type == "methodology"
+    assert statuses["说明执行动作"] == "covered"
+    assert statuses["给出结果与验证方式"] == "covered"
+
+
+def test_typed_transition_words_do_not_trigger_asr_structure_penalty():
+    evaluation = AnswerEvaluation(
+        content=0.8,
+        technical_depth=0.8,
+        structure=0.8,
+        impact=0.8,
+    )
+    analysis = analyze_spoken_answer(
+        "请介绍你的方案。",
+        "首先我比较约束，然后确定方案，就是这样完成了迁移。",
+        answer_modality="typed",
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+
+    assert analysis.answer_modality == "typed"
+    assert evaluation.spoken_analysis.pre_calibration_scores["structure"] == 0.8
+    assert evaluation.structure == 0.8
+
+
+def test_api_term_does_not_fabricate_company_context():
+    analysis = analyze_spoken_answer(
+        "请说明你如何设计 API 限流。",
+        "我使用令牌桶，按租户设置配额，并监控拒绝率。",
+        answer_modality="typed",
+    )
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert "说明具体组织、项目或业务场景" not in statuses
+    assert analysis.rubric_version == "evidence-v2"

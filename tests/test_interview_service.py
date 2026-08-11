@@ -100,12 +100,14 @@ class WorkflowMockLLM:
         if "more mock interview questions" in lowered:
             return '{"questions":[{"question":"Describe a second incident","competency":"System Design","rationale":"Refill","strong_signals":["Metrics"],"follow_ups":[],"answer_framework":"Reference the 2024 incident"},{"question":"How do you measure platform health","competency":"System Design","rationale":"Refill","strong_signals":["SLOs"],"follow_ups":[],"answer_framework":"Use the SLO story"}]}'
         if "参考答案提示框架" in lowered:
-            return ('{"frameworks":['
-                    '{"question_index":0,"answer_framework":"用 STAR 讲 2024 事故复盘"},'
-                    '{"question_index":1,"answer_framework":"用 SLO 故事量化平台健康"},'
-                    '{"question_index":2,"answer_framework":"讲清取舍并给量化结果"},'
-                    '{"question_index":3,"answer_framework":"引用 ZUORA 账单平台扩展经历"},'
-                    '{"question_index":4,"answer_framework":"突出团队从 4 人扩展到 15 人的领导力"}]}')
+            return (
+                '{"frameworks":['
+                '{"question_index":0,"answer_framework":"用 STAR 讲 2024 事故复盘"},'
+                '{"question_index":1,"answer_framework":"用 SLO 故事量化平台健康"},'
+                '{"question_index":2,"answer_framework":"讲清取舍并给量化结果"},'
+                '{"question_index":3,"answer_framework":"引用 ZUORA 账单平台扩展经历"},'
+                '{"question_index":4,"answer_framework":"突出团队从 4 人扩展到 15 人的领导力"}]}'
+            )
         if "mock interview plan" in lowered:
             return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"],"answer_framework":"讲清取舍并给出量化结果"}]}'
         if "analyze this interview answer" in lowered:
@@ -725,10 +727,10 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     # User ends the interview manually; evaluation runs because answers exist.
     state = await service.finish_mock_interview(session_id)
     assert state.mock_session.status.value == "completed"
-    assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.6875)
-    assert state.mock_session.responses[0].evaluation.spoken_analysis.calibration_notes
+    assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.75)
+    assert state.mock_session.responses[0].evaluation.spoken_analysis.pre_calibration_scores
     assert state.evidence[-1].competency == "System Design"
-    assert state.evidence[-1].confidence == pytest.approx(0.6125)
+    assert state.evidence[-1].confidence == pytest.approx(0.75)
     assert "evaluation" in state.next_action.lower()
     await storage.close()
 
@@ -772,13 +774,13 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
 
     state = await service.finish_mock_interview(session_id)
-    assert state.evaluation.overall_score == pytest.approx(0.6125)
+    assert state.evaluation.overall_score == pytest.approx(0.75)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == [
         "准备并练习：Business impact",
         "准备并练习：需要更多独立回答交叉验证",
     ]
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.6125)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.75)
     assert state.current_stage.value == "completed"
     await storage.close()
 
@@ -830,7 +832,9 @@ async def test_research_recent_employers_populates_sources_and_fact_cards(tmp_pa
     service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
     session_id, state = await service.create_session()
     # Provide a recent employer via structured experience.
-    state.candidate.raw_resume_text = "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager\nLed APAC talent acquisition"
+    state.candidate.raw_resume_text = (
+        "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager\nLed APAC talent acquisition"
+    )
     state.candidate.experience = [
         {
             "company": "ZUORA",
@@ -1028,7 +1032,97 @@ async def test_mock_interview_retry_replaces_without_duplicate_evidence(tmp_path
     )
     assert len(state.mock_session.responses) == 1
     assert state.mock_session.responses[0].answer == "Improved attempt"
+    assert len(state.mock_session.attempt_history) == 1
+    assert state.mock_session.attempt_history[0].answer == "First attempt"
     assert len(state.evidence) == evidence_count  # no duplicate evidence
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_audio_cleanup_retains_archived_retry_recording(tmp_path):
+    recordings_dir = tmp_path / "recordings"
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'audio-cleanup.db'}")
+    await storage.init_db()
+    service = InterviewService(
+        storage,
+        WorkflowMockLLM(),
+        FakeSearchProvider(),
+        recordings_dir=recordings_dir,
+    )
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    recording_id = uuid4()
+    archived_filename = await service.save_mock_answer_audio(
+        session_id, recording_id, b"RIFF-recording", extension="wav"
+    )
+    await service.submit_mock_answer(
+        session_id,
+        question.id,
+        "Recorded attempt",
+        recording_id=recording_id,
+    )
+    state = await service.submit_mock_answer(
+        session_id,
+        question.id,
+        "Typed replacement",
+        retry=True,
+    )
+    orphan = recordings_dir / f"mock-{session_id}-{uuid4()}.wav"
+    orphan.write_bytes(b"orphan")
+
+    removed = await service.cleanup_orphaned_mock_audio(max_age_seconds=0)
+
+    assert removed == 1
+    assert not orphan.exists()
+    assert (recordings_dir / archived_filename).exists()
+    assert state.mock_session.attempt_history[0].audio_file == archived_filename
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_retry_failure_preserves_previous_answer_and_evidence(tmp_path, monkeypatch):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'retry-atomic.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, _ = await service.create_session()
+    await service.run_candidate_prep(
+        session_id,
+        resume_text="Python",
+        job_description="Platform",
+        company_name="Example",
+    )
+    state = await service.start_mock_interview(session_id)
+    question = service.current_mock_question(state)
+    state = await service.submit_mock_answer(session_id, question.id, "First attempt")
+    original_response = state.mock_session.responses[0].model_copy(deep=True)
+    original_evidence = state.evidence[-1].model_copy(deep=True)
+    runtime = await service._get_runtime(session_id)
+    coach = runtime.get_agent("coach_agent")
+
+    async def fail_before_commit(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(coach, "execute", fail_before_commit)
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await service.submit_mock_answer(
+            session_id,
+            question.id,
+            "Attempt that cannot be scored",
+            retry=True,
+            retry_response_id=original_response.id,
+        )
+
+    persisted = await service.get_state(session_id)
+    assert persisted.mock_session.responses == [original_response]
+    assert persisted.mock_session.attempt_history == []
+    assert persisted.evidence[-1] == original_evidence
     await storage.close()
 
 
@@ -1250,10 +1344,10 @@ async def test_answered_previous_question_requires_explicit_retry(tmp_path):
 
     with pytest.raises(MockInterviewStateError, match="retry=true"):
         await service.submit_mock_answer(session_id, first.id, "Duplicate answer")
-    state = await service.submit_mock_answer(
-        session_id, first.id, "Replacement answer", retry=True
-    )
-    first_responses = [item for item in state.mock_session.responses if item.question_id == first.id]
+    state = await service.submit_mock_answer(session_id, first.id, "Replacement answer", retry=True)
+    first_responses = [
+        item for item in state.mock_session.responses if item.question_id == first.id
+    ]
     assert len(first_responses) == 1
     assert first_responses[0].answer == "Replacement answer"
     await storage.close()

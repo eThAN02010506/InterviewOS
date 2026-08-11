@@ -123,6 +123,9 @@ def create_app(
             resume_llm_client=resume_llm_client,
             recordings_dir=recordings_dir,
         )
+        removed_mock_audio = await application.state.interview_service.cleanup_orphaned_mock_audio()
+        if removed_mock_audio:
+            logger.info("Removed %d expired unbound mock recording(s)", removed_mock_audio)
         application.state.storage = storage
         saved_mode = (saved_live_audio or {}).get("mode", "asr_text")
         if isinstance(saved_mode, str):

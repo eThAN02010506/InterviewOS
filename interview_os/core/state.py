@@ -35,7 +35,7 @@ MOCK_REFILL_BATCH = 2  # 每次补题生成的问题数
 
 # 覆盖引导
 COVERAGE_GUIDANCE_MAX_ITEMS = 8
-WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度低于此值判为信号偏弱
+WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度不高于此值判为信号偏弱
 
 # 行动卡
 ACTION_CARD_SOURCE_REFS_MAX = 8
@@ -370,6 +370,9 @@ class SpokenAnswerAnalysis(BaseModel):
 
     raw_transcript: str = ""
     cleaned_transcript: str = ""
+    answer_modality: str = "typed"  # typed | asr | live_asr
+    rubric_version: str = "evidence-v2"
+    pre_calibration_scores: dict[str, float] = Field(default_factory=dict)
     answer_type: str = "general"
     filler_counts: dict[str, int] = Field(default_factory=dict)
     repetition_count: int = 0
@@ -440,8 +443,10 @@ class MockAnswerRecord(BaseModel):
     competency: str
     answer: str
     evaluation: AnswerEvaluation
+    answer_modality: str = "typed"
     is_follow_up: bool = False
     audio_file: str = ""
+    speech_delivery: SpeechDeliveryFeedback = Field(default_factory=SpeechDeliveryFeedback)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -456,6 +461,7 @@ class MockInterviewSession(BaseModel):
     status: MockSessionStatus = MockSessionStatus.IDLE
     current_question_index: int = 0
     responses: list[MockAnswerRecord] = Field(default_factory=list)
+    attempt_history: list[MockAnswerRecord] = Field(default_factory=list)
     pending_follow_up: str = ""
     pending_parent_question_id: UUID | None = None
     refill_in_flight: bool = False
@@ -508,6 +514,7 @@ class LiveInterviewRecord(BaseModel):
             content=0.0, technical_depth=0.0, structure=0.0, impact=0.0
         )
     )
+    answer_modality: str = "typed"
     source: str = "interview_transcript"
     transcript_segment_ids: list[UUID] = Field(default_factory=list)
     scoring_status: str = "pending"  # pending | scoring | scored | failed
