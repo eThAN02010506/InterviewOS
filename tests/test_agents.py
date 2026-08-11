@@ -300,6 +300,38 @@ async def test_evaluation_agent_calibrates_strong_hire_against_scores_and_confid
     assert any("确定性阈值校准" in item for item in state.evaluation.risks)
 
 
+def test_evaluation_calibration_blocks_decision_for_provisional_rule_scores():
+    report = EvaluationReport(
+        competencies=[
+            CompetencyEvaluation(
+                competency="招聘战略",
+                score=0.8,
+                confidence=0.8,
+            )
+        ],
+        overall_score=0.8,
+        recommendation="hire",
+    )
+
+    EvaluationAgent._calibrate_recommendation(report, provisional_scoring=True)
+
+    assert report.recommendation.value == "insufficient_evidence"
+    assert any("尚未人工复核" in item for item in report.risks)
+
+
+def test_feedback_agent_relabels_missing_signal_as_pending_not_negative():
+    state = InterviewState()
+    state.feedback.interviewer_notes = [
+        "负面证据：已说明行动，但团队规模描述不足。",
+        "负面证据：候选人明确承认伪造材料。",
+    ]
+
+    FeedbackAgent._enforce_candidate_voice(state)
+
+    assert state.feedback.interviewer_notes[0].startswith("仍待核验：")
+    assert state.feedback.interviewer_notes[1].startswith("负面证据：")
+
+
 @pytest.mark.asyncio
 async def test_candidate_agent_extracts_explicit_name_when_model_output_fails():
     agent = CandidateAgent(llm_client=InvalidLLM())

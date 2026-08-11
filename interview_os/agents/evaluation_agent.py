@@ -62,7 +62,14 @@ class EvaluationAgent(Agent):
             self.record_degradation(
                 "Structured evaluation competencies were not grounded; aggregated recorded evidence"
             )
-        self._calibrate_recommendation(report)
+        provisional_scoring = any(
+            any("规则评分" in feedback for feedback in response.evaluation.feedback)
+            for response in state.mock_session.responses
+        ) or any(
+            any("规则评分" in feedback for feedback in record.evaluation.feedback)
+            for record in state.live_interview_records
+        )
+        self._calibrate_recommendation(report, provisional_scoring=provisional_scoring)
         state.evaluation = report
         state.enforce_evaluation_evidence_floor()
         report = state.evaluation
@@ -74,7 +81,9 @@ class EvaluationAgent(Agent):
         return self.make_response(report.model_dump_json())
 
     @staticmethod
-    def _calibrate_recommendation(report: EvaluationReport) -> None:
+    def _calibrate_recommendation(
+        report: EvaluationReport, *, provisional_scoring: bool = False
+    ) -> None:
         """Bind hiring labels to the persisted scores and confidence."""
         if not report.competencies:
             report.overall_score = 0.0
@@ -86,7 +95,7 @@ class EvaluationAgent(Agent):
         )
         original = report.recommendation
         report.overall_score = round(overall, 4)
-        if confidence < 0.5:
+        if provisional_scoring or confidence < 0.5:
             calibrated = HiringRecommendation.INSUFFICIENT_EVIDENCE
         elif overall >= 0.85 and confidence >= 0.75:
             calibrated = HiringRecommendation.STRONG_HIRE
@@ -99,6 +108,10 @@ class EvaluationAgent(Agent):
         else:
             calibrated = HiringRecommendation.NO_HIRE
         report.recommendation = calibrated
+        if provisional_scoring:
+            report.risks.append(
+                "部分回答仅完成确定性规则评分，尚未人工复核，不能形成录用或不录用建议。"
+            )
         if calibrated != original:
             report.risks.append(
                 "模型招聘建议与证据分数或置信度不一致，已按确定性阈值校准。"

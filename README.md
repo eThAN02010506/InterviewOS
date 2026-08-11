@@ -246,6 +246,10 @@ Interviewer recommendations are also deterministic: the final `overall_score` is
 recomputed from persisted competency scores, then the recommendation is calibrated
 against score and mean evidence confidence. `strong_hire` requires at least 0.85 score
 and 0.75 confidence; a model cannot label a 0.61 report “strong hire”.
+Any response still carrying an unreviewed deterministic rule score makes the entire
+hiring recommendation `insufficient_evidence`, regardless of the numeric average.
+Missing descriptions are normalized to “pending verification” and cannot be presented
+as negative evidence; genuine adverse statements remain explicitly negative.
 
 ## Web research
 

@@ -136,6 +136,10 @@ Before persistence, `EvaluationAgent` recomputes the overall score from competen
 scores and maps recommendation labels through fixed score/confidence thresholds.
 `strong_hire` requires score >= 0.85 and mean confidence >= 0.75; conflicting model
 labels are replaced and the calibration is retained as a report risk.
+Provisional deterministic answer scores form a hard decision boundary: if any remain
+unreviewed, the recommendation is `insufficient_evidence` even when the numeric score
+would otherwise cross a hire threshold. Feedback post-validation also relabels missing
+descriptions from “negative evidence” to “pending verification”.
 
 ## Runtime Settings
 
