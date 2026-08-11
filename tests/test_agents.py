@@ -245,6 +245,11 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     assert "STAR 补充框架" in evaluation.improved_answer
     assert any("未提供的数字" in item for item in evaluation.feedback)
     assert "需要核验并补充真实量化结果" in evaluation.missing_signals
+    # The model's invented observed signal remains a coaching hint only. The
+    # persisted evidence must be the candidate's auditable original wording.
+    assert state.evidence[0].signal == original
+    assert state.evidence[0].polarity == EvidencePolarity.NEUTRAL
+    assert all("推动团队扩张" not in item.evidence for item in evaluation.dimension_feedback)
 
 
 @pytest.mark.asyncio

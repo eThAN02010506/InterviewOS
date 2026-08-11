@@ -294,6 +294,39 @@ async def test_title_only_job_is_researched_before_question_generation(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_title_only_job_research_provenance_is_restored_when_workflow_fails(
+    tmp_path, monkeypatch
+):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'job-research-failure.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), JobDescriptionSearchProvider())
+    session_id, _ = await service.create_session()
+
+    async def fail_after_job_agent(_session_id, runtime, *_args, **_kwargs):
+        # Reproduce a later Agent failure after the internal source-enriched
+        # prompt has temporarily reached state.job.raw_description.
+        runtime.state.job.raw_description = "INTERNAL SOURCE-ENRICHED PROMPT"
+        raise WorkflowExecutionError("strategy unavailable")
+
+    monkeypatch.setattr(service, "_execute_workflow", fail_after_job_agent)
+    with pytest.raises(WorkflowExecutionError, match="strategy unavailable"):
+        await service.run_candidate_prep(
+            session_id,
+            resume_text="Python systems engineer",
+            job_description="Platform Engineer",
+            company_name="Example",
+            authorized_public_research=True,
+        )
+
+    restored = await service.get_state(session_id)
+    assert restored.job.raw_description == "Platform Engineer"
+    assert restored.job_review.public_research_status == "completed"
+    assert restored.job_review.public_sources
+    assert "INTERNAL SOURCE-ENRICHED PROMPT" not in restored.model_dump_json()
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_candidate_prep_runs_independent_agents_concurrently(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'parallel.db'}")
     await storage.init_db()

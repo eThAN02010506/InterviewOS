@@ -57,7 +57,6 @@ def build_dimension_feedback(
         clean,
         re.IGNORECASE,
     )
-    observed = "；".join(evaluation.observed_signals[:2])
     gap = evaluation.missing_signals[0] if evaluation.missing_signals else "缺少第二个独立证据点"
     target = f"围绕“{question[:60]}”" if question.strip() else "围绕当前问题"
     competency_text = f"“{competency}”" if competency.strip() else "目标能力"
@@ -67,9 +66,9 @@ def build_dimension_feedback(
             "content",
             evaluation.content,
             (
-                f"回答约 {len(clean)} 字；已识别证据：{observed}。"
-                if observed
-                else f"回答约 {len(clean)} 字，尚未识别出可直接支持{competency_text}的具体行为证据。"
+                f"回答约 {len(clean)} 字；可追溯原文片段：“{clean[:80]}”。"
+                if clean
+                else f"回答为空，尚未提供可直接支持{competency_text}的行为证据。"
             ),
             f"{target}补齐一个可核验案例，并优先解决：{gap}。",
         ),

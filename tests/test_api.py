@@ -144,6 +144,10 @@ def test_session_resume_analysis_flow(tmp_path):
         assert "displayedQuestionText = justAnswered ? displayResponse.question" in script.text
         assert "mock-retry-main" in script.text
         assert "displayedAsFollowUp = justAnswered ? displayResponse.is_follow_up" in script.text
+        assert "resetMockAudioExperience" in script.text
+        assert "recordingSessionId!==state.sessionId" in script.text
+        assert "response_id=${encodeURIComponent(responseId)}" in script.text
+        assert "requestedSpeechKey!==mockCurrentSpeechKey" in script.text
         info = client.get("/", headers={"Accept": "application/json"})
         assert info.json()["name"] == "InterviewOS"
 

@@ -134,10 +134,19 @@ initial fixed plan.
 
 Mock audio has three separate data paths. ASR previews are cumulative, rate-limited
 snapshots and never mutate session state. The stopped recording is transcribed once
-and remains a browser-local object URL for replay. TTS accepts only the current owned
-question ID and returns audio without persisting it. Optional omni delivery analysis
+and remains a browser-local object URL for replay. Every callback captures its source
+session and generation; session changes stop tracks, revoke URLs, and invalidate late
+ASR responses. TTS accepts only the current owned question ID, optionally resolves an
+exact persisted response question, and returns audio without persisting it. An abort
+controller plus session/question identity check prevents stale TTS races. Optional omni delivery analysis
 has a 25-second service timeout and may discuss only changeable speaking behavior;
-its result is UI coaching and never an Evidence input.
+its result also passes a server-side prohibited-inference filter. Rejected or failed
+output degrades to deterministic coaching and is never an Evidence input.
+
+Public title-only JD context is an internal, untrusted prompt input. It is filtered
+by title relevance, labeled inferred, and never replaces the user's stored raw JD.
+Both successful and failed workflows run the same provenance attachment step, so a
+later Agent failure cannot leave source-enriched prompt text in persisted state.
 
 ## Final Evaluation
 

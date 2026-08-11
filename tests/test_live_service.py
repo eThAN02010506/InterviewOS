@@ -511,7 +511,8 @@ async def test_confirm_creates_placeholder_and_scores_in_background(scoring_serv
     ]
     assert len(matching) == 1
     assert matching[0].confidence == 0.8
-    assert matching[0].signal == "Clear design"
+    assert matching[0].signal == "我对比了缓存与数据库扩容方案。"
+    assert matching[0].polarity == EvidencePolarity.NEUTRAL
 
 
 async def test_confirm_scores_in_background_without_blocking(tmp_path):
@@ -669,7 +670,7 @@ async def test_human_review_wins_when_stale_background_scoring_fails(tmp_path):
     await storage.close()
 
 
-async def test_live_reevaluation_resets_polarity_for_replaced_signal(scoring_service):
+async def test_live_reevaluation_resets_human_polarity_until_reviewed_again(scoring_service):
     session_id, _ = await scoring_service.create_session()
     await scoring_service.start_live_interview(session_id, consent_confirmed=True)
     await scoring_service.append_live_transcript(
@@ -693,8 +694,8 @@ async def test_live_reevaluation_resets_polarity_for_replaced_signal(scoring_ser
     refreshed = await scoring_service.reevaluate_live_evidence(session_id, record_id)
 
     linked = next(item for item in refreshed.evidence if item.source_record_id == record_id)
-    assert linked.signal == "Clear design"
-    assert linked.polarity == EvidencePolarity.POSITIVE
+    assert linked.signal == "一段完整回答。"
+    assert linked.polarity == EvidencePolarity.NEUTRAL
 
 
 async def test_revoking_evidence_invalidates_final_report(scoring_service):

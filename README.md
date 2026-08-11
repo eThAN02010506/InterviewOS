@@ -101,7 +101,9 @@ The system is built around a few product rules:
   a title-only input first triggers a source-filtered public JD search; source-bound
   snippets are supplied to the Job Agent before questions are generated. The stored
   user input remains the original title, every discovered requirement stays
-  `inferred`, and source cards/warnings require confirmation. Without consent or a
+  `inferred`, and source cards/warnings require confirmation. The same provenance
+  restoration runs on workflow failure, so internal source-enriched prompt text is
+  never retained as the user's JD. Without consent or a
   relevant source, the workflow stays generic. Inferred requirements can be
   confirmed, edited into explicit requirements, or removed before later Agents use
   them.
@@ -232,14 +234,23 @@ persisted as transcript or evidence. Stopping the recording sends one stable WAV
 to `POST /api/mock-interviews/{session_id}/transcribe`, keeps the original browser
 recording available in an audio player, and lets the candidate edit the final
 text before submitting. The recording is not uploaded for storage.
+Recording, replay, provisional ASR, and delivery feedback are scoped to the session
+where recording started. Switching sessions stops active capture, revokes browser
+object URLs, clears coaching output, and prevents a late transcription response from
+being applied to the newly selected candidate.
 
 The current question can be read aloud through the configurable OpenAI-compatible
 TTS client (`8002` / Qwen3-TTS by default). The server only accepts the current
-owned question ID, so the endpoint cannot be used as an arbitrary speech proxy.
+owned question ID; an optional response ID binds replay to the exact persisted main
+or follow-up question. The browser aborts obsolete requests and rejects late audio,
+so navigation cannot replace the visible question with stale speech. The endpoint
+cannot be used as an arbitrary speech proxy.
 After transcription, the configured `8004` omni model may analyze only changeable
 delivery features: pace, pauses, fillers, volume stability, intonation, and clarity.
 It is forbidden from evaluating accent, personality, health, demographic traits,
-or hire suitability. If audio analysis fails or exceeds 25 seconds, deterministic
+or hire suitability. Provider output is screened again on the server; prohibited
+inferences are discarded rather than displayed. If audio analysis fails, violates
+that boundary, or exceeds 25 seconds, deterministic
 duration/text indicators are returned. Delivery feedback is coaching-only and is
 never added to competency evidence or the hiring recommendation.
 
@@ -248,6 +259,8 @@ dimensions: role-relevant evidence, decision/professional depth, response struct
 and result/reflection. Their mean becomes evidence confidence for the question
 competency. The service then creates a behavior-anchored card for every dimension:
 the observable answer feature supporting the score and one concrete next action.
+Model-generated `observed_signals` remain coaching hints only: persisted Evidence
+always quotes the candidate answer and stays neutral until explicit human review.
 The three weakest dimensions become ranked improvement priorities; observed and
 missing signals remain attached to the persisted answer and evidence.
 The model does not generate a replacement answer. It scores the submission and returns

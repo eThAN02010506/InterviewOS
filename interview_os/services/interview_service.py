@@ -104,6 +104,27 @@ from interview_os.tools.web_search import (
 
 logger = logging.getLogger(__name__)
 
+SPEECH_FEEDBACK_PROHIBITED_TERMS = (
+    "口音",
+    "方言",
+    "性格",
+    "情绪状态",
+    "焦虑",
+    "抑郁",
+    "健康",
+    "年龄",
+    "性别",
+    "族裔",
+    "种族",
+    "accent",
+    "personality",
+    "mental health",
+    "ethnicity",
+    "race",
+    "gender",
+    "age",
+)
+
 class SessionNotFoundError(LookupError):
     pass
 
@@ -533,8 +554,26 @@ class InterviewService:
                 duration_ms=(perf_counter() - started) * 1000,
             )
             return fallback
+        except Exception as exc:  # noqa: BLE001 - provider output must safely degrade
+            self._record_debug(
+                "mock_speech_delivery_fallback",
+                session_id,
+                detail=f"reason=audio_model_error; type={type(exc).__name__}",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            return fallback
         allowed_text = ("pace", "pauses", "fillers", "volume", "intonation", "clarity")
-        if not result or not any(str(result.get(key) or "").strip() for key in allowed_text):
+        if not isinstance(result, dict) or not any(
+            str(result.get(key) or "").strip() for key in allowed_text
+        ):
+            return fallback
+        if not self._speech_feedback_is_compliant(result):
+            self._record_debug(
+                "mock_speech_delivery_fallback",
+                session_id,
+                detail="reason=prohibited_inference; source=text_fallback",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
             return fallback
         values = {key: str(result.get(key) or getattr(fallback, key))[:500] for key in allowed_text}
         raw_strengths = result.get("strengths")
@@ -558,6 +597,19 @@ class InterviewService:
         return feedback
 
     @staticmethod
+    def _speech_feedback_is_compliant(result: dict[str, Any]) -> bool:
+        """Reject model text that crosses the coaching-only policy boundary."""
+        rendered = json.dumps(result, ensure_ascii=False).casefold()
+        for term in SPEECH_FEEDBACK_PROHIBITED_TERMS:
+            normalized = term.casefold()
+            if normalized.isascii():
+                if re.search(rf"\b{re.escape(normalized)}\b", rendered):
+                    return False
+            elif normalized in rendered:
+                return False
+        return True
+
+    @staticmethod
     def _wav_duration_seconds(content: bytes) -> float:
         try:
             with wave.open(io.BytesIO(content), "rb") as audio:
@@ -567,18 +619,38 @@ class InterviewService:
             return 0.0
 
     async def synthesize_mock_question(
-        self, session_id: str, question_id: UUID
+        self,
+        session_id: str,
+        question_id: UUID,
+        *,
+        response_id: UUID | None = None,
     ) -> tuple[bytes, str]:
         """Synthesize a question that belongs to this owned mock session."""
         runtime = await self._get_runtime(session_id)
         question = self.current_mock_question(runtime.state)
         if question is None or question.id != question_id:
             raise MockInterviewStateError("Question is not the current mock question")
+        # Before a follow-up is answered it exists only in session state, not yet
+        # as a response record. Prefer that server-owned pending text so automatic
+        # narration speaks what the UI is actually asking.
+        speech_text = runtime.state.mock_session.pending_follow_up or question.question
+        if response_id is not None:
+            response = next(
+                (
+                    item
+                    for item in runtime.state.mock_session.responses
+                    if item.id == response_id and item.question_id == question_id
+                ),
+                None,
+            )
+            if response is None:
+                raise MockInterviewStateError("Response is not part of the current question")
+            speech_text = response.question
         if self.tts_client is None:
             raise WorkflowExecutionError("TTS client is not configured")
         started = perf_counter()
         try:
-            audio, content_type = await self.tts_client.synthesize(question.question)
+            audio, content_type = await self.tts_client.synthesize(speech_text)
         except TTSError as exc:
             self._record_debug(
                 "mock_question_tts_failed",
@@ -912,29 +984,21 @@ class InterviewService:
         )
         if placeholder is not None:
             placeholder.competency = record.competency
-            placeholder.signal = "; ".join(evaluation.observed_signals) or record.answer[:200]
+            placeholder.signal = record.answer[:200]
             placeholder.confidence = evaluation.overall_score()
             # The signal has just been replaced by model output. Never carry a
             # human classification from the previous signal across that change.
-            placeholder.polarity = (
-                EvidencePolarity.POSITIVE
-                if evaluation.observed_signals
-                else EvidencePolarity.NEUTRAL
-            )
+            placeholder.polarity = EvidencePolarity.NEUTRAL
             placeholder.notes = "; ".join(evaluation.missing_signals)
             return
         state.evidence.append(
             Evidence(
                 competency=record.competency,
-                signal="; ".join(evaluation.observed_signals) or record.answer[:200],
+                signal=record.answer[:200],
                 confidence=evaluation.overall_score(),
                 source=EvidenceSource.LIVE_INTERVIEW,
                 source_record_id=record.id,
-                polarity=(
-                    EvidencePolarity.POSITIVE
-                    if evaluation.observed_signals
-                    else EvidencePolarity.NEUTRAL
-                ),
+                polarity=EvidencePolarity.NEUTRAL,
                 notes="; ".join(evaluation.missing_signals),
             )
         )
@@ -1881,16 +1945,29 @@ class InterviewService:
                 ("mock_interview_agent", "Generate personalized mock questions"),
             ]
         )
-        state = await self._execute_workflow(
-            session_id,
-            runtime,
-            "candidate_prep",
-            steps,
-            company_name=company_name,
-            interviewer=interviewer,
-            parallel_prefix=4 if interviewer else 3,
-            authorized_public_research=authorized_public_research,
-        )
+        try:
+            state = await self._execute_workflow(
+                session_id,
+                runtime,
+                "candidate_prep",
+                steps,
+                company_name=company_name,
+                interviewer=interviewer,
+                parallel_prefix=4 if interviewer else 3,
+                authorized_public_research=authorized_public_research,
+            )
+        except Exception:
+            # JobAgent may already have persisted the internal source-enriched
+            # prompt before a later strategy/question step fails. Restore the
+            # user's original title and provenance on the failure path too.
+            await self._attach_job_research(
+                session_id,
+                runtime.state,
+                original_input=job_description,
+                sources=job_sources,
+                status=job_research_status,
+            )
+            raise
         await self._attach_job_research(
             session_id,
             state,
@@ -1923,15 +2000,25 @@ class InterviewService:
             ("company_agent", company_context),
             ("interview_design_agent", "Design an evidence-based interview blueprint"),
         ]
-        state = await self._execute_workflow(
-            session_id,
-            runtime,
-            "enterprise_design",
-            steps,
-            company_name=company_name,
-            parallel_prefix=3,
-            authorized_public_research=authorized_public_research,
-        )
+        try:
+            state = await self._execute_workflow(
+                session_id,
+                runtime,
+                "enterprise_design",
+                steps,
+                company_name=company_name,
+                parallel_prefix=3,
+                authorized_public_research=authorized_public_research,
+            )
+        except Exception:
+            await self._attach_job_research(
+                session_id,
+                runtime.state,
+                original_input=job_description,
+                sources=job_sources,
+                status=job_research_status,
+            )
+            raise
         await self._attach_job_research(
             session_id,
             state,

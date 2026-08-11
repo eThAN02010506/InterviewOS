@@ -11,6 +11,13 @@ let mockRetryResponseId = '';
 let mockQuestionAudioUrl = '';
 let mockAnswerAudioUrl = '';
 let mockSpokenQuestionKey = '';
+let mockCurrentSpeechKey = '';
+let mockDisplayedResponseId = '';
+let mockSpeechRequestSequence = 0;
+let mockSpeechAbort = null;
+let mockVoiceGeneration = 0;
+let mockVoiceSessionId = '';
+let activeLoadedSessionId = '';
 let liveRecorder = null;
 let liveAudioChunks = [];
 let liveMediaStream = null;
@@ -163,6 +170,8 @@ function hideLogin() { $('login-dialog')?.close(); }
 
 function logout() {
   if (state.token) { api('/api/auth/logout', {method: 'POST'}).catch(() => {}); }
+  resetMockAudioExperience();
+  activeLoadedSessionId = '';
   state.token = ''; state.sessionId = ''; state.session = null;
   localStorage.removeItem('interviewos.token');
   localStorage.removeItem('interviewos.session');
@@ -197,9 +206,17 @@ $('login-form').onsubmit = async e => {
 };
 
 async function loadSession() {
-  if (!state.sessionId) { state.session = null; renderState(); return; }
-  try { const data = await api(`/api/interviews/sessions/${state.sessionId}`); state.session = data.state; localStorage.setItem('interviewos.session', state.sessionId); hydrateSessionForms(); renderState(); }
-  catch (error) { toast(error.message, true); }
+  if (activeLoadedSessionId !== state.sessionId) {
+    resetMockAudioExperience();
+    // Never render the previous candidate under a newly selected session ID
+    // while the replacement request is pending or if it fails.
+    state.session = null;
+    activeLoadedSessionId = '';
+  }
+  if (!state.sessionId) { activeLoadedSessionId = ''; state.session = null; renderState(); return; }
+  const requestedSessionId = state.sessionId;
+  try { const data = await api(`/api/interviews/sessions/${requestedSessionId}`); if (state.sessionId !== requestedSessionId) return; state.session = data.state; activeLoadedSessionId = requestedSessionId; localStorage.setItem('interviewos.session', requestedSessionId); hydrateSessionForms(); renderState(); }
+  catch (error) { if (state.sessionId === requestedSessionId) { state.session = null; renderState(); } toast(error.message, true); }
 }
 
 function hydrateSessionForms() {
@@ -499,6 +516,8 @@ function renderMock() {
   $('mock-question').className=current?'question-copy':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:(session?.status==='completed'?'面试已结束，可查看改进报告。':'先完成候选人准备工作流，生成个性化问题。');
   const speakButton=$('mock-speak-question');if(speakButton)speakButton.disabled=!current;
   const speechKey=current?`${current.id}:${displayedQuestionText}`:'';
+  if(speechKey!==mockCurrentSpeechKey){cancelMockQuestionSpeech();clearMockQuestionAudio();clearMockAnswerExperience();mockCurrentSpeechKey=speechKey;}
+  mockDisplayedResponseId=displayResponse?.id||'';
   if(current&&$('mock-auto-speak')?.checked&&speechKey!==mockSpokenQuestionKey){mockSpokenQuestionKey=speechKey;setTimeout(()=>speakCurrentMockQuestion(true),0);}
   const actions=$('mock-actions');
   if (actions) {
@@ -627,25 +646,39 @@ $('start-mock').onclick=async()=>{if(!await ensureSession())return;try{await api
 $('answer-form').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const mockSession=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[mockSession?.current_question_index];if(!question)return;busy(form,true);try{await api(`/api/mock-interviews/${state.sessionId}/answers`,{method:'POST',body:JSON.stringify({question_id:mockSession.pending_parent_question_id||question.id,answer:$('mock-answer').value,retry:mockRetry,retry_response_id:mockRetryResponseId||null})});$('mock-answer').value='';mockRetry=false;mockRetryResponseId='';await loadSession();toast('回答已评分');}catch(error){toast(error.message,true)}finally{busy(form,false)}};
 $('mock-retry').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';$('mock-answer').value='';renderMock();};
 $('mock-retry-main').onclick=e=>{mockRetry=true;mockRetryResponseId=e.currentTarget.dataset.responseId||'';$('mock-answer').value='';renderMock();};
-$('mock-next').onclick=async()=>{if(!await ensureSession())return;mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
-$('mock-prev').onclick=async()=>{if(!await ensureSession())return;mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/previous`,{method:'POST'});await loadSession();toast('上一题');}catch(error){toast(error.message,true)}};
-$('mock-finish').onclick=async()=>{if(!await ensureSession())return;try{await api(`/api/mock-interviews/${state.sessionId}/finish`,{method:'POST'});await loadSession();toast('面试已结束');}catch(error){toast(error.message,true)}};
+$('mock-next').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/next`,{method:'POST'});await loadSession();toast('下一题');}catch(error){toast(error.message,true)}};
+$('mock-prev').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();mockRetry=false;mockRetryResponseId='';try{await api(`/api/mock-interviews/${state.sessionId}/previous`,{method:'POST'});await loadSession();toast('上一题');}catch(error){toast(error.message,true)}};
+$('mock-finish').onclick=async()=>{if(!await ensureSession())return;cancelMockQuestionSpeech();try{await api(`/api/mock-interviews/${state.sessionId}/finish`,{method:'POST'});await loadSession();toast('面试已结束');}catch(error){toast(error.message,true)}};
 let mockVoiceRecorder=null;
 let mockVoiceChunks=[];
 let mockVoiceStream=null;
 function mockVoiceNote(msg){const n=$('mock-voice-note');if(n)n.textContent=msg||'';}
 function clearObjectUrl(kind){const value=kind==='question'?mockQuestionAudioUrl:mockAnswerAudioUrl;if(value)URL.revokeObjectURL(value);if(kind==='question')mockQuestionAudioUrl='';else mockAnswerAudioUrl='';}
+function clearAudioElement(id){const audio=$(id);if(!audio)return;audio.pause();audio.removeAttribute('src');audio.load();audio.classList.add('hidden');}
+function clearMockQuestionAudio(){clearObjectUrl('question');clearAudioElement('mock-question-audio');}
+function clearMockAnswerExperience(){clearObjectUrl('answer');clearAudioElement('mock-answer-playback');renderSpeechFeedback(null);mockVoiceNote('');}
+function cancelMockQuestionSpeech(){mockSpeechRequestSequence+=1;if(mockSpeechAbort)mockSpeechAbort.abort();mockSpeechAbort=null;}
+function resetMockAudioExperience(){
+  mockVoiceGeneration+=1;mockVoiceSessionId='';asrPreviewSequence+=1;asrPreviewBusy=false;
+  cancelMockQuestionSpeech();
+  if(mockVoiceRecorder){mockVoiceRecorder.ondataavailable=null;mockVoiceRecorder.onstop=null;try{if(mockVoiceRecorder.state!=='inactive')mockVoiceRecorder.stop();}catch{}mockVoiceRecorder=null;}
+  if(mockVoiceStream)mockVoiceStream.getTracks().forEach(track=>track.stop());
+  mockVoiceStream=null;mockVoiceChunks=[];mockCurrentSpeechKey='';mockDisplayedResponseId='';mockSpokenQuestionKey='';
+  clearMockQuestionAudio();clearMockAnswerExperience();
+  if($('mock-voice'))$('mock-voice').disabled=false;if($('mock-stop-voice'))$('mock-stop-voice').disabled=true;
+}
 async function speakCurrentMockQuestion(automatic=false){
   const session=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[session?.current_question_index];if(!state.sessionId||!question)return;
+  cancelMockQuestionSpeech();const requestSequence=mockSpeechRequestSequence;const requestedSessionId=state.sessionId;const requestedSpeechKey=mockCurrentSpeechKey;const responseId=mockDisplayedResponseId;const controller=new AbortController();mockSpeechAbort=controller;
   const button=$('mock-speak-question');if(button)button.disabled=true;
-  try{const headers=state.token?{Authorization:`Bearer ${state.token}`}:{},response=await fetch(`/api/mock-interviews/${state.sessionId}/questions/${question.id}/speech`,{method:'POST',headers});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||`请求失败 (${response.status})`);}const blob=await response.blob();clearObjectUrl('question');mockQuestionAudioUrl=URL.createObjectURL(blob);const audio=$('mock-question-audio');audio.src=mockQuestionAudioUrl;audio.classList.remove('hidden');await audio.play();}catch(error){if(!automatic)toast(`问题朗读失败：${error.message}`,true);}finally{if(button)button.disabled=false;}
+  try{const headers=state.token?{Authorization:`Bearer ${state.token}`}:{},query=responseId?`?response_id=${encodeURIComponent(responseId)}`:'',response=await fetch(`/api/mock-interviews/${requestedSessionId}/questions/${question.id}/speech${query}`,{method:'POST',headers,signal:controller.signal});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||`请求失败 (${response.status})`);}const blob=await response.blob();if(requestSequence!==mockSpeechRequestSequence||requestedSessionId!==state.sessionId||requestedSpeechKey!==mockCurrentSpeechKey)return;clearMockQuestionAudio();mockQuestionAudioUrl=URL.createObjectURL(blob);const audio=$('mock-question-audio');audio.src=mockQuestionAudioUrl;audio.classList.remove('hidden');await audio.play();}catch(error){if(error.name!=='AbortError'&&!automatic)toast(`问题朗读失败：${error.message}`,true);}finally{if(mockSpeechAbort===controller)mockSpeechAbort=null;if(requestSequence===mockSpeechRequestSequence&&button)button.disabled=false;}
 }
 $('mock-speak-question').onclick=()=>speakCurrentMockQuestion(false);
 $('mock-auto-speak').onchange=e=>{localStorage.setItem('interviewos.autoSpeak',e.target.checked?'1':'0');if(e.target.checked){mockSpokenQuestionKey='';renderMock();}};
 $('mock-auto-speak').checked=localStorage.getItem('interviewos.autoSpeak')!=='0';
 function renderSpeechFeedback(feedback){const node=$('mock-speech-feedback');if(!node)return;if(!feedback){node.classList.add('hidden');node.innerHTML='';return;}const rows=[['语速',feedback.pace],['停顿',feedback.pauses],['填充词',feedback.fillers],['音量稳定',feedback.volume],['语调',feedback.intonation],['清晰度',feedback.clarity]].filter(([,value])=>value&&value!=='无法判断');node.classList.remove('hidden');node.innerHTML=`<div class="review-subtitle">语音表达辅导 · ${feedback.source==='audio_model'?'音频模型':'本地指标'}</div>${rows.map(([name,value])=>`<p><strong>${esc(name)}</strong><span>${esc(value)}</span></p>`).join('')}${list('可执行改进',feedback.improvements||[])}<small>${esc(feedback.disclaimer||'仅用于表达训练，不进入录用评价。')}</small>`;}
-$('mock-voice').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风',true);return;}try{mockVoiceStream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=liveAudioType();mockVoiceRecorder=new MediaRecorder(mockVoiceStream,preferred?{mimeType:preferred}:undefined);mockVoiceChunks=[];mockVoiceRecorder.ondataavailable=e=>{if(!e.data.size)return;mockVoiceChunks.push(e.data);previewRecordedChunks(mockVoiceChunks,mockVoiceRecorder?.mimeType||preferred,text=>{$('mock-answer').value=text;mockVoiceNote('实时转写草稿 · 停止后确认最终文本')})};mockVoiceRecorder.onstop=()=>{mockVoiceRecorder=null;};mockVoiceRecorder.start(1000);$('mock-voice').disabled=true;$('mock-stop-voice').disabled=false;mockVoiceNote('正在录音并显示实时转写草稿…');}catch(error){if(mockVoiceStream){mockVoiceStream.getTracks().forEach(t=>t.stop());mockVoiceStream=null;}toast(`无法使用麦克风：${error.message}`,true);}};
-$('mock-stop-voice').onclick=async()=>{const recorder=mockVoiceRecorder;const stream=mockVoiceStream;mockVoiceRecorder=null;mockVoiceStream=null;if(!recorder){mockVoiceNote('');return;}$('mock-stop-voice').disabled=true;mockVoiceNote('正在确认最终转写并分析表达…');asrPreviewSequence+=1;asrPreviewBusy=false;recorder.onstop=async()=>{const type=recorder.mimeType||'audio/webm';const blob=new Blob(mockVoiceChunks,{type});mockVoiceChunks=[];stream?.getTracks().forEach(t=>t.stop());clearObjectUrl('answer');mockAnswerAudioUrl=URL.createObjectURL(blob);const playback=$('mock-answer-playback');playback.src=mockAnswerAudioUrl;playback.classList.remove('hidden');try{const wav=await encodeBlobAsWav(blob);const form=new FormData();form.append('file',wav,'answer.wav');const data=await api(`/api/mock-interviews/${state.sessionId}/transcribe`,{method:'POST',body:form});$('mock-answer').value=(data.text||'').trim();renderSpeechFeedback(data.speech_feedback);$('mock-voice').disabled=false;mockVoiceNote('最终转写已确认，可回放并根据建议重答');}catch(error){$('mock-voice').disabled=false;mockVoiceNote('录音可回放；保留实时草稿，请手动检查');toast(`语音转写失败：${error.message}`,true);}};recorder.stop();};
+$('mock-voice').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风',true);return;}const recordingSessionId=state.sessionId;const generation=++mockVoiceGeneration;mockVoiceSessionId=recordingSessionId;clearMockAnswerExperience();try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId){stream.getTracks().forEach(track=>track.stop());return;}mockVoiceStream=stream;const preferred=liveAudioType();mockVoiceRecorder=new MediaRecorder(mockVoiceStream,preferred?{mimeType:preferred}:undefined);mockVoiceChunks=[];mockVoiceRecorder.ondataavailable=e=>{if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId||!e.data.size)return;mockVoiceChunks.push(e.data);previewRecordedChunks(mockVoiceChunks,mockVoiceRecorder?.mimeType||preferred,text=>{if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;$('mock-answer').value=text;mockVoiceNote('实时转写草稿 · 停止后确认最终文本')})};mockVoiceRecorder.onstop=()=>{if(generation===mockVoiceGeneration)mockVoiceRecorder=null;};mockVoiceRecorder.start(1000);$('mock-voice').disabled=true;$('mock-stop-voice').disabled=false;mockVoiceNote('正在录音并显示实时转写草稿…');}catch(error){if(generation!==mockVoiceGeneration)return;if(mockVoiceStream){mockVoiceStream.getTracks().forEach(t=>t.stop());mockVoiceStream=null;}mockVoiceSessionId='';toast(`无法使用麦克风：${error.message}`,true);}};
+$('mock-stop-voice').onclick=async()=>{const recorder=mockVoiceRecorder;const stream=mockVoiceStream;const recordingSessionId=mockVoiceSessionId;const generation=mockVoiceGeneration;mockVoiceRecorder=null;mockVoiceStream=null;mockVoiceSessionId='';if(!recorder){mockVoiceNote('');return;}$('mock-stop-voice').disabled=true;mockVoiceNote('正在确认最终转写并分析表达…');asrPreviewSequence+=1;asrPreviewBusy=false;recorder.onstop=async()=>{const chunks=mockVoiceChunks;mockVoiceChunks=[];stream?.getTracks().forEach(t=>t.stop());if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;const type=recorder.mimeType||'audio/webm';const blob=new Blob(chunks,{type});clearObjectUrl('answer');clearAudioElement('mock-answer-playback');renderSpeechFeedback(null);mockAnswerAudioUrl=URL.createObjectURL(blob);const playback=$('mock-answer-playback');playback.src=mockAnswerAudioUrl;playback.classList.remove('hidden');try{const wav=await encodeBlobAsWav(blob);if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;const form=new FormData();form.append('file',wav,'answer.wav');const data=await api(`/api/mock-interviews/${recordingSessionId}/transcribe`,{method:'POST',body:form});if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;$('mock-answer').value=(data.text||'').trim();renderSpeechFeedback(data.speech_feedback);$('mock-voice').disabled=false;mockVoiceNote('最终转写已确认，可回放并根据建议重答');}catch(error){if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;$('mock-voice').disabled=false;mockVoiceNote('录音可回放；保留实时草稿，请手动检查');toast(`语音转写失败：${error.message}`,true);}};recorder.stop();};
 async function generateEvaluation(button = null) {
   if (!await ensureSession()) return;
   if (button) busy(button, true);
@@ -769,15 +802,15 @@ function showLiveAsrPreview(text=''){
 }
 function resetAsrPreview(){asrPreviewSequence+=1;asrPreviewBusy=false;asrPreviewLastAt=0;showLiveAsrPreview('');}
 async function previewRecordedChunks(chunks,type,onText){
-  const now=performance.now();
-  if(asrPreviewBusy||chunks.length<2||now-asrPreviewLastAt<ASR_PREVIEW_INTERVAL_MS||!state.sessionId)return;
+  const now=performance.now();const previewSessionId=state.sessionId;
+  if(asrPreviewBusy||chunks.length<2||now-asrPreviewLastAt<ASR_PREVIEW_INTERVAL_MS||!previewSessionId)return;
   asrPreviewBusy=true;asrPreviewLastAt=now;const requestSequence=++asrPreviewSequence;
   const snapshot=new Blob([...chunks],{type:type||'audio/webm'});
   try{
     const wav=await encodeBlobAsWav(snapshot);const form=new FormData();
     form.append('file',wav,wav.type==='audio/wav'?'preview.wav':'preview.webm');form.append('language','zh');
-    const data=await api(`/api/live-interviews/${state.sessionId}/audio/preview`,{method:'POST',body:form});
-    if(requestSequence===asrPreviewSequence&&data.text?.trim())onText(data.text.trim());
+    const data=await api(`/api/live-interviews/${previewSessionId}/audio/preview`,{method:'POST',body:form});
+    if(requestSequence===asrPreviewSequence&&previewSessionId===state.sessionId&&data.text?.trim())onText(data.text.trim());
   }catch(error){
     // Preview is best-effort; the final transcription path reports failures.
   }finally{if(requestSequence===asrPreviewSequence)asrPreviewBusy=false;}

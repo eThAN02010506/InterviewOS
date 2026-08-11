@@ -90,14 +90,14 @@ class CoachAgent(Agent):
 
         ev = Evidence(
             competency=coach_input.competency,
-            signal="; ".join(evaluation.observed_signals) or coach_input.answer[:200],
+            # Model-generated observed_signals remain coaching hints. Persist the
+            # candidate's own words as the auditable evidence signal instead of
+            # allowing an untrusted model to introduce a new achievement claim.
+            signal=coach_input.answer[:200],
             confidence=evaluation.overall_score(),
             source=coach_input.evidence_source,
-            polarity=(
-                EvidencePolarity.POSITIVE
-                if evaluation.observed_signals
-                else EvidencePolarity.NEUTRAL
-            ),
+            # Only a human review may classify an answer as positive/negative.
+            polarity=EvidencePolarity.NEUTRAL,
             notes="; ".join(evaluation.missing_signals),
         )
         if coach_input.record_id is not None:

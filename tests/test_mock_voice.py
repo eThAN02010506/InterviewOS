@@ -46,6 +46,17 @@ class _OmniFallback:
         return None
 
 
+class _OmniProhibited(_OmniFallback):
+    mode = "audio"
+
+    async def analyze_speaking_style(self, content, **kwargs):
+        return {
+            "pace": "语速平稳",
+            "clarity": "可以判断候选人的口音和性格",
+            "improvements": ["根据年龄调整表达方式"],
+        }
+
+
 class _FakeTTS:
     def __init__(self):
         self.spoken = []
@@ -90,6 +101,17 @@ def _make_app(tmp_path, asr, *, tts=None):
     )
 
 
+def _make_app_with_omni(tmp_path, asr, omni):
+    return create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'mock-voice-omni.db'}"),
+        llm_client=_WorkflowLLM(),
+        configure_llm=False,
+        asr_client=asr,
+        omni_client=omni,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+
+
 _FAKE_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 20) + b"data\x00\x00\x00\x00"
 
 
@@ -118,6 +140,30 @@ def test_mock_transcribe_returns_text(tmp_path):
         # Pure transcription: no answer was submitted, transcription is not stored.
         state = client.get(f"/api/interviews/sessions/{sid}", headers=_auth(token)).json()["state"]
         assert not (state.get("mock_interview") or {}).get("answers")
+
+
+def test_mock_transcribe_rejects_prohibited_audio_model_inferences(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"text": "我先说明结论，再解释行动。"})
+        ),
+    )
+    with TestClient(_make_app_with_omni(tmp_path, asr, _OmniProhibited())) as client:
+        token = _register(client)
+        sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
+        resp = client.post(
+            f"/api/mock-interviews/{sid}/transcribe",
+            files={"file": ("answer.wav", _FAKE_WAV, "audio/wav")},
+            headers=_auth(token),
+        )
+
+    assert resp.status_code == 200
+    feedback = resp.json()["speech_feedback"]
+    assert feedback["source"] == "text_fallback"
+    assert "口音" not in str(feedback)
+    assert "性格" not in str(feedback)
+    assert "年龄" not in str(feedback)
 
 
 def test_mock_transcribe_empty_audio_422(tmp_path):
@@ -231,3 +277,57 @@ def test_current_mock_question_can_be_synthesized_but_other_id_cannot(tmp_path):
     assert spoken.headers["content-type"].startswith("audio/wav")
     assert tts.spoken == [question["question"]]
     assert denied.status_code == 409
+
+
+def test_answered_follow_up_speech_uses_response_question(tmp_path):
+    asr = ASRClient(
+        base_url="http://asr.test:9001",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"text": "x"})
+        ),
+    )
+    tts = _FakeTTS()
+    with TestClient(_make_app(tmp_path, asr, tts=tts)) as client:
+        token = _register(client)
+        headers = _auth(token)
+        sid = client.post("/api/interviews/sessions", json={}, headers=headers).json()["id"]
+        client.post(
+            "/api/workflows/candidate-prep",
+            json={
+                "session_id": sid,
+                "resume_text": "Python engineer",
+                "job_description": "Platform Engineer\n岗位职责：设计分布式平台\n任职要求：熟悉 Python",
+                "company_name": "Example",
+            },
+            headers=headers,
+        )
+        started = client.post(f"/api/mock-interviews/{sid}/start", headers=headers).json()
+        question = started["current_question"]
+        client.post(
+            f"/api/mock-interviews/{sid}/answers",
+            json={"question_id": question["id"], "answer": "I compared two designs."},
+            headers=headers,
+        )
+        advanced = client.post(f"/api/mock-interviews/{sid}/next", headers=headers).json()
+        follow_up = advanced["current_question"]["question"]
+        pending_spoken = client.post(
+            f"/api/mock-interviews/{sid}/questions/{question['id']}/speech",
+            headers=headers,
+        )
+        answered = client.post(
+            f"/api/mock-interviews/{sid}/answers",
+            json={"question_id": question["id"], "answer": "At ten times traffic."},
+            headers=headers,
+        ).json()
+        response = answered["mock_session"]["responses"][-1]
+        spoken = client.post(
+            f"/api/mock-interviews/{sid}/questions/{question['id']}/speech",
+            params={"response_id": response["id"]},
+            headers=headers,
+        )
+
+    assert response["is_follow_up"] is True
+    assert response["question"] == follow_up
+    assert pending_spoken.status_code == 200
+    assert spoken.status_code == 200
+    assert tts.spoken == [follow_up, follow_up]

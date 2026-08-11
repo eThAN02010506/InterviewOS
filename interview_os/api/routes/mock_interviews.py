@@ -104,10 +104,17 @@ async def transcribe_mock_answer(session_id: str, service: Service, file: Annota
 
 
 @router.post("/{session_id}/questions/{question_id}/speech")
-async def speak_mock_question(session_id: str, question_id: str, service: Service):
+async def speak_mock_question(
+    session_id: str,
+    question_id: str,
+    service: Service,
+    response_id: UUID | None = None,
+):
     try:
         parsed_id = UUID(question_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="问题 ID 无效") from exc
-    content, content_type = await service.synthesize_mock_question(session_id, parsed_id)
+    content, content_type = await service.synthesize_mock_question(
+        session_id, parsed_id, response_id=response_id
+    )
     return Response(content=content, media_type=content_type)
