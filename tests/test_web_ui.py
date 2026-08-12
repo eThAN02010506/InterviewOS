@@ -18,6 +18,7 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 
     assert 'id="candidate-next-action"' in html
+    assert 'id="candidate-next-action" type="button" data-new-practice="true"' in html
     assert 'id="mock-status" aria-live="polite"' in html
     assert "function candidateHomeAction(session)" in script
     assert 'data-route="candidate-report"' in script
