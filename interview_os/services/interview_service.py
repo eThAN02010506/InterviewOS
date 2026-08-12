@@ -3673,6 +3673,13 @@ class InterviewService:
             self.llm_client, self.search_provider, self.debug_events, session_id
         )
         runtime.state = InterviewState.model_validate(state)
+        # Upgrade persisted pre-quality-contract questions in place. This keeps
+        # existing user sessions usable after deployment instead of requiring a
+        # new candidate workflow solely to obtain bounded questions/examples.
+        mock_agent = runtime.get_agent("mock_interview_agent")
+        if mock_agent is not None and hasattr(mock_agent, "enrich_question"):
+            for question in runtime.state.mock_interview.questions:
+                mock_agent.enrich_question(question)  # type: ignore[union-attr]
         # In-process refill tasks do not survive a service restart.
         runtime.state.mock_session.refill_in_flight = False
         if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:

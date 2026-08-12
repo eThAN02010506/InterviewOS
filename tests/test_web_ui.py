@@ -24,6 +24,10 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     assert 'data-route="candidate-report"' in script
     assert "最后一题反馈" in script
     assert "新建练习会话" in script
+    assert 'id="mock-requirements"' in html
+    assert 'id="mock-example"' in html
+    assert "这道题问了什么，你实际回答了什么" in script
+    assert "基于你本次回答的重组示范" in script
 
 
 def test_accessible_interaction_states_are_styled():

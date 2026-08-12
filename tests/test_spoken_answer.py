@@ -83,6 +83,26 @@ def test_chinese_technical_answer_recognizes_latency_metric_and_result():
     assert statuses["给出结果与验证方式"] == "covered"
 
 
+def test_method_question_with_choice_is_not_misclassified_as_motivation():
+    analysis = analyze_spoken_answer(
+        "你如何选择项目架构方案？",
+        "我会先比较容量、一致性和维护成本，再通过压力测试验证方案。",
+        answer_modality="typed",
+    )
+
+    assert analysis.answer_type == "methodology"
+
+
+def test_completed_project_prompt_is_classified_as_behavioral():
+    analysis = analyze_spoken_answer(
+        "请用一个已经结束的项目说明你如何处理跨部门分歧。",
+        "在一次交付项目中，我负责协调产品和销售，最终按期上线。",
+        answer_modality="typed",
+    )
+
+    assert analysis.answer_type == "behavioral_example"
+
+
 def test_spoken_chinese_number_is_a_verifiable_result_metric():
     analysis = analyze_spoken_answer(
         "请讲一次你制定并执行招聘策略的经历。",
@@ -96,6 +116,20 @@ def test_spoken_chinese_number_is_a_verifiable_result_metric():
 
     assert statuses["提供一个真实案例"] == "covered"
     assert statuses["给出结果与验证方式"] == "covered"
+
+
+def test_generic_behavioral_question_accepts_context_named_in_answer():
+    analysis = analyze_spoken_answer(
+        "请讲一个你亲自负责的真实案例，说明决定、行动和结果。",
+        (
+            "在一家进入新市场的企业中，业务要求八周内组建团队。"
+            "我负责确定画像并调整筛选流程，最终按期完成关键岗位录用。"
+        ),
+    )
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+
+    assert coverage["明确具体公司/业务场景"].status == "covered"
+    assert "进入新市场" in coverage["明确具体公司/业务场景"].evidence
 
 
 def test_typed_transition_words_do_not_trigger_asr_structure_penalty():

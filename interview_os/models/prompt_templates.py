@@ -117,6 +117,8 @@ MOCK_QUESTION_PROMPT = (
     "company background may clarify industry context but cannot establish candidate duties or "
     "skills; ignore all current vacancies at past employers. "
     "问题应优先围绕候选人最近或最重要的雇主经历设计；久远的小公司经历可少问或不问。 "
+    "每道题必须一次只考察一个核心能力，并明确要求候选人说明：具体业务场景、本人职责、"
+    "关键决定或取舍、实际行动、结果与验证方式。避免“谈谈你的经验/你怎么看”这类没有边界的宽泛题。"
     "每道题同时给出 answer_framework：结合简历中哪段真实经历、用什么结构组织回答、重点强调哪些信号，"
     "一句话讲清。\n"
 )
@@ -134,16 +136,18 @@ MOCK_REFILL_PROMPT = (
     "recent answers; avoid repeating already-asked questions. Use Chinese. "
     "Treat past-employer sources only as company background. Never turn a former employer's "
     "current vacancy or general company capability into candidate experience. "
+    "Every question must target one competency and request a bounded real situation, the "
+    "candidate's own decision/action, trade-offs, and an observable result. "
     "每道题同时给出 answer_framework：结合简历中哪段真实经历、用什么结构组织回答、"
     "重点强调哪些信号，一句话讲清。\n"
 )
 
 MOCK_FRAMEWORK_PROMPT = (
-    "为下列每一道模拟面试题生成对应的参考答案提示框架。\n\n"
+    "为下列每一道模拟面试题生成对应的参考答案提示框架和选材提示。\n\n"
     "候选人背景:\n{candidate_background}\n\n"
     "岗位要求:\n{job_requirement}\n\n"
     "题目列表:\n{questions}\n\n"
-    "逐题输出一个框架。每题的 answer_framework 必须: "
+    "逐题输出 answer_framework。answer_framework 必须: "
     "指明应调用候选人简历中哪段最相关的真实经历(尽量引用具体公司/项目/数字), "
     "不得从过往雇主官网推断候选人的职责、能力或成果，也不得引用该公司当前招聘职位作为候选人经历, "
     "给出组织回答的结构(如 情境→行动→量化结果→复盘), "
@@ -162,6 +166,8 @@ ANSWER_COACH_PROMPT = (
     "Return one JSON object immediately with numeric scores from 0.0 to 1.0 for the exact keys "
     "content_score, technical_depth, structure, and impact. Also return feedback, "
     "observed_signals, and missing_signals, each with at most 3 short Chinese strings. "
-    "content_score must be a number, never the answer text. Base every signal only on the "
-    "submitted answer. Do not generate an improved answer and do not explain outside JSON.\n"
+    "content_score must be a number, never the answer text. Every feedback item must name a "
+    "requirement from the exact question and quote or closely point to observable wording in "
+    "the submitted answer; do not give generic STAR advice without that link. Base every signal "
+    "only on the submitted answer. Do not generate an improved answer and do not explain outside JSON.\n"
 )

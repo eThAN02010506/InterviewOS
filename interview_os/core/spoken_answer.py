@@ -140,7 +140,7 @@ def _excerpt(sentences: list[str], keywords: tuple[str, ...]) -> str:
 
 def _answer_type(question: str) -> str:
     folded = question.casefold()
-    if re.search(r"请讲|举例|一次|经历|期间|你是如何", question) or re.search(
+    if re.search(r"请讲|举例|一次|经历|期间|已经发生|已经结束|具体项目|你是如何", question) or re.search(
         r"\b(?:tell me about a time|describe a time|give (?:me )?an example|experience where|when you)\b",
         folded,
     ):
@@ -149,7 +149,7 @@ def _answer_type(question: str) -> str:
         r"\b(?:what would you|how would you|suppose|imagine|if you)\b", folded
     ):
         return "situational"
-    if re.search(r"为什么|动机|选择", question) or re.search(
+    if re.search(r"为什么|动机", question) or re.search(
         r"\b(?:why do you|motivat|why this|why are you)\b", folded
     ):
         return "motivation"
@@ -203,7 +203,21 @@ def _coverage(
     folded_question = question.casefold()
     context_name = _explicit_context(question)
     context_evidence = context_name if context_name.casefold() in answer.casefold() else ""
-    if context_name or "期间" in question:
+    if not context_evidence and question_type == "behavioral_example":
+        context_evidence = next(
+            (
+                sentence
+                for sentence in sentences
+                if re.search(
+                    r"(?:当时|那次|在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务|阶段|期间)|"
+                    r"\b(?:during|at the time|in (?:that|a|the) (?:project|team|company))\b)",
+                    sentence,
+                    re.IGNORECASE,
+                )
+            ),
+            "",
+        )
+    if context_name or "期间" in question or question_type == "behavioral_example":
         add(
             "明确具体公司/业务场景",
             "covered" if context_evidence else "missing",
@@ -316,7 +330,12 @@ def _coverage(
 
     asks_method = question_type in {"methodology", "situational"} or (
         question_type == "behavioral_example"
-        and bool(re.search(r"如何|怎么|制定|方法|how|approach|process", folded_question))
+        and bool(
+            re.search(
+                r"如何|怎么|制定|方法|对比|比较|方案|取舍|权衡|how|approach|process|trade",
+                folded_question,
+            )
+        )
     )
     if asks_method:
         method_evidence = steps[0].evidence if len(steps) >= 2 else execution

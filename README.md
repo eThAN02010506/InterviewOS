@@ -260,6 +260,17 @@ the session to `active`, allowing the user to finish again. Process-local refill
 flags and an interrupted `evaluating` state are restored to retryable values after
 a process restart.
 
+Mock questions now have an explicit quality contract. A main question targets one
+competency and asks for a bounded, completed situation with the candidate's own
+role, decision/action, constraints or trade-offs, observable result, and reflection.
+Short or open-ended model output such as “talk about your experience” is rewritten
+into that evidence-seeking form before it reaches the UI. Each question displays
+an explicit, question-type-specific set of requirements later used by answer-coverage feedback. It also provides
+two separate learning aids: a candidate-grounded selection/framework hint and a
+complete, realistic teaching example. The complete example is explicitly fictional,
+uses no resume company/project/metric, and demonstrates evidence density rather than
+claiming to be the candidate's answer.
+
 The candidate UI keeps the next action explicit throughout this lifecycle. The home
 CTA routes to preparation, the active mock, or the growth report according to session
 state. During model work, forms expose an accessible busy state and retain the user's
@@ -324,13 +335,17 @@ competency. The service then creates a behavior-anchored card for every dimensio
 the observable answer feature supporting the score and one concrete next action.
 Model-generated `observed_signals` remain coaching hints only: persisted Evidence
 always quotes the candidate answer and stays neutral until explicit human review.
-The three weakest dimensions become ranked improvement priorities; observed and
-missing signals remain attached to the persisted answer and evidence.
-The model does not generate a replacement answer. It scores the submission and returns
-at most three feedback/signal items; InterviewOS deterministically displays the exact
-original answer inside a STAR completion scaffold. This prevents model-written names,
-meetings, tools, dates, percentages, headcount, money, and outcomes from becoming
-candidate claims. Any legacy model draft carrying unsupported numbers is discarded.
+Missing/partial question requirements become the primary ranked improvements, ahead
+of generic dimension advice. The UI places “what this question asked / what your
+answer actually said” outside the collapsed scoring details, quotes the matching
+answer excerpt for every covered item, and explains exactly how to fill each gap.
+The model does not generate a replacement candidate answer. It scores the submission
+and returns at most three feedback/signal items; InterviewOS deterministically
+reorganizes the candidate's exact wording into a question-specific rehearsal draft,
+with explicit placeholders only where scenario, ownership, action, result, validation,
+or reflection is absent. This prevents model-written names, meetings, tools, dates,
+percentages, headcount, money, and outcomes from becoming candidate claims. Any legacy
+model draft carrying unsupported numbers is discarded.
 If no LLM is configured, or the optional per-question framework pass is incomplete,
 every question receives a deterministic candidate-aware answer framework.
 

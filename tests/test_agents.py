@@ -17,6 +17,7 @@ from interview_os.core.state import (
     AnswerScoringSource,
     CompetencyEvaluation,
     EvaluationReport,
+    InterviewQuestion,
     InterviewState,
     JobDescription,
     LiveInterviewRecord,
@@ -244,7 +245,9 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     assert original in evaluation.improved_answer
     assert "80" not in evaluation.improved_answer
     assert "250" not in evaluation.improved_answer
-    assert "STAR 补充框架" in evaluation.improved_answer
+    assert "基于你本次回答的重组示范" in evaluation.improved_answer
+    assert "组建了印度招聘团队" in evaluation.improved_answer
+    assert "[补充真实结果" in evaluation.improved_answer
     assert any("未提供的数字" in item for item in evaluation.feedback)
     assert "需要核验并补充真实量化结果" in evaluation.missing_signals
     # The model's invented observed signal remains a coaching hint only. The
@@ -550,6 +553,54 @@ async def test_mock_agent_degrades_to_current_job_competency_questions():
     assert {q.competency for q in questions} == {"招聘策略", "团队领导力"}
     assert len({q.question for q in questions}) == 5  # all distinct
     assert all(q.answer_framework for q in questions)
+    assert all(q.question_requirements for q in questions)
+    assert all(q.example_answer for q in questions)
+    assert all("结果" in q.question or "验证" in q.question for q in questions)
+
+
+def test_mock_teaching_examples_are_specific_and_explicitly_fictional():
+    question = InterviewQuestion(question="谈谈你的招聘经验", competency="招聘战略")
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "具体且已经发生的案例" in question.question
+    assert "八周" in question.example_answer
+    assert "虚构场景" in question.example_answer_note
+    assert "明确个人职责与关键决策" in question.question_requirements
+
+
+def test_mock_quality_contract_preserves_motivation_question_type():
+    question = InterviewQuestion(question="你为什么选择这个岗位？", competency="求职动机")
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "岗位最吸引你的具体要素" in question.question
+    assert "具体且已经发生的案例" not in question.question
+    assert question.question_requirements == ["说明动机与匹配关系"]
+
+
+def test_mock_quality_contract_keeps_method_question_as_methodology():
+    question = InterviewQuestion(
+        question="你如何衡量平台健康度？", competency="系统设计"
+    )
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "按顺序执行的步骤" in question.question
+    assert "具体且已经发生的案例" not in question.question
+    assert question.question_requirements == ["说明方法或制定过程", "给出结果与验证方式"]
+
+
+def test_mock_quality_contract_does_not_treat_project_method_as_past_case():
+    question = InterviewQuestion(
+        question="你如何设计高管招聘项目的评估流程？", competency="高管招聘"
+    )
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "按顺序执行的步骤" in question.question
+    assert "具体且已经发生的案例" not in question.question
+    assert question.question_requirements == ["说明方法或制定过程", "给出结果与验证方式"]
 
 
 @pytest.mark.asyncio

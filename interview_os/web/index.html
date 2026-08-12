@@ -155,8 +155,10 @@
         <div class="mock-layout">
           <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status" aria-live="polite">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
             <div id="mock-question" class="question-copy empty-state">先完成候选人准备工作流，生成个性化问题。</div>
+            <div id="mock-requirements" class="question-requirements hidden"></div>
             <div class="question-audio-controls"><button class="btn compact" id="mock-speak-question" type="button">🔊 朗读问题</button><label class="checkbox-inline"><input id="mock-auto-speak" type="checkbox" checked>自动朗读新问题</label><audio id="mock-question-audio" controls class="hidden"></audio></div>
             <div id="mock-framework" class="framework-hint hidden"><small>参考回答要点</small><p id="mock-framework-text"></p></div>
+            <details id="mock-example" class="answer-example hidden"><summary>查看高质量示范回答</summary><small id="mock-example-note"></small><p id="mock-example-text"></p></details>
             <form id="answer-form"><label>你的回答<textarea id="mock-answer" rows="9" placeholder="按真实面试方式回答" required></textarea></label><div class="mock-voice-row"><button class="btn" id="mock-voice" type="button">🎤 语音回答</button><button class="btn" id="mock-stop-voice" type="button" disabled>停止并转写</button><span class="mock-voice-note" id="mock-voice-note"></span></div><audio id="mock-answer-playback" controls class="answer-playback hidden"></audio><div id="mock-speech-feedback" class="speech-feedback hidden"></div><button class="btn primary" type="submit">提交并获取反馈</button></form>
             <div id="mock-actions" class="mock-actions hidden"><button class="btn" id="mock-prev" type="button">上一题</button><button class="btn" id="mock-retry-main" type="button">重答主问题</button><button class="btn" id="mock-retry" type="button">重新来</button><button class="btn" id="mock-review-score" type="button">人工复核评分</button><button class="btn primary" id="mock-next" type="button">下一题</button><button class="btn" id="mock-finish" type="button">结束面试</button></div>
             <button class="btn" id="start-mock">开始模拟面试</button>

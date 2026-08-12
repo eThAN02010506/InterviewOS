@@ -76,13 +76,15 @@ class CoachAgent(Agent):
             logger.warning("Failed to parse answer evaluation: %s", exc)
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
-        self._build_grounded_improvement(evaluation, coach_input.answer)
         analysis = analyze_spoken_answer(
             coach_input.question,
             coach_input.answer,
             answer_modality=coach_input.answer_modality,
         )
         calibrate_evaluation(evaluation, analysis)
+        self._build_grounded_improvement(
+            evaluation, coach_input.answer, question=coach_input.question
+        )
         apply_specific_feedback(
             evaluation,
             coach_input.answer,
@@ -138,7 +140,9 @@ class CoachAgent(Agent):
         return self.make_response(evaluation.model_dump_json())
 
     @staticmethod
-    def _build_grounded_improvement(evaluation: AnswerEvaluation, answer: str) -> None:
+    def _build_grounded_improvement(
+        evaluation: AnswerEvaluation, answer: str, *, question: str = ""
+    ) -> None:
         """Build a useful coaching scaffold without model-generated claims.
 
         Local models can fabricate employers, meetings, tools, or outcomes even
@@ -157,14 +161,36 @@ class CoachAgent(Agent):
             }
 
         unsupported = numeric_facts(evaluation.improved_answer) - numeric_facts(answer)
+        analysis = evaluation.spoken_analysis
+        coverage = {item.requirement: item for item in analysis.question_coverage}
+
+        def evidence_for(*names: str) -> str:
+            for name in names:
+                item = coverage.get(name)
+                if item and item.evidence:
+                    return item.evidence.strip()
+            return ""
+
+        context = evidence_for("明确具体公司/业务场景", "提供一个真实案例")
+        personal = evidence_for("明确个人职责与关键决策")
+        outcome = evidence_for("给出结果与验证方式")
+        actions = []
+        for step in analysis.semantic_steps:
+            if step.evidence and step.evidence not in actions:
+                actions.append(step.evidence.strip())
+        action_text = "；随后，".join(actions[:4])
+        requirement_names = "、".join(item.requirement for item in analysis.question_coverage)
         evaluation.improved_answer = (
-            "已提供事实（原文保留）：\n"
+            "你的原回答（作为唯一事实来源）：\n"
             + answer.strip()
-            + "\n\nSTAR 补充框架（请只填写真实、可核验的信息）：\n"
-            "- 情境：[补充业务背景与目标]\n"
-            "- 任务：[补充你的具体职责与约束]\n"
-            "- 行动：[按步骤重组上面的真实行动]\n"
-            "- 结果：[补充已核验的结果；没有数据时明确说明]"
+            + "\n\n基于你本次回答的重组示范（未添加新事实）：\n"
+            f"针对“{question[:100] or '本题'}”，我的核心做法是"
+            f"{personal or '[补充你本人承担的职责和关键决定]'}。\n"
+            f"当时的具体背景是：{context or '[补充公司/项目、业务阶段、目标和约束]'}。\n"
+            f"我采取的关键行动是：{action_text or '[按先后顺序补充二至四个本人动作及判断依据]'}。\n"
+            f"最终结果是：{outcome or '[补充真实结果、验证方式、指标口径和时间范围]'}。\n"
+            "如果重新处理，我会：[补充一项真实复盘或下一次会改变的做法]。\n"
+            f"本题需要完整回应：{requirement_names or '问题中的核心要求'}。"
         )
         if unsupported:
             warning = "模型草稿引入了原回答未提供的数字，已丢弃；请从 ATS 或原始材料核对。"

@@ -357,7 +357,11 @@ def test_candidate_prep_api_returns_structured_workflow(tmp_path):
     state = response.json()["state"]
     assert state["workflow"]["status"] == "completed"
     assert state["strategy"]["summary"] == "Show impact"
-    assert state["mock_interview"]["questions"][0]["question"] == "Design it"
+    first_question = state["mock_interview"]["questions"][0]
+    assert first_question["question"].startswith("Design it")
+    assert "结果如何验证" in first_question["question"]
+    assert first_question["question_requirements"]
+    assert first_question["example_answer"]
 
 
 def test_job_requirement_review_confirms_edits_and_deletes_inferred_items(tmp_path):

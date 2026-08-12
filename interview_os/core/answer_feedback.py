@@ -143,9 +143,25 @@ def apply_specific_feedback(
         question=question,
         competency=competency,
     )
-    weakest_first = sorted(evaluation.dimension_feedback, key=lambda item: item.score)
-    priorities = [
-        f"{DIMENSION_LABELS[item.dimension]}（{round(item.score * 100)}）：{item.suggestion}"
-        for item in weakest_first[:3]
-    ]
+    coverage_gaps = sorted(
+        (
+            item
+            for item in evaluation.spoken_analysis.question_coverage
+            if item.status in {"missing", "partial"}
+        ),
+        key=lambda item: 0 if item.status == "missing" else 1,
+    )
+    priorities = []
+    for item in coverage_gaps[:3]:
+        observed = f"回答中只找到“{item.evidence[:80]}”" if item.evidence else "回答中没有找到对应内容"
+        priorities.append(
+            f"本题要求「{item.requirement}」：{observed}；重答时{item.suggestion}"
+        )
+    if len(priorities) < 3:
+        weakest_first = sorted(evaluation.dimension_feedback, key=lambda item: item.score)
+        priorities.extend(
+            f"{DIMENSION_LABELS[item.dimension]}（{round(item.score * 100)}）：{item.suggestion}"
+            for item in weakest_first
+            if item.suggestion not in " ".join(priorities)
+        )
     evaluation.feedback = list(dict.fromkeys([*preserved, *priorities]))[:5]

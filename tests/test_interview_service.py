@@ -731,7 +731,11 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     # User ends the interview manually; evaluation runs because answers exist.
     state = await service.finish_mock_interview(session_id)
     assert state.mock_session.status.value == "completed"
-    assert state.mock_session.responses[0].evaluation.overall_score() == pytest.approx(0.75)
+    first_evaluation = state.mock_session.responses[0].evaluation
+    # The broad model question is tightened into a behavioral evidence question.
+    # Trade-off language alone still lacks a concrete situation and result.
+    assert first_evaluation.overall_score() == pytest.approx(0.65)
+    assert first_evaluation.spoken_analysis.calibration_notes
     assert state.mock_session.responses[0].evaluation.spoken_analysis.pre_calibration_scores
     assert state.evidence[-1].competency == "System Design"
     assert state.evidence[-1].confidence == pytest.approx(0.75)
@@ -778,13 +782,15 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     await service.submit_mock_answer(session_id, question.id, "I explained trade-offs")
 
     state = await service.finish_mock_interview(session_id)
-    assert state.evaluation.overall_score == pytest.approx(0.75)
+    # The answer omitted the tightened question's case, personal-decision and
+    # result requirements, so evidence calibration lowers the raw 0.75 average.
+    assert state.evaluation.overall_score == pytest.approx(0.575)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert state.feedback.action_plan == [
         "准备并练习：Business impact",
         "准备并练习：需要更多独立回答交叉验证",
     ]
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.75)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.575)
     assert state.current_stage.value == "completed"
     await storage.close()
 
@@ -1399,6 +1405,27 @@ async def test_runtime_reload_clears_orphaned_mock_refill_flag(tmp_path):
     restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
     loaded = await restored.get_state(session_id)
     assert loaded.mock_session.refill_in_flight is False
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reload_upgrades_legacy_mock_questions(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'question-upgrade.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    state.mock_interview.questions = [
+        InterviewQuestion(question="谈谈你的经验", competency="招聘战略")
+    ]
+    await service._persist(session_id, state)
+
+    restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    loaded = await restored.get_state(session_id)
+    question = loaded.mock_interview.questions[0]
+
+    assert "具体且已经发生的案例" in question.question
+    assert question.question_requirements
+    assert question.example_answer
     await storage.close()
 
 
