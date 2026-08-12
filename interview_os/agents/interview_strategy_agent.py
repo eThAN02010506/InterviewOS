@@ -11,6 +11,7 @@ from interview_os.core.agent import Agent
 from interview_os.core.message import Message
 from interview_os.core.state import InterviewState, InterviewStrategy
 from interview_os.models.prompt_templates import STRATEGY_FUSION_PROMPT
+from interview_os.tools.web_search import format_employer_business_context
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,8 @@ class InterviewStrategyAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        employer_block = (
-            f"\n{state.past_employer_block}" if state.past_employer_block else ""
-        )
+        employer_context = format_employer_business_context(state.past_employer_sources)
+        employer_block = f"\n{employer_context}" if employer_context else ""
         prompt = STRATEGY_FUSION_PROMPT.format(
             candidate_profile=(
                 f"Candidate name: {state.candidate.name}\n"

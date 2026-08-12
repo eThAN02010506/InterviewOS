@@ -123,6 +123,98 @@ def filter_entity_results(
     return filtered
 
 
+_RECRUITMENT_HOST_MARKERS = (
+    "linkedin.com",
+    "indeed.com",
+    "glassdoor.com",
+    "liepin.com",
+    "zhipin.com",
+    "51job.com",
+    "lagou.com",
+)
+_RECRUITMENT_PATH_MARKERS = (
+    "/career",
+    "/careers",
+    "/job",
+    "/jobs",
+    "/join-us",
+    "/joinus",
+    "/recruit",
+    "/招聘",
+    "/职位",
+)
+_RECRUITMENT_TITLE_PATTERN = re.compile(
+    r"(?:招聘|职位|岗位空缺|加入我们|job openings?|careers?|vacanc(?:y|ies)|we(?:'|’)re hiring)",
+    re.IGNORECASE,
+)
+
+
+def is_recruitment_source(item: dict[str, Any]) -> bool:
+    """Return whether a result is a vacancy/recruiting page, not company background."""
+    url = str(item.get("url", "")).strip().lower()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").removeprefix("www.")
+    path = parsed.path.lower()
+    title = str(item.get("title", "")).strip()
+    return bool(
+        any(marker in host for marker in _RECRUITMENT_HOST_MARKERS)
+        or any(marker in path for marker in _RECRUITMENT_PATH_MARKERS)
+        or _RECRUITMENT_TITLE_PATTERN.search(title)
+    )
+
+
+def filter_employer_business_results(
+    results: list[dict[str, Any]], *, entity: str
+) -> list[dict[str, Any]]:
+    """Keep company-background sources and explicitly exclude current vacancies.
+
+    Official company pages are preferred when the provider or domain match can
+    identify them. A safe secondary result is retained only when no official
+    page is available, which helps companies whose brand and domain differ.
+    """
+    entity_key = re.sub(r"[^a-z0-9]", "", entity.lower())
+    safe: list[dict[str, Any]] = []
+    for item in results:
+        if is_recruitment_source(item):
+            continue
+        accepted = dict(item)
+        host_key = re.sub(
+            r"[^a-z0-9]",
+            "",
+            (urlparse(str(item.get("url", ""))).hostname or "").lower().removeprefix("www."),
+        )
+        domain_matches = bool(entity_key and entity_key in host_key)
+        accepted["is_official"] = bool(item.get("is_official")) or domain_matches
+        if accepted["is_official"] and accepted.get("source_quality") in {None, "", "unrated"}:
+            accepted["source_quality"] = "official"
+            accepted["source_quality_reason"] = "URL domain matches the past employer"
+        accepted["context_scope"] = "employer_business_background"
+        prior_reason = str(accepted.get("filter_reason", "")).strip()
+        boundary_reason = "accepted: company business background; recruiting pages excluded"
+        accepted["filter_reason"] = prior_reason or boundary_reason
+        if prior_reason and boundary_reason not in prior_reason:
+            accepted["filter_reason"] = f"{prior_reason}; {boundary_reason}"
+        safe.append(accepted)
+    official = [item for item in safe if item.get("is_official")]
+    # Preference is meaningful only while filtering one employer. Merged
+    # multi-employer context must not drop a lesser-known employer merely because
+    # another employer in the same list has an identifiable official domain.
+    return official if entity_key and official else safe
+
+
+def format_employer_business_context(results: list[dict[str, Any]]) -> str:
+    """Build a prompt block whose provenance cannot be mistaken for candidate evidence."""
+    safe = filter_employer_business_results(results, entity="")
+    if not safe:
+        return ""
+    return (
+        "过往雇主业务背景（仅用于理解公司所处行业、业务与产品，不是候选人经历证据）：\n"
+        "边界规则：不得据此推断候选人的职责、技能、业绩或任职范围；不得把该公司的"
+        "当前招聘职位、岗位要求或其他员工经历归因给候选人。\n"
+        + format_search_results(safe)
+    )
+
+
 def _one_character_alias(haystack: str, needle: str) -> str:
     """Return a near Chinese name only for equal-length strings differing by one character."""
     if not 3 <= len(needle) <= 8 or not all("\u4e00" <= char <= "\u9fff" for char in needle):

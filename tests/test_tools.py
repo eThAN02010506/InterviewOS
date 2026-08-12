@@ -12,7 +12,9 @@ from interview_os.tools.web_search import (
     TavilySearchProvider,
     WebSearchTool,
     assess_source_quality,
+    filter_employer_business_results,
     filter_entity_results,
+    format_employer_business_context,
     merge_search_results,
     search_provider_from_env,
 )
@@ -175,6 +177,72 @@ def test_source_quality_recognizes_company_domain_in_multi_entity_query():
 
     assert results[0].is_official is True
     assert results[0].source_quality == "official"
+
+
+def test_employer_business_filter_excludes_current_vacancies_and_prefers_official_site():
+    results = filter_employer_business_results(
+        [
+            {
+                "title": "Zuora Senior Engineer Job",
+                "url": "https://careers.zuora.com/jobs/123",
+                "snippet": "Current responsibilities and qualifications",
+                "is_official": True,
+            },
+            {
+                "title": "About Zuora",
+                "url": "https://www.zuora.com/about",
+                "snippet": "Zuora provides subscription management software.",
+                "source_quality": "official",
+                "is_official": True,
+            },
+            {
+                "title": "Zuora profile",
+                "url": "https://directory.example/zuora",
+                "snippet": "Company profile",
+            },
+        ],
+        entity="Zuora",
+    )
+
+    assert [item["url"] for item in results] == ["https://www.zuora.com/about"]
+    assert results[0]["context_scope"] == "employer_business_background"
+
+
+def test_employer_business_prompt_declares_candidate_evidence_boundary():
+    context = format_employer_business_context(
+        [
+            {
+                "title": "About Example",
+                "url": "https://example.com/about",
+                "snippet": "Example builds workflow software.",
+                "is_official": True,
+            }
+        ]
+    )
+
+    assert "不是候选人经历证据" in context
+    assert "不得据此推断候选人的职责、技能、业绩" in context
+
+
+def test_merged_employer_context_keeps_safe_sources_for_each_company():
+    context = format_employer_business_context(
+        [
+            {
+                "title": "About WellKnown",
+                "url": "https://wellknown.com/about",
+                "snippet": "WellKnown builds enterprise software.",
+                "is_official": True,
+            },
+            {
+                "title": "SmallCo company profile",
+                "url": "https://directory.example/smallco",
+                "snippet": "SmallCo provides industrial services.",
+            },
+        ]
+    )
+
+    assert "WellKnown builds enterprise software" in context
+    assert "SmallCo provides industrial services" in context
 
 
 def test_search_result_merge_preserves_order_and_deduplicates_urls():

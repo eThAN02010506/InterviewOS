@@ -26,6 +26,26 @@ Open `http://127.0.0.1:8000` for the local product UI. It includes candidate
 preparation, enterprise interview design, interactive mock interviews, runtime
 settings, and the Debug Console.
 
+### LAN access with microphone support
+
+Browsers allow microphone capture only in a secure context. `localhost` is a
+development exception, but `http://192.168.x.x:8000` is not: another device can
+open the UI yet the browser will refuse recording permission. Run the HTTPS LAN
+entry point instead (replace the address with this Mac's current LAN IPv4):
+
+```bash
+scripts/run_lan_https.sh 192.168.1.16
+```
+
+Then open `https://192.168.1.16:8443`. On each client device, install and trust
+`data/tls/interview-os-local-ca.crt` once, then reopen the HTTPS page. The script
+keeps that local CA stable and regenerates only the server certificate so DHCP
+address changes can be handled by rerunning it with the new IP. All generated
+certificates and private keys live under the git-ignored `data/` directory; never
+copy the `.key` files to client devices. HTTP remains suitable for local text-only
+development. A non-local HTTP page now explains that microphone access requires
+HTTPS instead of reporting a generic browser failure.
+
 Login is required before using the app: register a local account (username +
 password, hashed with PBKDF2) and sign in. Session data is isolated per account —
 an account only ever sees its own sessions, and a cross-account session lookup
@@ -113,10 +133,16 @@ The system is built around a few product rules:
   Each card shows source count, best source quality, provider fetch time,
   cache-hit status, filtering reason, and generation time. Users can confirm a
   card for later context, reject it, or reset it to inferred review state.
-- The candidate's past employers are researched too, but reviewed resumes expose
-  only employer names present in confirmed/modified claims and still require the
-  public-research consent gate. Direct pasted workflows without review data treat
-  employer names as unverified self-report. Results appear as "过往雇主" fact cards.
+- The candidate's past employers can be researched too, but this lookup is strictly
+  **company business background**, not candidate evidence. Queries target official
+  About/product/business pages; current vacancies, Careers/Jobs pages, recruiting
+  aggregators, and hiring terms are excluded. Downstream prompts may use these
+  sources only to understand what the company does and must never infer the
+  candidate's duties, skills, achievements, or role from them. Reviewed resumes
+  expose only employer names present in confirmed/modified claims and still require
+  the public-research consent gate. Direct pasted workflows without review data
+  treat employer names as unverified self-report. The UI labels these cards
+  "过往雇主业务背景（不代表候选人经历）".
 - Secrets must not appear in SQLite, API responses, logs, or the Debug Console.
   Resume and transcript content necessarily lives in the owner-scoped local session
   database; it must not be copied into logs or Debug events.

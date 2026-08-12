@@ -33,3 +33,20 @@ def test_accessible_interaction_states_are_styled():
     assert "button:disabled" in styles
     assert ".loading::after" in styles
     assert "prefers-reduced-motion" in styles
+
+
+def test_mock_auto_speech_is_scoped_to_visible_mock_view():
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "state.view==='mock'&&document.visibilityState==='visible'" in script
+    assert "if (view !== 'mock') { cancelMockQuestionSpeech(); clearMockQuestionAudio(); }" in script
+    assert "if(e.target.checked&&state.view==='mock')" in script
+
+
+def test_lan_microphone_requires_secure_context_with_actionable_message():
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="secure-context-warning"' in html
+    assert "window.isSecureContext" in script
+    assert "局域网语音功能需要 HTTPS" in script

@@ -21,6 +21,7 @@ from interview_os.models.prompt_templates import (
     MOCK_REFILL_PROMPT,
 )
 from interview_os.models.structured import FrameworkMap
+from interview_os.tools.web_search import format_employer_business_context
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +160,8 @@ class MockInterviewAgent(Agent):
         if not pending:
             return
         if self.llm_client is not None:
-            employer_block = (
-                f"\n{state.past_employer_block}" if state.past_employer_block else ""
-            )
+            employer_context = format_employer_business_context(state.past_employer_sources)
+            employer_block = f"\n{employer_context}" if employer_context else ""
             numbered = "\n".join(
                 f"{i}. [{q.competency}] {q.question}" for i, q in enumerate(pending)
             )
@@ -210,9 +210,8 @@ class MockInterviewAgent(Agent):
         count: int = MOCK_REFILL_BATCH,
     ) -> list[InterviewQuestion]:
         """Generate a batch of follow-up questions without mutating state."""
-        employer_block = (
-            f"\n{state.past_employer_block}" if state.past_employer_block else ""
-        )
+        employer_context = format_employer_business_context(state.past_employer_sources)
+        employer_block = f"\n{employer_context}" if employer_context else ""
         recent_block = "\n".join(
             f"- {item[:200]}" for item in recent_answers[-6:]
         ) or "（暂无已答内容）"
@@ -263,9 +262,8 @@ class MockInterviewAgent(Agent):
         return questions
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        employer_block = (
-            f"\n{state.past_employer_block}" if state.past_employer_block else ""
-        )
+        employer_context = format_employer_business_context(state.past_employer_sources)
+        employer_block = f"\n{employer_context}" if employer_context else ""
         prompt = MOCK_QUESTION_PROMPT.format(
             candidate_background=(
                 state.candidate_evidence_context(structure_required=True) + employer_block

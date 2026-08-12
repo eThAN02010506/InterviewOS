@@ -67,6 +67,38 @@ const formatDateTime = value => {
   return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString();
 };
 
+function microphoneAvailabilityMessage() {
+  if (!window.isSecureContext) return '当前是非安全的局域网 HTTP 页面，浏览器会阻止麦克风。请改用 HTTPS 地址后重试；文字输入仍可使用。';
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return '当前浏览器不支持麦克风录制，请使用最新版 Chrome、Edge 或 Safari，或改用文字输入。';
+  return '';
+}
+
+function ensureMicrophoneAvailable() {
+  const message = microphoneAvailabilityMessage();
+  if (!message) return true;
+  toast(message, true);
+  return false;
+}
+
+function renderSecureContextWarning() {
+  const node = $('secure-context-warning');
+  if (!node) return;
+  const message = !window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'
+    ? '局域网语音功能需要 HTTPS。当前页面仍可使用文字功能，但浏览器不会授予麦克风权限。'
+    : '';
+  node.textContent = message;
+  node.classList.toggle('hidden', !message);
+}
+
+const microphoneActionIds = new Set(['mock-voice', 'live-record', 'live-dialogue', 'live-continuous']);
+document.addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button || !microphoneActionIds.has(button.id) || !microphoneAvailabilityMessage()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  ensureMicrophoneAvailable();
+}, true);
+
 async function api(path, options = {}) {
   const authHeaders = state.token ? {Authorization: `Bearer ${state.token}`} : {};
   const headers = options.body instanceof FormData ? {...authHeaders, ...(options.headers || {})} : {'Content-Type':'application/json', ...authHeaders, ...(options.headers || {})};
@@ -146,6 +178,7 @@ function setView(view) {
   const allowed = navigation[state.role].some(([name]) => name === view) || globalViews.has(view);
   if (!allowed) view = `${state.role}-home`;
   if (view !== 'live' && liveSuggestionAbort) liveSuggestionAbort.abort();
+  if (view !== 'mock') { cancelMockQuestionSpeech(); clearMockQuestionAudio(); }
   state.view = view;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
   [$('view-eyebrow').textContent, $('view-title').textContent] = viewMeta[view];
@@ -248,6 +281,7 @@ function hydrateSessionForms() {
 
 function renderState() {
   const s = state.session;
+  renderSecureContextWarning();
   $('metric-workflow').textContent = s?.workflow?.status || '未开始';
   $('metric-step').textContent = s?.autopilot?.enabled ? `AI · ${s.autopilot.phase || s.autopilot.status}` : (s?.workflow?.current_step || '等待输入资料');
   const sources = (s?.company?.public_sources?.length || 0) + (s?.interviewer?.public_expressions?.length || 0);
@@ -281,8 +315,10 @@ function renderLive() {
   $('live-pause').textContent = status === 'paused' ? '恢复' : '暂停';
   $('live-pause').disabled = !['active','paused'].includes(status);
   $('live-finish').disabled = !['active','paused'].includes(status) || liveContinuousMode || liveContinuousQueue.length > 0 || liveContinuousUploading;
-  $('live-record').disabled = status !== 'active' || !!liveRecorder;
-  $('live-continuous').disabled = status !== 'active' || !!liveRecorder;
+  const microphoneUnavailable = !!microphoneAvailabilityMessage();
+  $('live-record').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
+  $('live-dialogue').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
+  $('live-continuous').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
   $('live-stop-continuous').disabled = !liveContinuousMode;
   $('live-plan').disabled = status !== 'active';
   if (liveContinuousMode || liveContinuousQueue.length || liveContinuousUploading) {
@@ -445,7 +481,7 @@ function renderFacts(){
   const node=$('fact-result'); const cards=state.session?.fact_cards||[];
   if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
   const labels={verified:'已验证',inferred:'推测',conflict:'冲突',accepted:'已确认',rejected:'已排除'};
-  const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点',past_employer:'过往雇主'};
+  const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点',past_employer:'过往雇主业务背景（不代表候选人经历）'};
   const qualityLabels={official:'官方来源',high:'高可信来源',secondary:'二级来源',unrated:'未评级来源'};
   const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'||card.status==='rejected'?card.status:card.category;(acc[key] ||= []).push(card);return acc;},{});
   const order=['conflict','company','interviewer','past_employer','technology','public_opinion','rejected'];
@@ -550,11 +586,13 @@ function renderMock() {
   $('mock-question').className=current?'question-copy':completed?'question-copy completion-state':'question-copy empty-state'; $('mock-question').innerHTML=current?`<small>${displayedAsFollowUp?'证据追问':esc(current.competency||'综合能力')}</small>${esc(displayedQuestionText)}`:completed?`<small>练习已保存</small><strong>本轮完成 ${responseCount} 次回答${averageScore?` · 平均 ${averageScore} 分`:''}</strong><p>先查看改进报告梳理共性问题；需要练习另一岗位或候选人时，新建会话可避免证据混用。</p><div class="completion-actions"><button class="btn primary" type="button" data-route="candidate-report">查看改进报告</button><button class="btn" type="button" data-new-practice>新建练习会话</button></div>`:'先完成候选人准备工作流，生成个性化问题。';
   const questionAudio=$('mock-speak-question')?.closest('.question-audio-controls'); if(questionAudio)questionAudio.classList.toggle('hidden',!current);
   const speakButton=$('mock-speak-question');if(speakButton)speakButton.disabled=!current;
+  const voiceButton=$('mock-voice');if(voiceButton){voiceButton.disabled=!current||!!microphoneAvailabilityMessage();voiceButton.title=microphoneAvailabilityMessage();}
   const speechKey=current?`${current.id}:${displayedQuestionText}`:'';
   if(speechKey!==mockCurrentSpeechKey){cancelMockQuestionSpeech();clearMockQuestionAudio();clearMockAnswerExperience();mockCurrentSpeechKey=speechKey;}
   mockDisplayedResponseId=displayResponse?.id||'';
   syncMockAnswerAudio(displayResponse);
-  if(current&&$('mock-auto-speak')?.checked&&speechKey!==mockSpokenQuestionKey){mockSpokenQuestionKey=speechKey;setTimeout(()=>speakCurrentMockQuestion(true),0);}
+  const mockViewVisible=state.view==='mock'&&document.visibilityState==='visible'&&$('view-mock')?.classList.contains('active');
+  if(current&&session?.status==='active'&&mockViewVisible&&$('mock-auto-speak')?.checked&&speechKey!==mockSpokenQuestionKey){mockSpokenQuestionKey=speechKey;setTimeout(()=>speakCurrentMockQuestion(true),0);}
   const actions=$('mock-actions');
   if (actions) {
     // 上一题/下一题/结束 are always available during an active session so the
@@ -724,13 +762,15 @@ function resetMockAudioExperience(){
 }
 async function speakCurrentMockQuestion(automatic=false){
   const session=state.session?.mock_session;const question=state.session?.mock_interview?.questions?.[session?.current_question_index];if(!state.sessionId||!question)return;
+  if(automatic&&(state.view!=='mock'||document.visibilityState!=='visible'||!$('view-mock')?.classList.contains('active'))){mockSpokenQuestionKey='';return;}
   cancelMockQuestionSpeech();const requestSequence=mockSpeechRequestSequence;const requestedSessionId=state.sessionId;const requestedSpeechKey=mockCurrentSpeechKey;const responseId=mockDisplayedResponseId;const controller=new AbortController();mockSpeechAbort=controller;
   const button=$('mock-speak-question');if(button)button.disabled=true;
   try{const headers=state.token?{Authorization:`Bearer ${state.token}`}:{},query=responseId?`?response_id=${encodeURIComponent(responseId)}`:'',response=await fetch(`/api/mock-interviews/${requestedSessionId}/questions/${question.id}/speech${query}`,{method:'POST',headers,signal:controller.signal});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||`请求失败 (${response.status})`);}const blob=await response.blob();if(requestSequence!==mockSpeechRequestSequence||requestedSessionId!==state.sessionId||requestedSpeechKey!==mockCurrentSpeechKey)return;clearMockQuestionAudio();mockQuestionAudioUrl=URL.createObjectURL(blob);const audio=$('mock-question-audio');audio.src=mockQuestionAudioUrl;audio.classList.remove('hidden');await audio.play();}catch(error){if(error.name!=='AbortError'&&!automatic)toast(`问题朗读失败：${error.message}`,true);}finally{if(mockSpeechAbort===controller)mockSpeechAbort=null;if(requestSequence===mockSpeechRequestSequence&&button)button.disabled=false;}
 }
 $('mock-speak-question').onclick=()=>speakCurrentMockQuestion(false);
-$('mock-auto-speak').onchange=e=>{localStorage.setItem('interviewos.autoSpeak',e.target.checked?'1':'0');if(e.target.checked){mockSpokenQuestionKey='';renderMock();}};
+$('mock-auto-speak').onchange=e=>{localStorage.setItem('interviewos.autoSpeak',e.target.checked?'1':'0');if(e.target.checked&&state.view==='mock'){mockSpokenQuestionKey='';renderMock();}};
 $('mock-auto-speak').checked=localStorage.getItem('interviewos.autoSpeak')!=='0';
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible'){cancelMockQuestionSpeech();clearMockQuestionAudio();}});
 function renderSpeechFeedback(feedback){const node=$('mock-speech-feedback');if(!node)return;if(!feedback){node.classList.add('hidden');node.innerHTML='';return;}const rows=[['语速',feedback.pace],['停顿',feedback.pauses],['填充词',feedback.fillers],['音量稳定',feedback.volume],['语调',feedback.intonation],['清晰度',feedback.clarity]].filter(([,value])=>value&&value!=='无法判断');node.classList.remove('hidden');node.innerHTML=`<div class="review-subtitle">语音表达辅导 · ${feedback.source==='audio_model'?'音频模型':'本地指标'}</div>${rows.map(([name,value])=>`<p><strong>${esc(name)}</strong><span>${esc(value)}</span></p>`).join('')}${list('可执行改进',feedback.improvements||[])}<small>${esc(feedback.disclaimer||'仅用于表达训练，不进入录用评价。')}</small>`;}
 async function pollMockSpeechFeedback(sessionId,recordingId,generation){for(let attempt=0;attempt<20;attempt+=1){await new Promise(resolve=>setTimeout(resolve,1500));if(generation!==mockVoiceGeneration||sessionId!==state.sessionId)return;try{const data=await api(`/api/mock-interviews/${sessionId}/recordings/${recordingId}/speech-feedback`);renderSpeechFeedback(data.speech_feedback);if(data.status==='completed'){mockVoiceNote('语音表达分析已完成；可回放、修改文字或提交回答');return;}}catch(error){if(attempt>2){mockVoiceNote(`表达分析暂不可用：${error.message}`);return;}}}mockVoiceNote('转写已完成；深度语音分析仍在后台处理');}
 $('mock-voice').onclick=async()=>{if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('当前浏览器不支持麦克风',true);return;}const recordingSessionId=state.sessionId;const generation=++mockVoiceGeneration;mockVoiceSessionId=recordingSessionId;clearMockAnswerExperience();try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId){stream.getTracks().forEach(track=>track.stop());return;}mockVoiceStream=stream;const preferred=liveAudioType();mockVoiceRecorder=new MediaRecorder(mockVoiceStream,preferred?{mimeType:preferred}:undefined);mockVoiceChunks=[];mockVoiceRecorder.ondataavailable=e=>{if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId||!e.data.size)return;mockVoiceChunks.push(e.data);previewRecordedChunks(mockVoiceChunks,mockVoiceRecorder?.mimeType||preferred,text=>{if(generation!==mockVoiceGeneration||recordingSessionId!==state.sessionId)return;$('mock-answer').value=text;mockVoiceNote('实时转写草稿 · 停止后确认最终文本')})};mockVoiceRecorder.onstop=()=>{if(generation===mockVoiceGeneration)mockVoiceRecorder=null;};mockVoiceRecorder.start(1000);$('mock-voice').disabled=true;$('mock-stop-voice').disabled=false;mockVoiceNote('正在录音并显示实时转写草稿…');}catch(error){if(generation!==mockVoiceGeneration)return;if(mockVoiceStream){mockVoiceStream.getTracks().forEach(t=>t.stop());mockVoiceStream=null;}mockVoiceSessionId='';toast(`无法使用麦克风：${error.message}`,true);}};
@@ -753,8 +793,9 @@ $('transcript-form').onsubmit=e=>{e.preventDefault();submitTranscript();};
 $('import-transcript').onclick=submitTranscript;
 
 function startSessionRecorder() {
-  if (sessionRecorder || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    showSessionRecordingError('此浏览器不支持全场录音');
+  const unavailable = microphoneAvailabilityMessage();
+  if (sessionRecorder || unavailable) {
+    showSessionRecordingError(unavailable || '全场录音已在运行');
     return;
   }
   navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {

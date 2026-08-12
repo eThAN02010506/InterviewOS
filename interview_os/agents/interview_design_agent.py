@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
 from interview_os.core.state import InterviewBlueprint, InterviewState
+from interview_os.tools.web_search import format_employer_business_context
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,8 @@ class InterviewDesignAgent(Agent):
             else "Confirmed candidate facts: none provided. Design generic rounds from the "
             "job competencies; do not leave rounds empty.\n"
         )
-        employer_block = (
-            f"\n{state.past_employer_block}" if state.past_employer_block else ""
-        )
+        employer_context = format_employer_business_context(state.past_employer_sources)
+        employer_block = f"\n{employer_context}" if employer_context else ""
         context = (
             f"Position: {state.job.title}\n"
             f"Job review with explicit/inferred labels: {state.job_review.model_dump_json()}\n"
@@ -52,7 +52,9 @@ class InterviewDesignAgent(Agent):
             "Produce at least one round with questions. If no candidate resume is available, "
             "design rounds from the posted requirements and competencies alone. "
             "设计问题时按以下优先级取舍候选人经历：先问最近的雇主；其次知名/规模大的公司；"
-            "久远的小公司经历可少问或不问。"
+            "久远的小公司经历可少问或不问。过往雇主公开资料只说明公司业务背景；"
+            "只能从候选人已确认的简历事实提出经历问题，不得把雇主当前职位、招聘要求、"
+            "其他员工职责或公司能力归因给候选人。"
         )
         try:
             state.blueprint = await self.think_structured(

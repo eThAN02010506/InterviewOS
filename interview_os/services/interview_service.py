@@ -97,7 +97,9 @@ from interview_os.tools.asr import ASRClient, ASRError
 from interview_os.tools.tts import TTSClient, TTSError
 from interview_os.tools.web_search import (
     SearchProvider,
+    filter_employer_business_results,
     filter_entity_results,
+    format_employer_business_context,
     format_search_results,
     merge_search_results,
 )
@@ -1978,27 +1980,33 @@ class InterviewService:
         employers = self._recent_employers(state, limit=2)
         collected: list[dict[str, Any]] = []
         for company in employers:
-            collected.extend(
-                await self._search_employer(company, corroborating_entity=state.interviewer.name)
-            )
-        if not collected:
+            collected.extend(await self._search_employer(company))
+        existing = filter_employer_business_results(
+            state.past_employer_sources, entity=""
+        )
+        merged = merge_search_results(existing, collected, limit=8)
+        if not merged:
+            state.past_employer_sources = []
+            state.past_employer_block = ""
             return ""
-        merged = merge_search_results(state.past_employer_sources, collected, limit=8)
         state.past_employer_sources = merged
-        return "候选人过往雇主调研：\n" + format_search_results(merged)
+        return format_employer_business_context(merged)
 
-    async def _search_employer(
-        self, company: str, *, corroborating_entity: str = ""
-    ) -> list[dict[str, Any]]:
-        """Search one past employer; returns raw source dicts (empty on failure)."""
+    async def _search_employer(self, company: str) -> list[dict[str, Any]]:
+        """Find business-background sources for one past employer.
+
+        This path deliberately never queries current jobs or recruiting pages:
+        those describe the employer's present vacancies, not the candidate's
+        historical responsibilities.
+        """
         provider = self.search_provider
         if provider is None:
             return []
         queries = [
-            f'"{company}" official product engineering technology company culture hiring news',
-            f'"{company}" 公司 官网 产品 招聘',
+            f'"{company}" 官方网站 公司简介 主要业务 产品 服务',
+            f'"{company}" official website about products services business',
         ]
-        results: list[Any] = []
+        results: list[dict[str, Any]] = []
         for query in queries:
             try:
                 batch = await provider.search(query, limit=5, search_depth="basic")
@@ -2012,12 +2020,17 @@ class InterviewService:
                 else:
                     batch_dicts.append(item.model_dump(mode="json"))
             filtered = filter_entity_results(
-                batch_dicts, entity=company, corroborating_entity=corroborating_entity
+                batch_dicts, entity=company
             )
             if filtered:
                 results = merge_search_results(results, filtered, limit=8)
-                break
-        return results
+                if any(
+                    item.get("is_official")
+                    or item.get("source_quality") == "official"
+                    for item in filtered
+                ):
+                    break
+        return filter_employer_business_results(results, entity=company)
 
     async def research_recent_employers(self, session_id: str) -> InterviewState:
         """Search the candidate's recent/important past employers and persist sources.
@@ -2035,6 +2048,9 @@ class InterviewService:
                 return state
             employers = self._recent_employers(state, limit=2)
             collected: list[dict[str, Any]] = []
+            state.past_employer_sources = filter_employer_business_results(
+                state.past_employer_sources, entity=""
+            )
             for company in employers:
                 if any(
                     company.lower() in str(source.get("title", "")).lower()
@@ -2042,15 +2058,16 @@ class InterviewService:
                     for source in state.past_employer_sources
                 ):
                     continue  # already researched by the inline workflow path
-                sources = await self._search_employer(
-                    company, corroborating_entity=state.interviewer.name
-                )
+                sources = await self._search_employer(company)
                 collected.extend(sources)
             state.past_employer_sources = merge_search_results(
                 state.past_employer_sources, collected, limit=8
             )
             state.past_employer_research_status = (
                 "completed" if state.past_employer_sources else "no_results"
+            )
+            state.past_employer_block = format_employer_business_context(
+                state.past_employer_sources
             )
             self._sync_intelligence(state)
             await self._persist(session_id, state)

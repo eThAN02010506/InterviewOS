@@ -520,7 +520,15 @@ async def test_strategy_prompt_contains_recency_instruction_and_employer_block()
     agent = InterviewStrategyAgent(llm_client=llm)
     state = InterviewState()
     state.candidate.raw_resume_text = "2018-07 to ZUORA 2022-12\nSenior Recruiting Manager"
-    state.past_employer_block = "候选人过往雇主调研：\nZuora is a subscription platform."
+    state.past_employer_sources = [
+        {
+            "title": "About Zuora",
+            "url": "https://zuora.com/about",
+            "snippet": "Zuora is a subscription platform.",
+            "is_official": True,
+            "source_quality": "official",
+        }
+    ]
     await agent.execute(state)
     # Recency/size weighting instruction is present.
     assert "最近的雇主" in llm.last_prompt
@@ -528,6 +536,7 @@ async def test_strategy_prompt_contains_recency_instruction_and_employer_block()
     # The full resume (recent employer) and the past-employer research block are present.
     assert "ZUORA" in llm.last_prompt
     assert "Zuora is a subscription platform" in llm.last_prompt
+    assert "不得据此推断候选人的职责、技能、业绩" in llm.last_prompt
 
 
 @pytest.mark.asyncio

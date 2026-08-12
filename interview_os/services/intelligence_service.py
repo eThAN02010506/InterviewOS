@@ -16,6 +16,7 @@ from interview_os.core.state import (
     RequirementOrigin,
     ResolutionStatus,
 )
+from interview_os.tools.web_search import filter_employer_business_results
 
 
 def review_job_description(raw_text: str, inferred: list[str]) -> JobDescriptionReview:
@@ -119,7 +120,11 @@ def build_fact_cards(state: InterviewState) -> None:
         ("interviewer", state.interviewer.name, state.interviewer.public_expressions),
     ]
     if state.past_employer_sources:
-        batches.append(("past_employer", "候选人过往雇主", state.past_employer_sources))
+        employer_sources = filter_employer_business_results(
+            state.past_employer_sources, entity=""
+        )
+        if employer_sources:
+            batches.append(("past_employer", "过往雇主业务背景", employer_sources))
     for category, subject, sources in batches:
         for source in sources:
             url = str(source.get("url", "")).strip()
@@ -171,9 +176,18 @@ def build_fact_cards(state: InterviewState) -> None:
                 source_filter_reason=filter_reason,
                 cache_hit=bool(source.get("cache_hit")),
                 note=(
-                    "来自公开来源摘要，建议打开原文复核"
+                    (
+                        "仅描述过往雇主业务，不代表候选人职责或能力；建议打开原文复核"
+                        if category == "past_employer"
+                        else "来自公开来源摘要，建议打开原文复核"
+                    )
                     if not verified
-                    else f"{_source_quality_label(quality)}来源"
+                    else (
+                        f"{_source_quality_label(quality)}来源；仅作公司业务背景，"
+                        "不作为候选人经历证据"
+                        if category == "past_employer"
+                        else f"{_source_quality_label(quality)}来源"
+                    )
                 ),
             )
             indexed[key] = card

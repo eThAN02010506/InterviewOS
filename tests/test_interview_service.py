@@ -54,7 +54,11 @@ class FakeSearchProvider(SearchProvider):
 class EmployerSearchProvider(SearchProvider):
     """Returns a ZUORA source for employer queries, generic otherwise."""
 
+    def __init__(self):
+        self.queries: list[str] = []
+
     async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
+        self.queries.append(query)
         if "zuora" in query.lower():
             return [
                 SearchResult(
@@ -829,7 +833,8 @@ async def test_research_recent_employers_populates_sources_and_fact_cards(tmp_pa
 
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'employer.db'}")
     await storage.init_db()
-    service = InterviewService(storage, WorkflowMockLLM(), EmployerSearchProvider())
+    provider = EmployerSearchProvider()
+    service = InterviewService(storage, WorkflowMockLLM(), provider)
     session_id, state = await service.create_session()
     # Provide a recent employer via structured experience.
     state.candidate.raw_resume_text = (
@@ -853,6 +858,8 @@ async def test_research_recent_employers_populates_sources_and_fact_cards(tmp_pa
     assert result.past_employer_research_status == "completed"
     build_fact_cards(result)
     assert any(card.category == "past_employer" for card in result.fact_cards)
+    assert all("招聘" not in query and "hiring" not in query.lower() for query in provider.queries)
+    assert "不是候选人经历证据" in result.past_employer_block
     await storage.close()
 
 
