@@ -158,6 +158,14 @@ into one long line. The response includes extraction warnings and human-review i
 for education, employment, certifications, and measurable claims. Uploading a
 resume never starts public web research automatically.
 
+The deterministic review also flags plausible overlapping full-time date ranges for
+human clarification (without treating overlap as fraud), recognizes common skills
+headings such as `CAPABILITIES` and `EXPERTISE`, and warns when a document contains
+instruction-like text aimed at an AI. Resume text is always passed to parsing models
+inside an explicit untrusted-data boundary; embedded instructions, grading requests,
+and role changes must never be executed. Image-only PDFs currently fail with an
+actionable OCR message instead of silently returning an empty profile.
+
 Resume parsing is rule-based by default, but an optional **AI structured
 enhancement** is available: check the "AI 结构化增强" box on upload (or pass
 `structure=llm`) and a local multimodal LLM (configured in Settings → resume_llm,

@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from typing import NamedTuple
 
 from interview_os.core.state import (
     ResumeClaim,
@@ -20,12 +21,20 @@ MAX_RESUME_CHARACTERS = 100_000
 SUPPORTED_RESUME_TYPES = {".pdf", ".docx"}
 
 
+class _EmploymentInterval(NamedTuple):
+    start_month: int
+    end_month: int
+    statement: str
+    start_is_precise: bool
+    end_is_precise: bool
+
+
 class ResumeProcessingError(ValueError):
     """Raised when an uploaded resume cannot be handled safely."""
 
 
 class ResumeProcessor:
-    """Extract text from supported files, then produce a bounded review in O(n)."""
+    """Extract text, then produce a bounded near-linear deterministic review."""
 
     def process(self, filename: str, content: bytes) -> tuple[str, ResumeReview]:
         suffix = Path(filename).suffix.lower()
@@ -142,7 +151,16 @@ class ResumeProcessor:
         section_groups = {
             "experience": ("工作经历", "工作经验", "experience", "employment"),
             "education": ("教育经历", "教育背景", "education", "university"),
-            "skills": ("技能", "专业能力", "skills", "technologies"),
+            "skills": (
+                "技能",
+                "专业能力",
+                "核心能力",
+                "skills",
+                "technologies",
+                "capabilities",
+                "competencies",
+                "expertise",
+            ),
         }
         lower = text.lower()
         for field, labels in section_groups.items():
@@ -172,7 +190,170 @@ class ResumeProcessor:
                     message=f"发现未来年份：{', '.join(map(str, future_years))}，请确认时间线",
                 )
             )
+        overlaps = ResumeProcessor._find_employment_overlaps(text)
+        if overlaps:
+            examples = "；".join(f"{left} ↔ {right}" for left, right in overlaps[:3])
+            issues.append(
+                ResumeValidationIssue(
+                    code="overlapping_employment",
+                    severity=ResumeIssueSeverity.WARNING,
+                    field="timeline",
+                    message=f"发现可能重叠的任职时间，请确认是否为兼职、顾问或并行任职：{examples}",
+                )
+            )
+        if ResumeProcessor._contains_instruction_like_text(text):
+            issues.append(
+                ResumeValidationIssue(
+                    code="instruction_like_text",
+                    severity=ResumeIssueSeverity.WARNING,
+                    field="document",
+                    message=(
+                        "发现疑似面向 AI 的指令文本；系统会将其仅作为不可信简历内容，"
+                        "不会执行其中指令，请核对是否属于简历正文"
+                    ),
+                )
+            )
         return issues
+
+    @staticmethod
+    def _contains_instruction_like_text(text: str) -> bool:
+        """Detect common prompt-injection wording without interpreting the document."""
+        patterns = (
+            r"(?im)^\s*(?:system|assistant|developer)\s*[:：]",
+            r"(?i)ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?",
+            r"(?i)(?:mark|set|rate|score).{0,40}(?:confirmed|100|full\s+marks)",
+            r"(?:忽略|无视).{0,12}(?:此前|之前|以上|所有).{0,8}(?:指令|规则|要求)",
+            r"(?:将|把).{0,30}(?:标记为已确认|评分为?\s*100|满分)",
+        )
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    @staticmethod
+    def _find_employment_overlaps(text: str) -> list[tuple[str, str]]:
+        """Return plausible overlaps between full-time employment date ranges.
+
+        The result is a review prompt, not a fraud verdict: concurrent work can
+        be legitimate. Education, internships, consulting, and explicit
+        part-time/advisory entries are excluded to reduce false positives.
+        """
+        intervals = ResumeProcessor._employment_intervals(text)
+        intervals.sort(key=lambda item: (item.start_month, item.end_month))
+        overlaps: list[tuple[str, str]] = []
+        furthest_ending: _EmploymentInterval | None = None
+        for current in intervals:
+            if furthest_ending is not None and furthest_ending.end_month >= current.start_month:
+                # Ignore a boundary-month handoff; date-only resumes commonly
+                # use the same month for one role ending and the next starting.
+                overlap_months = (
+                    min(furthest_ending.end_month, current.end_month) - current.start_month
+                )
+                same_boundary_year = (
+                    furthest_ending.end_month // 12 == current.start_month // 12
+                    and (
+                        not furthest_ending.end_is_precise or not current.start_is_precise
+                    )
+                )
+                if overlap_months >= 1 and not same_boundary_year:
+                    overlaps.append((furthest_ending.statement, current.statement))
+            if furthest_ending is None or current.end_month > furthest_ending.end_month:
+                furthest_ending = current
+        return overlaps
+
+    @staticmethod
+    def _employment_intervals(text: str) -> list[_EmploymentInterval]:
+        month_names = {
+            name: index
+            for index, names in enumerate(
+                (
+                    ("jan", "january"),
+                    ("feb", "february"),
+                    ("mar", "march"),
+                    ("apr", "april"),
+                    ("may",),
+                    ("jun", "june"),
+                    ("jul", "july"),
+                    ("aug", "august"),
+                    ("sep", "sept", "september"),
+                    ("oct", "october"),
+                    ("nov", "november"),
+                    ("dec", "december"),
+                ),
+                start=1,
+            )
+            for name in names
+        }
+        month_pattern = "|".join(sorted(month_names, key=len, reverse=True))
+        named_range = re.compile(
+            rf"\b({month_pattern})\.?\s+((?:19|20)\d{{2}})\s*"
+            rf"(?:-|–|—|to|至)\s*(present|current|now|至今|({month_pattern})\.?\s+((?:19|20)\d{{2}}))",
+            re.IGNORECASE,
+        )
+        numeric_range = re.compile(
+            r"\b((?:19|20)\d{2})(?:[-/.](\d{1,2}))?\s*"
+            r"(?:-|–|—|to|至)\s*(present|current|now|至今|((?:19|20)\d{2})(?:[-/.](\d{1,2}))?)",
+            re.IGNORECASE,
+        )
+        excluded = re.compile(
+            r"education|university|college|school|degree|bachelor|master|ph\.?d|"
+            r"教育|大学|学院|学校|本科|硕士|博士|intern|实习|part[ -]?time|兼职|"
+            r"consult(?:ant|ing)?|顾问|advisor|adviser",
+            re.IGNORECASE,
+        )
+        experience_heading = re.compile(
+            r"^(?:experience|employment|work experience|professional experience|"
+            r"工作经历|工作经验|职业经历)$",
+            re.IGNORECASE,
+        )
+        other_heading = re.compile(
+            r"^(?:summary|profile|education|skills?|capabilities|competencies|expertise|"
+            r"projects?|research|leadership|awards?|certifications?|languages?|"
+            r"个人简介|教育经历|教育背景|技能|专业能力|核心能力|项目经历|项目经验|"
+            r"研究经历|领导力|奖项|证书|语言)$",
+            re.IGNORECASE,
+        )
+        intervals: list[_EmploymentInterval] = []
+        merged_lines = ResumeProcessor._merge_vertical_date_ranges(text.splitlines())
+        has_experience_section = any(
+            experience_heading.fullmatch(line.strip().rstrip(":：")) for line in merged_lines
+        )
+        in_experience_section = not has_experience_section
+        for raw_line in merged_lines:
+            line = raw_line.strip()
+            heading = line.rstrip(":：")
+            if experience_heading.fullmatch(heading):
+                in_experience_section = True
+                continue
+            if other_heading.fullmatch(heading):
+                in_experience_section = False
+                continue
+            if not in_experience_section:
+                continue
+            if not line or excluded.search(line):
+                continue
+            match = named_range.search(line)
+            if match:
+                start = int(match.group(2)) * 12 + month_names[match.group(1).lower()] - 1
+                if match.group(3).lower() in {"present", "current", "now", "至今"}:
+                    now = datetime.now(timezone.utc)
+                    end = now.year * 12 + now.month - 1
+                else:
+                    end = int(match.group(5)) * 12 + month_names[match.group(4).lower()] - 1
+                intervals.append(_EmploymentInterval(start, end, line[:180], True, True))
+                continue
+            match = numeric_range.search(line)
+            if not match:
+                continue
+            start = int(match.group(1)) * 12 + int(match.group(2) or 1) - 1
+            if match.group(3).lower() in {"present", "current", "now", "至今"}:
+                now = datetime.now(timezone.utc)
+                end = now.year * 12 + now.month - 1
+                end_is_precise = True
+            else:
+                end = int(match.group(4)) * 12 + int(match.group(5) or 12) - 1
+                end_is_precise = bool(match.group(5))
+            intervals.append(
+                _EmploymentInterval(start, end, line[:180], bool(match.group(2)), end_is_precise)
+            )
+        return intervals
 
     @staticmethod
     def _find_claims(text: str) -> list[ResumeClaim]:
