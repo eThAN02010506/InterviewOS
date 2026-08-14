@@ -41,10 +41,22 @@ class LiveInterviewAgent(Agent):
             if item.sequence > state.live_interview.summarized_until_sequence
             and item.speaker != TranscriptSpeaker.UNKNOWN
         ][-LIVE_RECENT_SEGMENT_WINDOW:]
+        latest_candidate = next(
+            (
+                segment
+                for segment in reversed(recent_segments)
+                if segment.speaker == TranscriptSpeaker.CANDIDATE
+                and segment.stable
+                and segment.confirmed
+            ),
+            None,
+        )
         transcript = "\n".join(
             f"[{segment.speaker.value}] {segment.text}"
             for segment in recent_segments
-            if segment.stable and segment.confirmed
+            if segment.stable
+            and segment.confirmed
+            and (latest_candidate is None or segment.id != latest_candidate.id)
         )
         used_question_ids = set(state.live_interview.used_question_ids)
         last_source_id = ""
@@ -93,11 +105,17 @@ class LiveInterviewAgent(Agent):
         rolling_summary = state.live_interview.rolling_summary
         if len(rolling_summary) > PLANNER_SUMMARY_CHAR_LIMIT:
             rolling_summary = "…\n" + rolling_summary[-PLANNER_SUMMARY_CHAR_LIMIT:]
+        latest_answer = latest_candidate.text if latest_candidate is not None else "None."
+        if len(latest_answer) > PLANNER_SUMMARY_CHAR_LIMIT:
+            head = int(PLANNER_SUMMARY_CHAR_LIMIT * 0.6)
+            tail = PLANNER_SUMMARY_CHAR_LIMIT - head - 2
+            latest_answer = f"{latest_answer[:head]}…{latest_answer[-tail:]}"
         prompt = (
             "Return exactly one JSON object matching the QuestionSuggestion schema. "
             "Prepare a question for the interviewer; do not answer it and do not address the "
-            "candidate directly outside suggested_question. Prefer one evidence-seeking follow-up "
-            "when the latest candidate answer has a material gap. Otherwise choose an unused main "
+            "candidate directly outside suggested_question. The explicit latest candidate answer "
+            "is the only allowed topic for a follow-up; older transcript is context only. Prefer one "
+            "evidence-seeking follow-up when that latest answer has a material gap. Otherwise choose an unused main "
             "question from the blueprint. If the answer is incomplete, use question_type=clarify. "
             "Never infer negative evidence from silence. Keep alternatives to at most two. "
             f"Additional instruction: {instruction or 'Prepare the next question.'}"
@@ -112,7 +130,9 @@ class LiveInterviewAgent(Agent):
             f"Coverage guidance:\n{coverage_guidance}\n"
             f"Rolling transcript summary:\n"
             f"{rolling_summary or 'No older transcript summary yet.'}\n"
-            f"Recent confirmed transcript:\n{transcript}"
+            f"Earlier confirmed transcript (context only):\n{transcript or 'None.'}\n"
+            "LATEST CANDIDATE ANSWER (follow-up must target this text only):\n"
+            f"{latest_answer}"
         )
         try:
             suggestion = await self.think_structured(

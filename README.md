@@ -300,14 +300,26 @@ being applied to the newly selected candidate.
 
 Every submitted answer also gets auditable spoken-answer analysis. The original
 transcript remains evidence while a separate cleaned semantic draft removes
-non-semantic fillers. The `evidence-v2` bilingual, cross-domain rubric classifies the
-requested answer type,
-extracts ordered steps with source excerpts, and checks coverage of the case,
-method, execution, personal-decision, and result requirements. A downward-only
+non-semantic fillers. The `evidence-v3` bilingual, cross-domain rubric creates one
+question contract shared by pre-answer requirements, teaching examples, scoring,
+and feedback. It classifies the requested answer type, extracts ordered steps with
+source excerpts, checks direct topic relevance plus case, method, execution,
+personal-decision, metric/trade-off, and result requirements, and distinguishes a
+forecast, baseline, target, and observed post-action result. A polished answer about
+another topic is capped even when it contains plausible metrics. Conversely, a
+concise follow-up that fully explains the requested metrics, statistical window,
+threshold, and triggered action is not forced into a new STAR story. A downward-only
 second pass caps model scores that exceed observable evidence and exposes every
-adjustment plus the pre-calibration score in the UI. Input modality is explicit:
+adjustment plus the pre-calibration score in the UI. Grounded strengths and coaching
+are regenerated from the same evidence excerpts, so the UI cannot ask for an option,
+decision, or result it already recognized. Input modality is explicit:
 typed answers are not penalized for conversational transition words, while ASR/live
 ASR answers may receive a structure cap only for strong fillers or repeated repairs.
+Generated teaching examples are checked against this same contract and replaced by
+a domain-specific deterministic example when they omit a required element. Live
+question planning separates the latest confirmed candidate answer from older context;
+follow-ups may target only that explicit block, which retains both its beginning and
+result-bearing tail when context must be shortened.
 
 The current question can be read aloud through the configurable OpenAI-compatible
 TTS client (`8002` / Qwen3-TTS by default). The server only accepts the current
@@ -706,8 +718,12 @@ evidence-locked model narrative, and verifies every persisted gap maps to a miss
 question requirement. The live script waits for asynchronous scoring before evaluation and
 requires a model narrative. On 2026-08-14, the configured 8001 model completed the candidate
 three-answer path in 92.853s and the interviewer path in 23.135s (8.026s live actions, 5.330s
-scoring wait, 4.509s final evaluation). The complete automated gate passed 295 tests plus
-Ruff, mypy, JavaScript syntax, and diff checks.
+scoring wait, 4.509s final evaluation). A 2026-08-14 `evidence-v3` comparison against the
+configured 8001 model scored an unrelated but polished answer at 35, a directly relevant
+metric/threshold follow-up at 77.5, and a complete capacity-planning case at 80; the last
+case correctly bound the observed result to “实际峰值 / P99 / 错误率” rather than its sixfold
+forecast. The complete automated gate now covers 307 tests plus Ruff, mypy, JavaScript
+syntax, and diff checks.
 
 The full audio loop (the interviewer's primary input path) was verified against the
 real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s

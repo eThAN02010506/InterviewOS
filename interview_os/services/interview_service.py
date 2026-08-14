@@ -1330,7 +1330,6 @@ class InterviewService:
         dropped lowest-priority first rather than truncating the tail (which
         would lose the anchor).
         """
-        parts: list[str] = []
         competencies = "、".join(state.job.competencies) or state.job.title or "目标岗位"
         covered = "、".join(
             dict.fromkeys(item.competency for item in state.evidence if item.competency.strip())
@@ -1338,8 +1337,6 @@ class InterviewService:
         anchor = f"岗位能力：{competencies}"
         if covered:
             anchor += f"；已覆盖能力：{covered}"
-        parts.append(anchor)
-
         stable_segments = [
             item
             for item in state.live_interview.segments
@@ -1347,17 +1344,31 @@ class InterviewService:
             and item.confirmed
             and item.speaker != TranscriptSpeaker.UNKNOWN
         ][-LIVE_RECENT_SEGMENT_WINDOW:]
-        if stable_segments:
+        latest_candidate = next(
+            (
+                item
+                for item in reversed(stable_segments)
+                if item.speaker == TranscriptSpeaker.CANDIDATE
+            ),
+            None,
+        )
+        optional_parts: list[str] = []
+        history_segments = [
+            item
+            for item in stable_segments
+            if latest_candidate is None or item.id != latest_candidate.id
+        ]
+        if history_segments:
             speaker_labels = {
                 TranscriptSpeaker.INTERVIEWER: "面试官",
                 TranscriptSpeaker.CANDIDATE: "候选人",
                 TranscriptSpeaker.UNKNOWN: "待确认",
             }
-            parts.append(
-                "最近对话："
+            optional_parts.append(
+                "较早对话（只用于消歧，不得作为本轮追问主题）："
                 + "；".join(
                     f"{speaker_labels.get(item.speaker, item.speaker.value)}：{item.text}"
-                    for item in stable_segments
+                    for item in history_segments
                 )
             )
 
@@ -1367,12 +1378,28 @@ class InterviewService:
             if item.source == EvidenceSource.LIVE_INTERVIEW
         ][-5:]
         if live_evidence:
-            parts.append("已确认证据：" + "；".join(live_evidence))
+            optional_parts.append("已确认证据：" + "；".join(live_evidence))
 
-        # Drop lowest-priority blocks first (evidence, then transcript) until
-        # under the cap. The competency anchor is always kept.
-        while len("\n".join(parts)) > OMNI_CONTEXT_CHAR_LIMIT and len(parts) > 1:
-            parts.pop()
+        latest_block = (
+            "本轮必须只围绕下方最新候选人回答提出直接追问；不得改问较早回答：\n"
+            f"最新候选人回答：{latest_candidate.text}"
+            if latest_candidate is not None
+            else "本轮尚无已确认的候选人回答。"
+        )
+        parts = [anchor, *optional_parts, latest_block]
+
+        # Drop lowest-priority optional blocks first. The competency anchor and
+        # explicit latest-answer block are never displaced by older conversation.
+        while len("\n".join(parts)) > OMNI_CONTEXT_CHAR_LIMIT and optional_parts:
+            optional_parts.pop()
+            parts = [anchor, *optional_parts, latest_block]
+        if len("\n".join(parts)) > OMNI_CONTEXT_CHAR_LIMIT:
+            available = max(200, OMNI_CONTEXT_CHAR_LIMIT - len(anchor) - 100)
+            if len(latest_block) > available:
+                head = max(80, int(available * 0.6))
+                tail = max(80, available - head - 2)
+                latest_block = f"{latest_block[:head]}…{latest_block[-tail:]}"
+            parts = [anchor, latest_block]
         return "\n".join(parts)
 
     async def _inject_audio_direct_suggestion(
@@ -1426,6 +1453,7 @@ class InterviewService:
         if self.llm_client is not None and hasattr(self.llm_client, "chat_stream"):
             prompt = (
                 "你是面试官助手。根据面试上下文，给出一个聚焦证据缺口的下一问追问。"
+                "必须直接追问上下文中明确标记的最新候选人回答，不得重新追问较早回答。"
                 "直接输出问题本身，中文，简洁，不超过两句话。不要输出 JSON。\n\n"
                 f"面试上下文：\n{context}"
             )

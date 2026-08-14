@@ -1,8 +1,11 @@
 """Evidence-grounded spoken-answer analysis and score calibration tests."""
 
+from interview_os.agents.coach_agent import CoachAgent
+from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.spoken_answer import (
     analyze_spoken_answer,
     calibrate_evaluation,
+    grounded_missing_signals,
 )
 from interview_os.core.state import AnswerEvaluation
 
@@ -165,6 +168,21 @@ def test_generic_behavioral_question_accepts_context_named_in_answer():
     assert "进入新市场" in coverage["明确具体公司/业务场景"].evidence
 
 
+def test_generic_future_process_does_not_masquerade_as_a_past_case():
+    analysis = analyze_spoken_answer(
+        "请说说你在 Zuora 期间是如何制定并执行高管招聘策略的？",
+        (
+            "我会先理解业务战略，再定义人才画像，然后定点寻访。"
+            "我会设计评估流程，并按项目制在每个阶段复盘和调整标准。"
+        ),
+    )
+    coverage = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert coverage["提供一个真实案例"] == "missing"
+    assert coverage["明确具体公司/业务场景"] == "missing"
+    assert coverage["给出结果与验证方式"] == "missing"
+
+
 def test_typed_transition_words_do_not_trigger_asr_structure_penalty():
     evaluation = AnswerEvaluation(
         content=0.8,
@@ -194,4 +212,117 @@ def test_api_term_does_not_fabricate_company_context():
     statuses = {item.requirement: item.status for item in analysis.question_coverage}
 
     assert "说明具体组织、项目或业务场景" not in statuses
-    assert analysis.rubric_version == "evidence-v2"
+    assert analysis.rubric_version == "evidence-v3"
+
+
+def test_unrelated_polished_answer_is_capped_for_tradeoff_metric_followup():
+    question = "你在做权衡时考虑了哪些指标？"
+    answer = (
+        "我长期辅导团队成员，每月做一对一沟通，并帮助两位同事晋升。"
+        "后来团队满意度提升，协作氛围也更好了。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    evaluation = AnswerEvaluation(
+        content=0.8,
+        technical_depth=0.75,
+        structure=0.8,
+        impact=0.7,
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert statuses["直接回应题目核心"] == "missing"
+    assert statuses["说明指标、口径与决策关系"] != "covered"
+    assert evaluation.content <= 0.25
+    assert evaluation.technical_depth <= 0.5
+
+
+def test_relevant_tradeoff_answer_covers_metrics_and_decision_relationship():
+    question = "你比较了哪些方案，做权衡时考虑了哪些指标，最终如何选择？"
+    answer = (
+        "我比较了全量预扩容和 HPA 自动扩容两个方案，重点看 P99、CPU 和错误率。"
+        "考虑数据库扩容慢和成本约束，我决定数据库预扩容、无状态服务使用 HPA；"
+        "当 P99 超过 300ms 或错误率超过 1% 时回滚。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert statuses["直接回应题目核心"] == "covered"
+    assert statuses["说明备选方案、权衡标准与最终选择"] == "covered"
+    assert statuses["说明指标、口径与决策关系"] == "covered"
+
+
+def test_metric_led_followup_does_not_invent_an_unasked_alternative_requirement():
+    question = "你在做权衡时考虑了哪些指标？"
+    answer = (
+        "我看 P99、CPU 和错误率，并统一使用五分钟滚动窗口；"
+        "P99 超过 300ms 或错误率超过 1% 就触发回滚。"
+    )
+
+    analysis = analyze_spoken_answer(question, answer)
+    statuses = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert statuses["直接回应题目核心"] == "covered"
+    assert statuses["说明指标、口径与决策关系"] == "covered"
+    assert "说明备选方案、权衡标准与最终选择" not in statuses
+
+    evaluation = AnswerEvaluation(
+        content=0.8,
+        technical_depth=0.8,
+        structure=0.8,
+        impact=0.8,
+        spoken_analysis=analysis,
+    )
+    apply_specific_feedback(evaluation, answer, question=question, competency="技术权衡")
+    CoachAgent._build_grounded_improvement(evaluation, answer, question=question)
+    feedback = " ".join(evaluation.feedback)
+    assert "补充你亲自做出的关键决定" not in feedback
+    assert "补充已核验的结果" not in feedback
+    assert "阈值" in feedback
+    assert "不必补讲一套新的 STAR 案例" in evaluation.improved_answer
+    assert "[补充" not in evaluation.improved_answer
+
+
+def test_capacity_answer_extracts_actions_and_observed_result_not_forecast():
+    question = "请讲一次你如何完成容量规划，并说明选择依据和验证结果。"
+    answer = (
+        "去年大促前，业务预测峰值会增长六倍。我负责容量方案，先统一订单口径，"
+        "再按网关、订单、库存和数据库拆解链路，建立 QPS、P99、CPU 和积压基线。"
+        "我比较了全部预扩容和 HPA 两种方案，考虑数据库扩容耗时，决定数据库按预测峰值"
+        "的 1.3 倍预扩容，无状态服务使用 HPA。上线前我回放历史流量并做 1.3 倍峰值压测。"
+        "活动实际峰值为十一万 QPS，P99 为 240ms，错误率为 0.2%。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+
+    assert coverage["直接回应题目核心"].status == "covered"
+    assert coverage["说明方法或制定过程"].status == "covered"
+    assert coverage["说明执行动作"].status == "covered"
+    assert coverage["给出结果与验证方式"].status == "covered"
+    assert "活动实际峰值" in coverage["给出结果与验证方式"].evidence
+    assert "预测" not in coverage["给出结果与验证方式"].evidence
+    assert "0.2%" in analysis.cleaned_transcript
+
+
+def test_grounded_feedback_does_not_request_evidence_already_covered():
+    question = "你在做容量权衡时考虑了哪些指标，最终结果如何？"
+    answer = (
+        "我比较了预扩容和 HPA，依据 P99、CPU、成本和错误率决定数据库预扩容、"
+        "无状态服务使用 HPA。上线后实际峰值十一万 QPS，P99 为 240ms，错误率 0.2%。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    evaluation = AnswerEvaluation(
+        content=0.85,
+        technical_depth=0.85,
+        structure=0.8,
+        impact=0.85,
+        spoken_analysis=analysis,
+    )
+    evaluation.missing_signals = grounded_missing_signals(analysis)
+    calibrate_evaluation(evaluation, analysis)
+    apply_specific_feedback(evaluation, answer, question=question, competency="容量规划")
+
+    assert evaluation.observed_signals
+    assert not any("补充你亲自做出的关键决定" in item for item in evaluation.feedback)
+    assert not any("补充已核验的结果" in item for item in evaluation.feedback)

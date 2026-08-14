@@ -164,12 +164,16 @@ its result also passes a server-side prohibited-inference filter. Rejected or fa
 output degrades to deterministic coaching and is never an Evidence input.
 
 Answer scoring records its input modality (`typed`, `asr`, or `live_asr`) and uses the
-versioned `evidence-v2` bilingual, cross-domain deterministic analyzer around the model
-draft. The analyzer stores raw and cleaned text, semantic steps, question coverage, and
-pre-calibration scores. Calibration is downward-only; ambiguous typed transition words
-never trigger a speech penalty, while strong ASR fillers/repeated repairs may cap only
-the structure dimension. This metadata travels with the answer and makes every final
-score adjustment auditable.
+versioned `evidence-v3` bilingual, cross-domain deterministic analyzer around the model
+draft. One question contract drives pre-answer requirements, example validation,
+post-answer coverage, score calibration, and feedback. The analyzer stores raw and
+cleaned text, semantic steps, direct-topic relevance, question coverage, and
+pre-calibration scores. It separates forecasts/baselines/targets from observed outcomes
+and preserves adjacent metric clauses. Calibration is downward-only; unrelated answers
+receive relevance caps, while complete short follow-ups are not expanded into unasked
+STAR requirements. Ambiguous typed transition words never trigger a speech penalty,
+while strong ASR fillers/repeated repairs may cap only the structure dimension. This
+metadata travels with the answer and makes every final score adjustment auditable.
 
 Public title-only JD context is an internal, untrusted prompt input. It is filtered
 by title relevance, labeled inferred, and never replaces the user's stored raw JD.

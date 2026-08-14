@@ -9,6 +9,10 @@ from pydantic import ValidationError
 
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
+from interview_os.core.spoken_answer import analyze_spoken_answer
+from interview_os.core.spoken_answer import (
+    question_requirements as derive_question_requirements,
+)
 from interview_os.core.state import (
     MOCK_POOL_TARGET,
     MOCK_REFILL_BATCH,
@@ -115,90 +119,53 @@ class MockInterviewAgent(Agent):
     @staticmethod
     def question_requirements(question: str) -> list[str]:
         """Return explicit requirements the answer and feedback must share."""
-        folded = question.casefold()
-        behavioral = MockInterviewAgent._is_behavioral_question(question)
-        motivation = any(
-            word in folded for word in ("为什么", "动机", "why this", "why do you")
-        ) and not behavioral
-        if motivation:
-            return ["说明动机与匹配关系"]
-        if any(
-            word in folded for word in ("如果", "假如", "会怎么", "what would", "how would")
-        ):
-            return ["说明方法或制定过程", "给出结果与验证方式"]
-        if not behavioral and any(
-            word in folded
-            for word in (
-                "如何",
-                "怎么",
-                "流程",
-                "方法",
-                "设计",
-                "步骤",
-                "how do",
-                "approach",
-                "process",
-            )
-        ):
-            return ["说明方法或制定过程", "给出结果与验证方式"]
-        requirements = [
-            "提供一个真实案例",
-            "明确具体公司/业务场景",
-            "明确个人职责与关键决策",
-            "说明执行动作",
-        ]
-        if any(
-            word in folded
-            for word in (
-                "如何",
-                "怎么",
-                "方法",
-                "取舍",
-                "权衡",
-                "方案",
-                "选择",
-                "分歧",
-                "约束",
-                "关键决定",
-                "关键决策",
-            )
-        ):
-            requirements.append("说明方法或制定过程")
-        requirements.append("给出结果与验证方式")
-        return requirements
+        return derive_question_requirements(question)
 
     @staticmethod
-    def teaching_example(competency: str) -> str:
+    def teaching_example(competency: str, question: str = "") -> str:
         """Return a realistic but explicitly fictional behavior example."""
-        folded = (competency or "").casefold()
+        folded = f"{competency} {question}".casefold()
+        if any(word in folded for word in ("容量", "qps", "扩容", "吞吐")):
+            return (
+                "去年一次大型促销前，业务预计订单峰值会达到平日的六倍。我负责八人平台团队的容量方案，"
+                "先与业务统一订单量和转化率口径，再按网关、订单、库存、消息队列和数据库拆解链路，建立"
+                "QPS、P99、CPU、连接池和积压的单实例基线。我比较了全部预扩容与全部依赖自动扩容两种"
+                "方案；考虑数据库扩容耗时和热点迁移风险，最终决定数据库与消息队列按预测峰值的1.3倍"
+                "预扩容，无状态服务使用HPA。上线前回放历史流量并完成1.3倍峰值压测和单节点故障演练。"
+                "活动实际峰值为十一万QPS，P99保持在二百四十毫秒，错误率为0.2%，资源水位没有越过"
+                "回滚线。复盘后我用预测误差修正下一次容量模型。"
+            )
         if any(word in folded for word in ("招聘", "人才", "寻访", "组织")):
             return (
                 "在一家进入新市场的企业中，业务要求八周内组建首批核心团队，但岗位画像频繁变化。"
-                "示范候选人先与业务负责人把目标拆成必须具备、可培养和文化风险三类标准，随后用人才地图"
+                "我负责招聘项目，先与业务负责人把目标拆成必须具备、可培养和文化风险三类标准，随后用人才地图"
                 "比较三个来源渠道，并每周按有效候选人率、面试通过率和接受率复盘。发现技术负责人对经验"
-                "年限要求过高后，他用前两周漏斗数据推动团队改成能力证据面试。最终关键岗位按期完成，"
+                "年限要求过高后，我用前两周漏斗数据推动团队改成能力证据面试。最终关键岗位按期完成，"
                 "无效面试明显下降。复盘来看，最重要的不是扩大搜索量，而是尽早固定决策标准和调整机制。"
             )
-        if any(word in folded for word in ("架构", "技术", "系统", "性能", "工程")):
+        if any(
+            word in folded
+            for word in ("架构", "技术", "系统", "性能", "工程", "稳定性", "故障", "可观测")
+        ):
             return (
-                "在某交易系统流量增长后，接口高峰期延迟从两百毫秒升到一秒以上。示范候选人负责定位和"
-                "改造方案，他先用链路追踪确认瓶颈在同步写入，再比较扩容、异步队列和缓存三种方案。考虑"
-                "一致性与回滚成本后，他选择先拆出可重试队列并保留双写校验，分两批灰度上线。两周后高峰"
-                "延迟稳定在三百毫秒以内，错误率没有上升。复盘时他补充了容量预警，避免团队再次被动救火。"
+                "在某交易系统大促流量增长后，接口高峰期延迟从两百毫秒升到一秒以上。我负责定位和改造，"
+                "先用链路追踪确认瓶颈在同步写入，再比较扩容、异步队列和缓存三种方案。考虑一致性、成本"
+                "与回滚风险后，我决定先拆出可重试队列并保留双写校验，按5%、20%、50%分批灰度上线。"
+                "两周后高峰延迟稳定在三百毫秒以内，错误率没有上升。复盘时我补充了容量预警和回滚演练。"
             )
         if any(word in folded for word in ("领导", "团队", "协作", "沟通", "管理")):
             return (
-                "在一个跨部门项目中，产品、销售和交付团队对上线范围意见不一致。示范候选人承担推进责任，"
+                "在一个跨部门项目中，产品、销售和交付团队对上线范围意见不一致。我承担推进责任，"
                 "先把争议拆成客户价值、交付风险和不可逆成本三项，再分别访谈负责人并形成两套范围方案。"
-                "他建议先上线覆盖主要客户的最小范围，同时设立两周验证指标和回退条件。项目按期发布，首批"
-                "用户完成核心流程，未解决需求进入下一迭代。复盘中他认识到，推进不是替大家决定，而是让"
+                "我决定先上线覆盖主要客户的最小范围，同时设立两周验证指标和回退条件。项目按期发布，首批"
+                "用户完成核心流程，未解决需求进入下一迭代。复盘中我认识到，推进不是替大家决定，而是让"
                 "约束、责任人和决策门槛变得透明。"
             )
         return (
-            f"在某项需要体现“{competency or '岗位核心能力'}”的跨团队项目中，示范候选人先把模糊目标"
-            "转成三项可验证结果，并明确自己负责方案设计和推进落地。他比较了快速临时方案与长期改造方案，"
-            "结合时间、风险和可逆性选择分阶段实施；第一阶段用小范围试点验证假设，第二阶段根据数据调整"
-            "流程并扩大范围。项目最终达到约定目标，且没有突破风险边界。复盘时他指出，如果重来，会更早"
+            f"在某项需要体现“{competency or '岗位核心能力'}”的跨团队项目中，我先把模糊目标"
+            "转成三项可验证结果，并负责方案设计和推进落地。我比较了快速临时方案与长期改造方案，"
+            "结合时间、风险和可逆性决定分阶段实施；第一阶段用小范围试点验证假设，第二阶段根据数据调整"
+            "流程并扩大范围。项目最终在八周内达到约定目标，且没有突破风险边界。复盘时我认为，如果重来，会更早"
             "统一指标口径并邀请执行团队参与方案设计。"
         )
 
@@ -235,8 +202,11 @@ class MockInterviewAgent(Agent):
         # accepting arbitrary model labels here would make pre-answer guidance
         # disagree with post-answer feedback.
         question.question_requirements = cls.question_requirements(question.question)
-        if not question.example_answer:
-            question.example_answer = cls.teaching_example(question.competency)
+        example = question.example_answer or cls.teaching_example(question.competency, text)
+        analysis = analyze_spoken_answer(question.question, example)
+        if any(item.status == "missing" for item in analysis.question_coverage):
+            example = cls.teaching_example(question.competency, question.question)
+        question.example_answer = example
 
     def _expand_pool(self, state: InterviewState) -> None:
         """Build the initial question pool from likely_questions + competencies."""

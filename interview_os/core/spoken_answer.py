@@ -11,7 +11,7 @@ from interview_os.core.state import (
     SpokenAnswerAnalysis,
 )
 
-RUBRIC_VERSION = "evidence-v2"
+RUBRIC_VERSION = "evidence-v3"
 _STRONG_FILLERS = ("嗯", "啊", "呃")
 _OBSERVED_DISCOURSE_WORDS = ("就是", "那个", "然后")
 _SCORE_FIELDS = ("content", "technical_depth", "structure", "impact")
@@ -24,6 +24,20 @@ _METRIC_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_NAMED_METRIC_PATTERN = re.compile(
+    r"(?:p\d{2}|qps|rps|tps|cpu|内存|连接池|命中率|错误率|超时率|通过率|转化率|"
+    r"接受率|满意度|积压|吞吐|延迟|周期|成本|不一致率|完整率|安全余量)",
+    re.IGNORECASE,
+)
+_FOCUS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("容量规划", ("容量", "qps", "吞吐", "扩容", "资源水位", "安全余量")),
+    ("稳定性", ("稳定性", "故障", "错误率", "延迟", "可观测", "恢复", "降级")),
+    ("技术权衡", ("权衡", "取舍", "备选", "方案", "选择", "决策", "约束")),
+    ("指标", ("p95", "p99", "qps", "cpu", "指标", "错误率", "转化率", "吞吐")),
+    ("团队管理", ("团队", "辅导", "管理", "一对一", "晋升", "培养")),
+    ("招聘", ("招聘", "人才", "候选人", "岗位画像", "寻访", "面试")),
+    ("跨团队协作", ("跨团队", "跨部门", "协作", "利益相关者", "业务团队")),
+)
 
 # Rules are cross-domain and bilingual. Recruitment-specific concepts remain as
 # optional labels, while generic analysis/decision/action/result steps support
@@ -32,7 +46,24 @@ _STEP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("业务背景与目标", ("业务", "战略", "发展阶段", "背景", "目标", "context", "goal")),
     ("人才画像", ("画像", "胜任力", "文化契合", "软性能力", "硬性能力")),
     ("目标人才定位与寻访", ("目标人群", "人才地图", "寻访", "sourcing")),
-    ("分析与诊断", ("分析", "日志", "定位", "调研", "诊断", "analy", "diagnos", "investigat")),
+    (
+        "分析与诊断",
+        (
+            "分析",
+            "日志",
+            "定位",
+            "调研",
+            "诊断",
+            "拆成",
+            "拆解",
+            "采集",
+            "建立基线",
+            "统一口径",
+            "analy",
+            "diagnos",
+            "investigat",
+        ),
+    ),
     (
         "方案比较与决策",
         (
@@ -59,6 +90,20 @@ _STEP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "上线",
             "灰度",
             "回滚",
+            "扩容",
+            "预扩容",
+            "接入",
+            "增加",
+            "拆出",
+            "保留",
+            "补充",
+            "回放",
+            "压测",
+            "演练",
+            "观察",
+            "采集",
+            "统一",
+            "建立",
             "implemented",
             "launched",
             "rolled back",
@@ -73,7 +118,6 @@ _STEP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "提升",
             "降低",
             "缩短",
-            "增长",
             "达成",
             "达到",
             "完成",
@@ -125,7 +169,7 @@ def clean_spoken_transcript(text: str) -> tuple[str, dict[str, int], int]:
 def _sentences(text: str) -> list[str]:
     return [
         item.strip(" ,，。")
-        for item in re.split(r"[,.!?;，。！？；]", text)
+        for item in re.split(r"(?<!\d)[.!?](?!\d)|[,;，。！？；]", text)
         if item.strip(" ,，。")
     ]
 
@@ -157,7 +201,7 @@ def _answer_type(question: str) -> str:
         r"\b(?:why do you|motivat|why this|why are you)\b", folded
     ):
         return "motivation"
-    if re.search(r"如何|怎么|流程|方法|设计|步骤", question) or re.search(
+    if re.search(r"如何|怎么|流程|方法|设计|步骤|策略", question) or re.search(
         r"\b(?:how do you|how did you|approach|process|method|design)\b", folded
     ):
         return "methodology"
@@ -190,6 +234,158 @@ def _semantic_steps(answer: str) -> list[SemanticAnswerStep]:
     return [item for _, item in found[:8]]
 
 
+def _context_evidence(sentences: list[str], *, behavioral: bool) -> str:
+    if not behavioral:
+        return ""
+    return next(
+        (
+            sentence
+            for sentence in sentences
+            if re.search(
+                r"(?:当时|那次|背景是|场景是|去年|前年|大促|双十一|618|活动前|事故中|"
+                r"在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务)|"
+                r"在(?!每个|不同|各个).{2,36}(?:期间|阶段)|"
+                r"\b(?:during|at the time|in (?:that|a|the) (?:project|team|company))\b)",
+                sentence,
+                re.IGNORECASE,
+            )
+        ),
+        "",
+    )
+
+
+def _outcome_evidence(sentences: list[str]) -> str:
+    """Return an observed result, never a forecast, target, or baseline metric."""
+    forecast_terms = (
+        "预计",
+        "预测",
+        "目标",
+        "计划",
+        "基线",
+        "原来",
+        "此前",
+        "expected",
+        "forecast",
+        "target",
+    )
+    explicit_terms = (
+        "最终结果",
+        "最终",
+        "最后",
+        "结果是",
+        "上线后",
+        "实施后",
+        "两周后",
+        "活动实际",
+        "实际峰值",
+        "连续观察",
+        "as a result",
+        "after launch",
+    )
+    for index in range(len(sentences) - 1, -1, -1):
+        sentence = sentences[index]
+        folded = sentence.casefold()
+        if any(term.casefold() in folded for term in explicit_terms) and not any(
+            term.casefold() in folded for term in forecast_terms
+        ):
+            # ASR and our sentence splitter commonly separate a result lead-in
+            # from the following metric clauses at commas. Keep the short result
+            # window together so “实际峰值……，P99……，错误率……” remains auditable.
+            return "，".join(sentences[index : index + 3])[:200]
+    result_terms = (
+        "最终",
+        "最后",
+        "提升",
+        "降低",
+        "降到",
+        "下降",
+        "缩短",
+        "恢复到",
+        "恢复至",
+        "达成",
+        "达到",
+        "完成",
+        "交付",
+        "支持",
+        "improved",
+        "reduced",
+        "restored to",
+        "returned to",
+        "returned below",
+        "resolved",
+        "achieved",
+        "delivered",
+    )
+    # Answers usually state the observed outcome after explaining the baseline
+    # and target. Prefer the latest eligible sentence to avoid citing a
+    # pre-action metric as the result.
+    for sentence in reversed(sentences):
+        folded = sentence.casefold()
+        if any(term.casefold() in folded for term in result_terms) and not any(
+            term in sentence for term in forecast_terms
+        ):
+            return sentence[:200]
+    return ""
+
+
+def _asks_tradeoff_detail(question: str) -> bool:
+    """Whether the question asks for alternatives and a decision, not just metrics.
+
+    In a follow-up such as “做权衡时考虑了哪些指标”, “权衡” describes the
+    setting; the requested payload is the metrics and their decision link. It
+    should not silently expand into a second requirement to retell every option.
+    """
+    folded = question.casefold()
+    explicit_decision = bool(
+        re.search(r"取舍|比较|对比|备选|方案|最终选择|决定|决策|trade-?off|alternative", folded)
+    )
+    metric_led = bool(re.search(r"哪些指标|什么指标|指标.*(?:哪些|什么)|which metrics", folded))
+    return explicit_decision or ("权衡" in folded and not metric_led)
+
+
+def question_requirements(question: str) -> list[str]:
+    """Build the single post-answer contract shared by questions and scoring."""
+    folded = question.casefold()
+    question_type = _answer_type(question)
+    if question_type == "motivation":
+        return ["说明动机与匹配关系"]
+    requirements: list[str] = []
+    if any(any(term.casefold() in folded for term in terms) for _, terms in _FOCUS_GROUPS):
+        requirements.append("直接回应题目核心")
+    if question_type == "behavioral_example":
+        requirements.extend(
+            [
+                "提供一个真实案例",
+                "明确具体公司/业务场景",
+                "明确个人职责与关键决策",
+                "说明执行动作",
+            ]
+        )
+    asks_tradeoff = _asks_tradeoff_detail(question)
+    asks_metrics = bool(
+        re.search(r"指标|数据|口径|衡量|量化|qps|p\d{2}|cpu|metric|measure", folded)
+    )
+    asks_method = question_type in {"methodology", "situational"} or bool(
+        re.search(r"如何|怎么|制定|方法|过程|步骤|方案|策略|how|approach|process", folded)
+    )
+    if asks_tradeoff:
+        requirements.append("说明备选方案、权衡标准与最终选择")
+    if asks_metrics:
+        requirements.append("说明指标、口径与决策关系")
+    if asks_method or (question_type == "behavioral_example" and asks_tradeoff):
+        requirements.append("说明方法或制定过程")
+    if question_type in {"methodology", "situational"}:
+        requirements.append("说明执行动作")
+    asks_result = question_type == "behavioral_example" or bool(
+        re.search(r"结果|效果|成果|成效|影响|收益|验证|result|impact|outcome|verify", folded)
+    )
+    if question_type in {"methodology", "situational"}:
+        asks_result = True
+    if asks_result:
+        requirements.append("给出结果与验证方式")
+    return list(dict.fromkeys(requirements))
+
+
 def _coverage(
     question: str, answer: str, steps: list[SemanticAnswerStep]
 ) -> list[QuestionCoverageItem]:
@@ -203,30 +399,14 @@ def _coverage(
             )
         )
 
+    contract = question_requirements(question)
     question_type = _answer_type(question)
     folded_question = question.casefold()
     context_name = _explicit_context(question)
     context_evidence = context_name if context_name.casefold() in answer.casefold() else ""
-    if not context_evidence and question_type == "behavioral_example":
-        context_evidence = next(
-            (
-                sentence
-                for sentence in sentences
-                if re.search(
-                    r"(?:当时|那次|背景是|场景是|在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务|阶段|期间)|"
-                    r"\b(?:during|at the time|in (?:that|a|the) (?:project|team|company))\b)",
-                    sentence,
-                    re.IGNORECASE,
-                )
-            ),
-            "",
-        )
-    if context_name or "期间" in question or question_type == "behavioral_example":
-        add(
-            "明确具体公司/业务场景",
-            "covered" if context_evidence else "missing",
-            context_evidence,
-            "说明当时的公司、业务阶段、具体任务和目标。",
+    if not context_evidence:
+        context_evidence = _context_evidence(
+            sentences, behavioral=question_type == "behavioral_example"
         )
 
     execution = _excerpt(
@@ -242,6 +422,20 @@ def _coverage(
             "评估",
             "上线",
             "回滚",
+            "扩容",
+            "预扩容",
+            "接入",
+            "增加",
+            "拆出",
+            "保留",
+            "补充",
+            "回放",
+            "压测",
+            "演练",
+            "观察",
+            "采集",
+            "统一",
+            "建立",
             "analy",
             "diagnos",
             "implemented",
@@ -269,6 +463,9 @@ def _coverage(
             "我调整",
             "我对比",
             "我比较",
+            "我用",
+            "我把",
+            "我和",
             "i led",
             "i owned",
             "i decided",
@@ -280,56 +477,46 @@ def _coverage(
             "i implemented",
         ),
     )
-    # Prefer explicit result language. Bare domain words such as “故障恢复” or
-    # a baseline P95 are context, not proof that an outcome was achieved.
-    outcome = _excerpt(
-        sentences,
-        (
-            "最终",
-            "结果",
-            "最后",
-            "上线后",
-            "实施后",
-            "两周后",
-            "as a result",
-            "after launch",
-        ),
-    ) or _excerpt(
-        sentences,
-        (
-            "提升",
-            "降低",
-            "降到",
-            "下降",
-            "缩短",
-            "增长",
-            "恢复到",
-            "恢复至",
-            "improved",
-            "reduced",
-            "restored to",
-            "returned to",
-            "returned below",
-            "resolved",
-            "increased",
-        ),
-    ) or _excerpt(
-        sentences,
-        (
-            "达成",
-            "达到",
-            "完成",
-            "交付",
-            "delivered",
-            "completed",
-            "achieved",
-        ),
-    )
+    outcome = _outcome_evidence(sentences)
     metric = _METRIC_PATTERN.search(answer)
 
-    if question_type == "behavioral_example":
+    if "直接回应题目核心" in contract:
+        requested_groups = [
+            (label, terms)
+            for label, terms in _FOCUS_GROUPS
+            if any(term.casefold() in folded_question for term in terms)
+            and (label != "技术权衡" or _asks_tradeoff_detail(question))
+        ]
+        matched_groups = [
+            (label, terms)
+            for label, terms in requested_groups
+            if any(term.casefold() in answer.casefold() for term in terms)
+        ]
+        required_matches = len(requested_groups)
+        focus_terms = tuple(term for _, terms in matched_groups for term in terms)
+        focus_evidence = _excerpt(sentences, focus_terms) if focus_terms else ""
+        add(
+            "直接回应题目核心",
+            "covered"
+            if len(matched_groups) >= required_matches
+            else "partial"
+            if matched_groups
+            else "missing",
+            focus_evidence,
+            "先用一句话直接回答题目中的核心对象，再展开证据。",
+        )
+
+    if "明确具体公司/业务场景" in contract:
+        add(
+            "明确具体公司/业务场景",
+            "covered" if context_evidence else "missing",
+            context_evidence,
+            "说明具体或匿名化的业务场景、阶段、任务和目标，不必披露公司名称。",
+        )
+
+    if "提供一个真实案例" in contract:
         explicit_case = bool(
-            re.search(r"当时|项目中|事故中|那次|最终入职", answer)
+            re.search(r"当时|项目中|事故中|那次|最终入职|去年|前年|大促|双十一|618", answer)
             or re.search(
                 r"\b(?:during|in that project|at the time|incident)\b",
                 answer.casefold(),
@@ -353,16 +540,65 @@ def _coverage(
             "选一个真实案例，讲清背景、约束、行动和结果。",
         )
 
-    asks_method = question_type in {"methodology", "situational"} or (
-        question_type == "behavioral_example"
-        and bool(
-            re.search(
-                r"如何|怎么|制定|方法|对比|比较|方案|取舍|权衡|how|approach|process|trade",
-                folded_question,
-            )
+    if "说明备选方案、权衡标准与最终选择" in contract:
+        tradeoff = _excerpt(
+            sentences,
+            (
+                "比较",
+                "对比",
+                "权衡",
+                "取舍",
+                "备选",
+                "方案",
+                "虽然",
+                "成本",
+                "风险",
+                "trade-off",
+                "alternative",
+            ),
         )
-    )
-    if asks_method:
+        decision = _excerpt(
+            sentences, ("最终我决定", "我决定", "我选择", "因此我选择", "最终选择")
+        )
+        if not decision:
+            decision = next(
+                (
+                    sentence
+                    for sentence in sentences
+                    if re.search(r"我.{0,160}(?:决定|选择)", sentence)
+                ),
+                "",
+            )
+        criteria = bool(re.search(r"因为|考虑|约束|成本|风险|一致性|可逆|依据", answer))
+        add(
+            "说明备选方案、权衡标准与最终选择",
+            "covered"
+            if tradeoff and decision and criteria
+            else "partial"
+            if tradeoff or decision
+            else "missing",
+            "；".join(dict.fromkeys(item for item in (tradeoff, decision) if item)),
+            "列出至少一个备选方案、选择标准及最终决定。",
+        )
+
+    if "说明指标、口径与决策关系" in contract:
+        named_metrics = list(dict.fromkeys(_NAMED_METRIC_PATTERN.findall(answer)))
+        metric_evidence = _excerpt(sentences, tuple(named_metrics)) if named_metrics else ""
+        decision_link = bool(
+            re.search(r"用于|依据|门槛|阈值|选择|决定|评估|验证|判断|观察|看四组|回滚", answer)
+        )
+        add(
+            "说明指标、口径与决策关系",
+            "covered"
+            if len(named_metrics) >= 2 and decision_link and metric
+            else "partial"
+            if named_metrics or metric
+            else "missing",
+            metric_evidence,
+            "说明至少两个与本题相关的指标、统计口径，以及它们如何影响决策。",
+        )
+
+    if "说明方法或制定过程" in contract:
         method_steps = [
             step.evidence
             for step in steps
@@ -391,10 +627,7 @@ def _coverage(
             "把方法压缩为三到五个按顺序执行的步骤。",
         )
 
-    asks_execution = question_type == "behavioral_example" or bool(
-        re.search(r"执行|推进|落地|解决|implement|execute|deliver|resolve", folded_question)
-    )
-    if asks_execution:
+    if "说明执行动作" in contract:
         add(
             "说明执行动作",
             "covered" if execution else "missing",
@@ -402,13 +635,7 @@ def _coverage(
             "说明你亲自推进的动作、参与者和交付物。",
         )
 
-    asks_personal = question_type == "behavioral_example" or bool(
-        re.search(
-            r"你的职责|你做了什么|你如何|你是如何|your role|what did you|how did you",
-            folded_question,
-        )
-    )
-    if asks_personal:
+    if "明确个人职责与关键决策" in contract:
         add(
             "明确个人职责与关键决策",
             "covered" if personal else "missing",
@@ -416,20 +643,16 @@ def _coverage(
             "用“我负责/我决定/我推动”区分个人贡献与团队行动。",
         )
 
-    asks_result = (
-        question_type == "behavioral_example"
-        or bool(re.search(r"结果|效果|影响|收益|result|impact|outcome", folded_question))
-        or bool(outcome)
-    )
-    if asks_result:
+    if "给出结果与验证方式" in contract:
+        outcome_metric = _METRIC_PATTERN.search(outcome) if outcome else None
         add(
             "给出结果与验证方式",
-            "covered" if outcome and metric else "partial" if outcome else "missing",
+            "covered" if outcome and outcome_metric else "partial" if outcome else "missing",
             outcome,
             "补充已核验结果、指标口径和时间范围；无数字时说明可观察变化。",
         )
 
-    if question_type == "motivation":
+    if "说明动机与匹配关系" in contract:
         reason = _excerpt(sentences, ("因为", "吸引", "匹配", "希望", "because", "motiv", "align"))
         add(
             "说明动机与匹配关系",
@@ -490,6 +713,23 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
         if current > maximum:
             setattr(evaluation, field, maximum)
             notes.append(f"{field} {current:.2f}→{maximum:.2f}：{reason}")
+
+    relevance = statuses.get("直接回应题目核心")
+    if relevance == "missing":
+        cap("content", 0.25, "回答未直接回应题目的核心对象")
+        cap("technical_depth", 0.35, "专业内容与本题要求不相关")
+        cap("impact", 0.35, "结果属于另一主题，不能作为本题证据")
+    elif relevance == "partial":
+        cap("content", 0.55, "只回应了题目的一部分核心要求")
+
+    for requirement in (
+        "说明备选方案、权衡标准与最终选择",
+        "说明指标、口径与决策关系",
+    ):
+        if statuses.get(requirement) == "missing":
+            cap("technical_depth", 0.50, f"本题核心要求未覆盖：{requirement}")
+        elif statuses.get(requirement) == "partial":
+            cap("technical_depth", 0.70, f"本题核心要求仅部分覆盖：{requirement}")
 
     if (
         analysis.answer_type == "behavioral_example"

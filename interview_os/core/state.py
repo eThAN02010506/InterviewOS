@@ -374,7 +374,7 @@ class SpokenAnswerAnalysis(BaseModel):
     raw_transcript: str = ""
     cleaned_transcript: str = ""
     answer_modality: str = "typed"  # typed | asr | live_asr
-    rubric_version: str = "evidence-v2"
+    rubric_version: str = "evidence-v3"
     pre_calibration_scores: dict[str, float] = Field(default_factory=dict)
     answer_type: str = "general"
     filler_counts: dict[str, int] = Field(default_factory=dict)

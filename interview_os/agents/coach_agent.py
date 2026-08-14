@@ -182,24 +182,49 @@ class CoachAgent(Agent):
         context = evidence_for("明确具体公司/业务场景", "提供一个真实案例")
         personal = evidence_for("明确个人职责与关键决策")
         outcome = evidence_for("给出结果与验证方式")
+        outcome_item = coverage.get("给出结果与验证方式")
+        if outcome and outcome_item and outcome_item.status == "partial":
+            outcome += "；[补充真实结果、验证方式、指标口径和时间范围]"
         actions = []
         for step in analysis.semantic_steps:
             if step.evidence and step.evidence not in actions:
                 actions.append(step.evidence.strip())
         action_text = "；随后，".join(actions[:4])
         requirement_names = "、".join(item.requirement for item in analysis.question_coverage)
-        evaluation.improved_answer = (
-            "你的原回答（作为唯一事实来源）：\n"
-            + answer.strip()
-            + "\n\n基于你本次回答的重组示范（未添加新事实）：\n"
-            f"针对“{question[:100] or '本题'}”，我的核心做法是"
-            f"{personal or '[补充你本人承担的职责和关键决定]'}。\n"
-            f"当时的具体背景是：{context or '[补充公司/项目、业务阶段、目标和约束]'}。\n"
-            f"我采取的关键行动是：{action_text or '[按先后顺序补充二至四个本人动作及判断依据]'}。\n"
-            f"最终结果是：{outcome or '[补充真实结果、验证方式、指标口径和时间范围]'}。\n"
-            "如果重新处理，我会：[补充一项真实复盘或下一次会改变的做法]。\n"
-            f"本题需要完整回应：{requirement_names or '问题中的核心要求'}。"
+        contract_complete = bool(analysis.question_coverage) and all(
+            item.status == "covered" for item in analysis.question_coverage
         )
+        metric_follow_up = "说明指标、口径与决策关系" in coverage and set(coverage) <= {
+            "直接回应题目核心",
+            "说明指标、口径与决策关系",
+        }
+        if contract_complete:
+            organization = (
+                "建议保持“指标 → 统计口径 → 阈值 → 触发动作”的顺序，不必补讲一套新的 STAR 案例。"
+                if metric_follow_up
+                else "建议按“背景与目标 → 个人决定 → 执行动作 → 实际结果 → 复盘”分句表达。"
+            )
+            evaluation.improved_answer = (
+                "你的原回答（作为唯一事实来源）：\n"
+                + answer.strip()
+                + "\n\n基于你本次回答的可直接使用版本（未添加新事实）：\n"
+                + analysis.cleaned_transcript
+                + "\n\n表达优化："
+                + organization
+            )
+        else:
+            evaluation.improved_answer = (
+                "你的原回答（作为唯一事实来源）：\n"
+                + answer.strip()
+                + "\n\n基于你本次回答的重组示范（未添加新事实）：\n"
+                f"针对“{question[:100] or '本题'}”，我的核心做法是"
+                f"{personal or '[补充你本人承担的职责和关键决定]'}。\n"
+                f"当时的具体背景是：{context or '[补充公司/项目、业务阶段、目标和约束]'}。\n"
+                f"我采取的关键行动是：{action_text or '[按先后顺序补充二至四个本人动作及判断依据]'}。\n"
+                f"最终结果是：{outcome or '[补充真实结果、验证方式、指标口径和时间范围]'}。\n"
+                "如果重新处理，我会：[补充一项真实复盘或下一次会改变的做法]。\n"
+                f"本题需要完整回应：{requirement_names or '问题中的核心要求'}。"
+            )
         if unsupported:
             warning = "模型草稿引入了原回答未提供的数字，已丢弃；请从 ATS 或原始材料核对。"
             if warning not in evaluation.feedback:

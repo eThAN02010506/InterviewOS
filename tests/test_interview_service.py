@@ -749,7 +749,7 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     first_evaluation = state.mock_session.responses[0].evaluation
     # The broad model question is tightened into a behavioral evidence question.
     # Trade-off language alone still lacks a concrete situation and result.
-    assert first_evaluation.overall_score() == pytest.approx(0.65)
+    assert first_evaluation.overall_score() == pytest.approx(0.4125)
     assert first_evaluation.spoken_analysis.calibration_notes
     assert state.mock_session.responses[0].evaluation.spoken_analysis.pre_calibration_scores
     assert state.evidence[-1].competency == "System Design"
@@ -799,13 +799,13 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     state = await service.finish_mock_interview(session_id)
     # The answer omitted the tightened question's case, personal-decision and
     # result requirements, so evidence calibration lowers the raw 0.75 average.
-    assert state.evaluation.overall_score == pytest.approx(0.575)
+    assert state.evaluation.overall_score == pytest.approx(0.4125)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert "Business impact" not in state.feedback.action_plan
+    assert any("直接回应题目核心" in item for item in state.feedback.action_plan)
     assert any("明确具体公司/业务场景" in item for item in state.feedback.action_plan)
-    assert any("明确个人职责与关键决策" in item for item in state.feedback.action_plan)
     assert "需要更多独立回答交叉验证" in state.evaluation.competencies[0].gaps
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.575)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.4125)
     assert state.current_stage.value == "completed"
     await storage.close()
 

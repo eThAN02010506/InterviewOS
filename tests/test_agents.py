@@ -11,6 +11,7 @@ from interview_os.agents.live_interview_agent import LiveInterviewAgent
 from interview_os.agents.mock_interview_agent import MockInterviewAgent
 from interview_os.core.evidence import Evidence, EvidencePolarity
 from interview_os.core.message import MessageType
+from interview_os.core.spoken_answer import analyze_spoken_answer
 from interview_os.core.state import (
     AnswerEvaluation,
     AnswerReviewStatus,
@@ -258,7 +259,7 @@ async def test_coach_deterministic_fallback_rewards_grounded_detail():
     ]
     assert all(item.evidence and item.suggestion for item in evaluation.dimension_feedback)
     assert evaluation.spoken_analysis.semantic_steps
-    assert evaluation.spoken_analysis.rubric_version == "evidence-v2"
+    assert evaluation.spoken_analysis.rubric_version == "evidence-v3"
     assert any("给出结果与验证方式仍需补充" in item for item in evaluation.missing_signals)
     assert detailed in evaluation.improved_answer
 
@@ -713,7 +714,10 @@ def test_mock_quality_contract_keeps_method_question_as_methodology():
 
     assert "按顺序执行的步骤" in question.question
     assert "具体且已经发生的案例" not in question.question
-    assert question.question_requirements == ["说明方法或制定过程", "给出结果与验证方式"]
+    assert "说明指标、口径与决策关系" in question.question_requirements
+    assert "说明方法或制定过程" in question.question_requirements
+    assert "说明执行动作" in question.question_requirements
+    assert "给出结果与验证方式" in question.question_requirements
 
 
 def test_mock_quality_contract_does_not_treat_project_method_as_past_case():
@@ -725,7 +729,25 @@ def test_mock_quality_contract_does_not_treat_project_method_as_past_case():
 
     assert "按顺序执行的步骤" in question.question
     assert "具体且已经发生的案例" not in question.question
-    assert question.question_requirements == ["说明方法或制定过程", "给出结果与验证方式"]
+    assert "直接回应题目核心" in question.question_requirements
+    assert "说明方法或制定过程" in question.question_requirements
+    assert "说明执行动作" in question.question_requirements
+    assert "给出结果与验证方式" in question.question_requirements
+
+
+def test_capacity_teaching_example_passes_its_own_question_contract():
+    question = InterviewQuestion(
+        question="请讲一次你如何完成容量规划，并说明选择依据和验证结果。",
+        competency="容量规划",
+    )
+
+    MockInterviewAgent.enrich_question(question)
+    analysis = analyze_spoken_answer(question.question, question.example_answer)
+
+    assert "QPS" in question.example_answer
+    assert "HPA" in question.example_answer
+    assert "压测" in question.example_answer
+    assert all(item.status != "missing" for item in analysis.question_coverage)
 
 
 def test_mock_quality_contract_recognizes_past_context_behavioral_question():

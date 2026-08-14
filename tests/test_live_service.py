@@ -503,7 +503,9 @@ async def test_confirm_creates_placeholder_and_scores_in_background(scoring_serv
     refreshed = await scoring_service.get_state(session_id)
     record = refreshed.live_interview_records[0]
     assert record.scoring_status == "scored"
-    assert record.evaluation.overall_score() == 0.65
+    assert record.evaluation.overall_score() == pytest.approx(0.625)
+    assert record.evaluation.impact == 0.35
+    assert any("结果与验证方式" in item for item in record.evaluation.missing_signals)
     assert record.evaluation.spoken_analysis.calibration_notes
     matching = [
         item
@@ -511,7 +513,7 @@ async def test_confirm_creates_placeholder_and_scores_in_background(scoring_serv
         if item.source_record_id == record.id
     ]
     assert len(matching) == 1
-    assert matching[0].confidence == 0.65
+    assert matching[0].confidence == pytest.approx(0.625)
     assert matching[0].signal == "我对比了缓存与数据库扩容方案。"
     assert matching[0].polarity == EvidencePolarity.NEUTRAL
 
@@ -990,6 +992,23 @@ def test_live_audio_context_excludes_unknown_speaker_segments(service):
     context = service._live_audio_context(state)
     assert "已确认候选人回答" in context
     assert "待确认环境对话" not in context
+
+
+def test_live_audio_context_marks_only_latest_candidate_answer_as_followup_target(service):
+    state = InterviewState(job=JobDescription(title="架构师", competencies=["系统设计"]))
+    state.live_interview.segments = [
+        _interviewer_segment(1, "请介绍一次缓存设计。"),
+        _segment(2, "较早回答谈缓存淘汰策略。"),
+        _interviewer_segment(3, "容量方案的实际结果是什么？"),
+        _segment(4, "最新回答说实际峰值十一万 QPS，P99 为 240ms。"),
+    ]
+
+    context = service._live_audio_context(state)
+
+    assert "较早对话（只用于消歧，不得作为本轮追问主题）" in context
+    assert "较早回答谈缓存淘汰策略" in context
+    assert "最新候选人回答：最新回答说实际峰值十一万 QPS" in context
+    assert context.rfind("最新回答") > context.rfind("较早回答")
 
 
 def test_rolling_summary_excludes_unknown_speaker_segments(service):

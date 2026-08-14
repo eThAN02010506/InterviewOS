@@ -168,7 +168,13 @@ ANSWER_COACH_PROMPT = (
     "observed_signals, and missing_signals, each with at most 3 short Chinese strings. "
     "content_score must be a number, never the answer text. Every feedback item must name a "
     "requirement from the exact question and quote or closely point to observable wording in "
-    "the submitted answer; do not give generic STAR advice without that link. Base every signal "
+    "the submitted answer; do not give generic STAR advice without that link. First judge whether "
+    "the answer directly responds to the exact question: a polished answer about another competency "
+    "must score content, technical_depth, and impact at or below 0.3. Distinguish forecast/baseline/"
+    "target numbers from observed post-action results, and never praise a requirement already marked "
+    "missing. Score against only what the exact question asks: a concise follow-up about metrics, "
+    "thresholds, or one decision does not need a new STAR story or project result unless requested. "
+    "Do not lower structure merely because a direct follow-up answer is concise. Base every signal "
     "only on the submitted answer. Do not generate an improved answer and do not explain outside JSON.\n"
 )
 

@@ -51,7 +51,6 @@ def build_dimension_feedback(
         clean,
         re.IGNORECASE,
     )
-    gap = evaluation.missing_signals[0] if evaluation.missing_signals else "缺少第二个独立证据点"
     target = f"围绕“{question[:60]}”" if question.strip() else "围绕当前问题"
     competency_text = f"“{competency}”" if competency.strip() else "目标能力"
     analysis = evaluation.spoken_analysis
@@ -71,6 +70,41 @@ def build_dimension_feedback(
         (item for item in analysis.question_coverage if item.requirement == "给出结果与验证方式"),
         None,
     )
+    tradeoff = next(
+        (
+            item
+            for item in analysis.question_coverage
+            if item.requirement == "说明备选方案、权衡标准与最终选择"
+        ),
+        None,
+    )
+    method = next(
+        (item for item in analysis.question_coverage if item.requirement == "说明方法或制定过程"),
+        None,
+    )
+    metric_requirement = next(
+        (
+            item
+            for item in analysis.question_coverage
+            if item.requirement == "说明指标、口径与决策关系"
+        ),
+        None,
+    )
+    contract_complete = bool(analysis.question_coverage) and not any(
+        item.status in {"missing", "partial"} for item in analysis.question_coverage
+    )
+    grounded_tradeoff = bool(
+        (tradeoff and tradeoff.status == "covered")
+        or (
+            re.search(r"比较|对比|备选|方案|alternative|compared", clean, re.IGNORECASE)
+            and re.search(
+                r"我.{0,160}(?:决定|选择)|最终选择|i .{0,160}(?:decided|chose)",
+                clean,
+                re.IGNORECASE,
+            )
+            and re.search(r"依据|考虑|因为|约束|成本|风险|based on", clean, re.IGNORECASE)
+        )
+    )
 
     specs = [
         (
@@ -82,7 +116,11 @@ def build_dimension_feedback(
                 if clean
                 else f"回答为空，尚未提供可直接支持{competency_text}的行为证据。"
             ),
-            f"{target}优先补齐：{missing[0].requirement if missing else gap}。",
+            (
+                f"{target}优先补齐：{missing[0].requirement}。"
+                if missing
+                else "回答已直接覆盖题目核心；进一步提升时可压缩次要背景，保留最有区分度的证据。"
+            ),
         ),
         (
             "technical_depth",
@@ -92,13 +130,25 @@ def build_dimension_feedback(
                 if personal
                 else f"识别到 {len(action_markers)} 个行动、决策或权衡表达。"
             ),
-            "补充你亲自做出的关键决定、至少一个备选方案，以及选择当前方案的约束和理由。",
+            (
+                "已说明备选方案与选择依据；进一步提升时可用一句话概括被放弃方案的适用边界。"
+                if grounded_tradeoff
+                else "指标、口径与触发动作已经对应；进一步提升时可简述阈值来源或误判成本。"
+                if metric_requirement and metric_requirement.status == "covered"
+                else "补充你亲自做出的关键决定、至少一个备选方案，以及选择当前方案的约束和理由。"
+            ),
         ),
         (
             "structure",
             evaluation.structure,
             f"提取到 {len(analysis.semantic_steps)} 个语义步骤；填充词约 {filler_total} 处，重复修正 {analysis.repetition_count} 处。",
-            "按“情境/目标 → 你的任务 → 关键行动 → 结果 → 复盘”重排，每段只承担一个信息功能。",
+            (
+                "方法顺序已经清楚；口头表达时可把每一步压缩为“动作＋判断依据”。"
+                if method and method.status == "covered" and len(analysis.semantic_steps) >= 3
+                else "回答结构与本题匹配；保持“指标 → 口径 → 阈值触发动作”的短链路即可。"
+                if contract_complete and metric_requirement
+                else "按“情境/目标 → 你的任务 → 关键行动 → 结果 → 复盘”重排，每段只承担一个信息功能。"
+            ),
         ),
         (
             "impact",
@@ -107,9 +157,17 @@ def build_dimension_feedback(
                 f"结果覆盖：{outcome.status}；证据：{outcome.evidence or '未找到实际结果'}；"
                 f"数值线索 {len(metrics)} 个。"
                 if outcome
+                else "本题未要求项目结果；该维度只观察回答是否说明指标会触发什么动作。"
+                if metric_requirement
                 else f"识别到 {len(impact_markers)} 个结果或复盘表达、{len(metrics)} 个数值线索。"
             ),
-            "补充已核验的结果、指标口径和时间范围；没有数字时说明可观察变化及你从中学到什么。",
+            (
+                "结果证据已经明确；进一步提升时区分预测值、基线、目标值和实际结果，并说明观察周期。"
+                if outcome and outcome.status == "covered"
+                else "本题无需补讲完整项目结果；如要深化，只需说明这些阈值会触发扩容、降级或回滚中的哪一项。"
+                if metric_requirement and outcome is None
+                else "补充已核验的结果、指标口径和时间范围；没有数字时说明可观察变化及你从中学到什么。"
+            ),
         ),
     ]
     return [
@@ -151,11 +209,24 @@ def apply_specific_feedback(
         ),
         key=lambda item: 0 if item.status == "missing" else 1,
     )
+    covered_items = [
+        item
+        for item in evaluation.spoken_analysis.question_coverage
+        if item.status == "covered" and item.evidence
+    ]
+    evaluation.observed_signals = [
+        f"{item.requirement}：{item.evidence[:120]}" for item in covered_items[:4]
+    ]
     priorities = []
     for item in coverage_gaps[:3]:
         observed = f"回答中只找到“{item.evidence[:80]}”" if item.evidence else "回答中没有找到对应内容"
         priorities.append(
             f"本题要求「{item.requirement}」：{observed}；重答时{item.suggestion}"
+        )
+    if not priorities:
+        priorities.extend(
+            f"已覆盖「{item.requirement}」：{item.evidence[:90]}"
+            for item in covered_items[:2]
         )
     if len(priorities) < 3:
         weakest_first = sorted(evaluation.dimension_feedback, key=lambda item: item.score)
