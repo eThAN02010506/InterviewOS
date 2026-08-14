@@ -280,7 +280,7 @@ def test_settings_failure_rolls_back_earlier_provider_mutations(tmp_path):
         current = client.get("/api/settings").json()
         assert current["search"]["selected"] == "none"
         assert current["search"]["configured"]["tavily"] is False
-        assert current["asr"]["base_url"] == "http://192.168.1.97:8003"
+        assert current["asr"]["base_url"] == "http://192.168.1.97:8007"
 
 
 def test_settings_persistence_failure_restores_runtime_configuration(tmp_path):

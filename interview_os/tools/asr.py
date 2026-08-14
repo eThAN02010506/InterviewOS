@@ -19,7 +19,7 @@ class ASRError(RuntimeError):
 class ASRClient:
     def __init__(
         self,
-        base_url: str = "http://192.168.1.97:8003",
+        base_url: str = "http://192.168.1.97:8007",
         api_key: str = "",
         model: str = "whisper-1",
         transcription_path: str = "/v1/audio/transcriptions",
