@@ -163,8 +163,12 @@ human clarification (without treating overlap as fraud), recognizes common skill
 headings such as `CAPABILITIES` and `EXPERTISE`, and warns when a document contains
 instruction-like text aimed at an AI. Resume text is always passed to parsing models
 inside an explicit untrusted-data boundary; embedded instructions, grading requests,
-and role changes must never be executed. Image-only PDFs currently fail with an
-actionable OCR message instead of silently returning an empty profile.
+and role changes must never be executed. Image-only PDFs are rendered in memory and
+OCRed automatically: macOS uses the on-device Vision framework for Chinese and
+English, while other platforms may fall back to the configured local multimodal
+`resume_llm`. OCR text is always marked as unverified because character mistakes and
+missing lines still require comparison with the original document. Automatic OCR is
+bounded to eight pages and never starts public web research.
 
 Resume parsing is rule-based by default, but an optional **AI structured
 enhancement** is available: check the "AI 结构化增强" box on upload (or pass

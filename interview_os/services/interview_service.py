@@ -92,7 +92,12 @@ from interview_os.services.intelligence_service import (
     sync_entity_resolutions,
 )
 from interview_os.services.resume_llm import structure_resume_with_llm
-from interview_os.services.resume_service import ResumeProcessor
+from interview_os.services.resume_ocr import ResumeOCRError, ocr_scanned_pdf
+from interview_os.services.resume_service import (
+    ResumeProcessingError,
+    ResumeProcessor,
+    ScannedPDFError,
+)
 from interview_os.tools.asr import ASRClient, ASRError
 from interview_os.tools.tts import TTSClient, TTSError
 from interview_os.tools.web_search import (
@@ -1682,8 +1687,31 @@ class InterviewService:
             self._assert_candidate_reset_allowed(runtime.state)
         # Parsing and optional LLM structuring are slow and do not touch session
         # state, so keep them outside the per-session mutation lock.
-        text, review = await asyncio.to_thread(self.resume_processor.process, filename, content)
         structuring_client = self.resume_llm_client or self.llm_client
+        try:
+            text, review = await asyncio.to_thread(
+                self.resume_processor.process, filename, content
+            )
+        except ScannedPDFError:
+            try:
+                ocr_text, pages, ocr_engine = await ocr_scanned_pdf(content, structuring_client)
+            except ResumeOCRError as exc:
+                self._record_debug(
+                    "resume_ocr_failed",
+                    session_id,
+                    detail=f"{type(exc).__name__}; file_type=pdf",
+                )
+                raise ResumeProcessingError(
+                    "扫描版 PDF 自动 OCR 失败，请确认 resume_llm 支持图片或上传可复制文字的文件"
+                ) from None
+            text, review = self.resume_processor.process_ocr_text(
+                filename, content, ocr_text, pages
+            )
+            self._record_debug(
+                "resume_ocr_completed",
+                session_id,
+                detail=f"pages={pages}; chars={len(text)}; provider={ocr_engine}",
+            )
         if structure == "llm" and structuring_client is not None:
             sections = await structure_resume_with_llm(text, structuring_client)
             if sections:

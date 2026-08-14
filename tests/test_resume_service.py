@@ -3,7 +3,11 @@ from io import BytesIO
 import pytest
 from docx import Document
 
-from interview_os.services.resume_service import ResumeProcessingError, ResumeProcessor
+from interview_os.services.resume_service import (
+    ResumeProcessingError,
+    ResumeProcessor,
+    ScannedPDFError,
+)
 
 
 def make_docx(*paragraphs: str) -> bytes:
@@ -185,6 +189,27 @@ def make_pdf_with_table() -> bytes:
     return buffer.getvalue()
 
 
+def make_image_only_pdf() -> bytes:
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    image = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((80, 100), "SCAN CANDIDATE", fill="black")
+    draw.text((80, 180), "EXPERIENCE Example Company 2020 - Present", fill="black")
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    pdf_buffer = BytesIO()
+    pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
+    width, height = A4
+    pdf.drawImage(ImageReader(BytesIO(image_buffer.getvalue())), 0, 0, width, height)
+    pdf.showPage()
+    pdf.save()
+    return pdf_buffer.getvalue()
+
+
 def test_pdf_resume_extracts_text_and_table():
     content = make_pdf_with_table()
 
@@ -203,6 +228,92 @@ def test_pdf_extraction_keeps_line_breaks():
     # Multi-line headings must not be flattened into one space-separated blob;
     # pdfplumber keeps structural line breaks.
     assert "Ada Lovelace 简历" in text
+
+
+def test_image_only_pdf_signals_ocr_instead_of_generic_empty_document():
+    with pytest.raises(ScannedPDFError) as error:
+        ResumeProcessor().process("scan.pdf", make_image_only_pdf())
+
+    assert error.value.page_count == 1
+
+
+async def test_local_multimodal_ocr_renders_pages_and_preserves_untrusted_boundary():
+    from interview_os.services.resume_ocr import ocr_scanned_pdf_with_llm
+
+    class _OCRLLM:
+        def __init__(self):
+            self.messages = []
+
+        async def chat(self, messages, **kwargs):
+            self.messages = messages
+            return (
+                '{"pages":[{"page":1,"text":"SCAN CANDIDATE\\nEXPERIENCE\\n'
+                'Example Company | Engineer | 2020 - Present\\nSKILLS\\nPython"}]}'
+            )
+
+    llm = _OCRLLM()
+    text, pages = await ocr_scanned_pdf_with_llm(make_image_only_pdf(), llm)
+
+    assert pages == 1
+    assert "SCAN CANDIDATE" in text
+    assert "不可信候选人数据" in llm.messages[0]["content"]
+    image_part = llm.messages[1]["content"][1]
+    assert image_part["type"] == "image_url"
+    assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+async def test_scanned_pdf_prefers_on_device_vision_ocr(monkeypatch):
+    from interview_os.services import resume_ocr
+
+    expected = (
+        "周岚\n供应链运营经理\n工作经历\n海岳消费品 | 供应链运营经理 | 2020.06 - 至今\n"
+        "将缺货率从 8.1% 降至 3.4%"
+    )
+    monkeypatch.setattr(resume_ocr, "ocr_pages_with_vision", lambda images: expected)
+
+    text, pages, engine = await resume_ocr.ocr_scanned_pdf(make_image_only_pdf())
+
+    assert text == expected
+    assert pages == 1
+    assert engine == "macos_vision"
+
+
+async def test_scanned_pdf_falls_back_to_configured_local_multimodal_model(monkeypatch):
+    from interview_os.services import resume_ocr
+
+    class _OCRLLM:
+        async def chat(self, messages, **kwargs):
+            return (
+                '{"pages":[{"page":1,"text":"SCAN CANDIDATE\\nEXPERIENCE\\n'
+                'Example Company | Engineer | 2020 - Present\\nSKILLS\\nPython"}]}'
+            )
+
+    def unavailable(images):
+        raise resume_ocr.ResumeOCRError("Vision unavailable")
+
+    monkeypatch.setattr(resume_ocr, "ocr_pages_with_vision", unavailable)
+
+    text, pages, engine = await resume_ocr.ocr_scanned_pdf(
+        make_image_only_pdf(), _OCRLLM()
+    )
+
+    assert "SCAN CANDIDATE" in text
+    assert pages == 1
+    assert engine == "local_resume_llm"
+
+
+def test_ocr_review_marks_model_transcription_as_unverified():
+    text, review = ResumeProcessor().process_ocr_text(
+        "scan.pdf",
+        make_image_only_pdf(),
+        "SCAN CANDIDATE\nEXPERIENCE\nExample Company | Engineer | 2020 - Present\n"
+        "SKILLS\nPython\nEDUCATION\nExample University",
+        1,
+    )
+
+    assert "SCAN CANDIDATE" in text
+    assert review.issues[0].code == "ocr_transcription_unverified"
+    assert review.metadata.page_count == 1
 
 
 def test_resume_normalization_removes_control_characters_and_reports_artifacts():

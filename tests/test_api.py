@@ -128,6 +128,25 @@ def make_resume_pdf() -> bytes:
     return buffer.getvalue()
 
 
+def make_scanned_resume_pdf() -> bytes:
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    image = Image.new("RGB", (1000, 1400), "white")
+    ImageDraw.Draw(image).text((60, 80), "SCANNED RESUME", fill="black")
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    pdf_buffer = BytesIO()
+    pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
+    width, height = A4
+    pdf.drawImage(ImageReader(BytesIO(image_buffer.getvalue())), 0, 0, width, height)
+    pdf.showPage()
+    pdf.save()
+    return pdf_buffer.getvalue()
+
+
 def test_session_resume_analysis_flow(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     app = create_app(storage=storage, llm_client=MockLLM(), configure_llm=False)
@@ -1304,6 +1323,38 @@ def test_resume_upload_default_rules_structure(tmp_path):
         review = uploaded.json()["state"]["resume_review"]
         assert review["structured_by"] == "rules"
         assert review["structured"] == []
+
+
+def test_scanned_resume_upload_uses_local_ocr_and_marks_text_unverified(
+    tmp_path, monkeypatch
+):
+    from interview_os.services import resume_ocr
+
+    recognized = (
+        "周岚\n供应链运营经理\n工作经历\n海岳消费品 | 供应链运营经理 | 2020.06 - 至今\n"
+        "将缺货率从 8.1% 降至 3.4%\n技能\n供应链规划\n教育经历\n南方管理学院"
+    )
+    monkeypatch.setattr(resume_ocr, "ocr_pages_with_vision", lambda images: recognized)
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-ocr.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        uploaded = client.post(
+            f"/api/resumes/{session_id}/upload",
+            files={"file": ("scan.pdf", make_scanned_resume_pdf(), "application/pdf")},
+        )
+
+    assert uploaded.status_code == 200
+    state = uploaded.json()["state"]
+    assert "周岚" in state["candidate"]["raw_resume_text"]
+    issues = state["resume_review"]["issues"]
+    assert issues[0]["code"] == "ocr_transcription_unverified"
 
 
 def test_suggestions_stream_requires_active_live(tmp_path):

@@ -33,6 +33,14 @@ class ResumeProcessingError(ValueError):
     """Raised when an uploaded resume cannot be handled safely."""
 
 
+class ScannedPDFError(ResumeProcessingError):
+    """Signals that a valid PDF needs OCR because it has no text layer."""
+
+    def __init__(self, page_count: int):
+        super().__init__("扫描版 PDF 没有文字层")
+        self.page_count = page_count
+
+
 class ResumeProcessor:
     """Extract text, then produce a bounded near-linear deterministic review."""
 
@@ -51,23 +59,68 @@ class ResumeProcessor:
         had_encoding_artifacts = bool(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]", text))
         text = self._normalize(text)
         if not text:
-            raise ResumeProcessingError("未能从简历中提取文字；扫描版 PDF 请先进行 OCR")
+            if suffix == ".pdf":
+                raise ScannedPDFError(pages)
+            raise ResumeProcessingError("未能从简历中提取文字")
         if len(text) > MAX_RESUME_CHARACTERS:
             text = text[:MAX_RESUME_CHARACTERS]
 
-        review = ResumeReview(
+        return text, self._build_review(
+            filename,
+            len(content),
+            pages,
+            text,
+            had_encoding_artifacts=had_encoding_artifacts,
+        )
+
+    def process_ocr_text(
+        self,
+        filename: str,
+        content: bytes,
+        text: str,
+        pages: int,
+    ) -> tuple[str, ResumeReview]:
+        """Review text produced by local OCR while preserving its uncertainty."""
+        normalized = self._normalize(text)
+        if len(normalized) < 40:
+            raise ResumeProcessingError("自动 OCR 未能提取足够文字，请上传更清晰的扫描件")
+        if len(normalized) > MAX_RESUME_CHARACTERS:
+            normalized = normalized[:MAX_RESUME_CHARACTERS]
+        review = self._build_review(filename, len(content), pages, normalized)
+        review.issues.insert(
+            0,
+            ResumeValidationIssue(
+                code="ocr_transcription_unverified",
+                severity=ResumeIssueSeverity.WARNING,
+                field="document",
+                message="扫描件已由本地 OCR 转写，可能存在错字或漏行，请对照原件核对",
+            ),
+        )
+        return normalized, review
+
+    @staticmethod
+    def _build_review(
+        filename: str,
+        size_bytes: int,
+        pages: int,
+        text: str,
+        *,
+        had_encoding_artifacts: bool = False,
+    ) -> ResumeReview:
+        return ResumeReview(
             metadata=ResumeFileMetadata(
                 filename=Path(filename).name,
-                file_type=suffix.removeprefix("."),
-                size_bytes=len(content),
+                file_type=Path(filename).suffix.lower().removeprefix("."),
+                size_bytes=size_bytes,
                 page_count=pages,
                 character_count=len(text),
             ),
-            issues=self._find_issues(text, had_encoding_artifacts=had_encoding_artifacts),
-            claims=self._find_claims(text),
+            issues=ResumeProcessor._find_issues(
+                text, had_encoding_artifacts=had_encoding_artifacts
+            ),
+            claims=ResumeProcessor._find_claims(text),
             reviewed_at=datetime.now(timezone.utc),
         )
-        return text, review
 
     @staticmethod
     def _extract_pdf(content: bytes) -> tuple[str, int]:
