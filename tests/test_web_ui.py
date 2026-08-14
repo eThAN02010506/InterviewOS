@@ -56,6 +56,20 @@ def test_lan_microphone_requires_secure_context_with_actionable_message():
     assert "局域网语音功能需要 HTTPS" in script
 
 
+def test_live_streaming_ui_serializes_preview_and_filters_short_vad_audio():
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "VAD_MIN_SPEECH_MS" in script
+    assert "liveVadVoicedMs>=VAD_MIN_SPEECH_MS" in script
+    assert "!['in-speech','finalizing'].includes(liveVadState)" in script
+    assert "liveVadHeaderChunk" in script
+    assert "liveVadUtteranceChunks.push(liveVadHeaderChunk)" in script
+    assert "}finally{asrPreviewBusy=false;}" in script
+    assert "resetAsrPreview(){asrPreviewSequence+=1;asrPreviewLastAt=0" in script
+    assert "$('live-stream-plan').disabled = status !== 'active'" in script
+    assert "noiseSuppression:true" in script
+
+
 def test_final_report_distinguishes_locked_scores_from_model_narrative():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
     styles = (WEB_DIR / "styles.css").read_text(encoding="utf-8")

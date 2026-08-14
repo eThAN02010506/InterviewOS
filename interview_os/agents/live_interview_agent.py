@@ -39,6 +39,7 @@ class LiveInterviewAgent(Agent):
             item
             for item in state.live_interview.segments
             if item.sequence > state.live_interview.summarized_until_sequence
+            and item.speaker != TranscriptSpeaker.UNKNOWN
         ][-LIVE_RECENT_SEGMENT_WINDOW:]
         transcript = "\n".join(
             f"[{segment.speaker.value}] {segment.text}"

@@ -1341,7 +1341,11 @@ class InterviewService:
         parts.append(anchor)
 
         stable_segments = [
-            item for item in state.live_interview.segments if item.stable and item.confirmed
+            item
+            for item in state.live_interview.segments
+            if item.stable
+            and item.confirmed
+            and item.speaker != TranscriptSpeaker.UNKNOWN
         ][-LIVE_RECENT_SEGMENT_WINDOW:]
         if stable_segments:
             speaker_labels = {
@@ -3264,7 +3268,13 @@ class InterviewService:
 
     def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
         live = state.live_interview
-        stable_segments = [item for item in live.segments if item.stable and item.confirmed]
+        stable_segments = [
+            item
+            for item in live.segments
+            if item.stable
+            and item.confirmed
+            and item.speaker != TranscriptSpeaker.UNKNOWN
+        ]
         if len(stable_segments) <= LIVE_RECENT_SEGMENT_WINDOW:
             live.rolling_summary = ""
             live.summarized_until_sequence = 0

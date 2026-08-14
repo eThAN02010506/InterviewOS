@@ -861,6 +861,30 @@ async def test_planner_excludes_used_questions_and_passes_max_tokens(tmp_path):
     assert llm.last_kwargs.get("max_tokens") == 512
 
 
+async def test_planner_excludes_unknown_speaker_transcript(tmp_path):
+    llm = _CapturingPlannerLLM()
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'planner-unknown.db'}")
+    await storage.init_db()
+    try:
+        from interview_os.agents.live_interview_agent import LiveInterviewAgent
+
+        state = _planner_state()
+        state.live_interview.segments.append(
+            _segment(
+                3,
+                "这段待确认的环境对话不得发送给模型。",
+                speaker=TranscriptSpeaker.UNKNOWN,
+                source="asr",
+            )
+        )
+        agent = LiveInterviewAgent(llm_client=llm)
+        await agent.execute(state)
+    finally:
+        await storage.close()
+    assert "这段待确认的环境对话不得发送给模型" not in llm.last_prompt
+    assert "我对比了缓存方案并用压测验证" in llm.last_prompt
+
+
 async def test_think_structured_invalid_output_makes_single_call(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'planner-bad.db'}")
     await storage.init_db()
@@ -950,6 +974,38 @@ def test_live_audio_context_keeps_anchor_when_over_limit(service):
     context = service._live_audio_context(state)
     assert len(context) <= 2600  # OMNI_CONTEXT_CHAR_LIMIT + slack
     assert "岗位能力：能力" in context  # anchor is never dropped
+
+
+def test_live_audio_context_excludes_unknown_speaker_segments(service):
+    state = InterviewState(job=JobDescription(title="岗位", competencies=["能力"]))
+    state.live_interview.segments = [
+        _segment(1, "已确认候选人回答。"),
+        _segment(
+            2,
+            "待确认环境对话不得进入模型上下文。",
+            speaker=TranscriptSpeaker.UNKNOWN,
+            source="asr",
+        ),
+    ]
+    context = service._live_audio_context(state)
+    assert "已确认候选人回答" in context
+    assert "待确认环境对话" not in context
+
+
+def test_rolling_summary_excludes_unknown_speaker_segments(service):
+    state = InterviewState()
+    state.live_interview.segments = [
+        _segment(
+            1,
+            "待确认环境对话不得进入摘要。",
+            speaker=TranscriptSpeaker.UNKNOWN,
+            source="asr",
+        ),
+        *[_segment(i, f"已确认回答 {i}") for i in range(2, 15)],
+    ]
+    service._refresh_live_rolling_summary(state)
+    assert "待确认环境对话" not in state.live_interview.rolling_summary
+    assert "已确认回答 2" in state.live_interview.rolling_summary
 
 
 # ---------------------------------------------------------------------------

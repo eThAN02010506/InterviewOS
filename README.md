@@ -480,6 +480,15 @@ cleanly), shows queue and upload status, and marks each chunk as `unknown` speak
 by default. A live "正在听取 (Xs)" indicator shows while speech is ongoing. This
 keeps the interviewer in control: the user must correct speaker/text and
 explicitly confirm candidate answers before any chunk can become hiring evidence.
+Browser capture requests echo cancellation, noise suppression, automatic gain
+control, and mono audio. The VAD ignores speech bursts shorter than 0.7s, retains
+the WebM container header while discarding idle chunks, and permits only one
+provisional ASR request at a time. This prevents background noise from creating a
+large upload queue without making finalized utterances undecodable. Provisional
+transcripts never mutate session state. More importantly, `unknown` transcript
+segments are excluded from rolling summaries and next-question context until the
+interviewer has reviewed their speaker; the UI label therefore matches the Agent's
+actual data boundary.
 For longer interviews, the live state now maintains a bounded rolling transcript
 summary and drops exact repeated transcript chunks before they can grow the
 conversation context. The next-question planner receives the rolling summary,
@@ -522,11 +531,23 @@ the current account's bearer token on the raw streaming request. Events distingu
 incremental `append` from a safe `replace`: if the model disconnects after partial
 output, the UI and persisted suggestion replace it with a generic fallback instead
 of exposing transport details or saving incomplete text. A completion arriving after
-the live session is paused or ended is discarded instead of entering the review queue. Transcript
-ingestion stays chunked (the LAN ASR has no
-streaming endpoint), but a finished chunk immediately produces a streaming
-suggestion. Verified with the real 8001 model: tokens arrive incrementally and the
-completed suggestion lands in the review queue (~8s full, first token ~1s).
+the live session is paused or ended is discarded instead of entering the review queue.
+Transcript ingestion stays chunked because the current 8007 deployment has no
+native streaming endpoint. While speech continues, the browser uploads bounded
+cumulative snapshots for a non-persistent draft; silence finalizes one complete
+utterance and replaces the draft with its stable transcript. A finished chunk can
+then immediately produce a streaming suggestion. This is deliberately described as
+**hybrid streaming**, not native streaming ASR.
+
+The full hybrid path was revalidated through both the API and the browser on
+2026-08-14. A synthetic 8.4s Chinese answer produced an exact provisional transcript
+without adding a segment, then an exact stable `candidate/source=asr` segment. The
+real 8001 SSE response emitted its first event in 0.843s, completed in 1.287s with
+43 incremental events, and persisted exactly the text shown in the UI. In the live
+browser, partial question text was visible after about 350ms; a speaker-to-microphone
+loopback created exactly one reviewable ASR segment. Acoustic loopback may clip the
+beginning of speech, whereas direct file upload was exact, so microphone placement
+still matters in real interviews.
 
 The live audio path is switchable between two modes (Settings → 实时音频处理):
 - **ASR + text (default)**: the classic path — audio to the LAN ASR, transcript to
