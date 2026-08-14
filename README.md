@@ -640,6 +640,16 @@ verified alternative. Streaming support and concurrency limits remain part of
 long-interview hardening. When ASR is unavailable, the live workspace retains
 typed/pasted transcript input as the safe fallback.
 
+The active audio profile is `asr_text`: speech is transcribed only by 8007 and the
+resulting text is analyzed by the configured text model. On 2026-08-14, a 20.98s
+synthetic Chinese interview answer was transcribed by 8007 in 9.58s with complete
+wording, then passed through the real InterviewOS upload endpoint in about 9s as a
+stable `source=asr` candidate segment. The same WAV sent to the model currently
+served on 8004 failed with `audio input is not supported` because that deployment
+has no multimodal projector (`mmproj`). Therefore 8004 audio-direct remains an
+optional capability, not an automatic fallback: it must pass the real-audio
+capability probe before a user explicitly selects it.
+
 `http://192.168.1.8:9001` was tested with the same multi-sentence WAV fixture. Its
 OpenAI-compatible endpoint was faster, but returned only the first sentence, so it
 is not the default evidence source until that truncation behavior is resolved.
