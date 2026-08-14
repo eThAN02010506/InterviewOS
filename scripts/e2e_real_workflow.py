@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 import httpx
+from e2e_support import authenticate_e2e_client
 
 RESUME = """E2E 测试候选人
 5 年 Python 后端开发经验。负责过日均 2,000 万请求的订单服务，将 P95 延迟从
@@ -53,12 +54,23 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument("--answers", type=int, default=3)
     parser.add_argument("--max-answers", type=int, default=20)
+    parser.add_argument("--username", default="")
+    parser.add_argument("--password", default="")
     args = parser.parse_args()
+    if args.answers < 1 or args.answers > args.max_answers:
+        parser.error("--answers must be between 1 and --max-answers")
 
     started_at = time.perf_counter()
     timings: dict[str, float] = {}
     with httpx.Client(base_url=args.base_url, timeout=args.timeout) as client:
+        test_username = authenticate_e2e_client(
+            client,
+            username=args.username,
+            password=args.password,
+            prefix="candidate_e2e",
+        )
         session = request_json(
             client,
             "POST",
@@ -89,13 +101,13 @@ def main() -> None:
 
         answers = 0
         phase_started = time.perf_counter()
-        while answers < args.max_answers:
-            mock = request_json(client, "GET", f"/api/mock-interviews/{session_id}")
+        mock = request_json(client, "POST", f"/api/mock-interviews/{session_id}/start")
+        while answers < args.answers:
             question = mock.get("current_question")
             if question is None:
-                break
+                raise RuntimeError("Active mock interview returned no current question")
             answers += 1
-            request_json(
+            mock = request_json(
                 client,
                 "POST",
                 f"/api/mock-interviews/{session_id}/answers",
@@ -104,8 +116,13 @@ def main() -> None:
                     "answer": synthetic_answer(question, answers),
                 },
             )
-        else:
-            raise RuntimeError(f"Interview exceeded safety limit of {args.max_answers} answers")
+            if answers < args.answers:
+                mock = request_json(
+                    client,
+                    "POST",
+                    f"/api/mock-interviews/{session_id}/next",
+                )
+        request_json(client, "POST", f"/api/mock-interviews/{session_id}/finish")
         timings["interview_and_evaluation_seconds"] = round(
             time.perf_counter() - phase_started, 3
         )
@@ -116,9 +133,36 @@ def main() -> None:
         if final["autopilot"]["status"] != "completed":
             raise RuntimeError("Autopilot did not produce the final evaluation")
 
+        questions = final["mock_interview"]["questions"]
+        responses = final["mock_session"]["responses"]
+        if not all(question.get("question_requirements") for question in questions):
+            raise RuntimeError("A mock question is missing its answer-quality contract")
+        if not all(question.get("example_answer") for question in questions):
+            raise RuntimeError("A mock question is missing its realistic teaching example")
+        if not all(response["evaluation"]["scoring_source"] == "model" for response in responses):
+            raise RuntimeError("At least one answer degraded from model scoring")
+        if final["evaluation"].get("narrative_source") != "model":
+            raise RuntimeError("Final evaluation degraded from the evidence-locked model narrative")
+        for response in responses:
+            evaluation = response["evaluation"]
+            incomplete_requirements = {
+                item["requirement"]
+                for item in evaluation["spoken_analysis"]["question_coverage"]
+                if item["status"] in {"missing", "partial"}
+            }
+            for gap in evaluation["missing_signals"]:
+                is_integrity_warning = gap == "需要核验并补充真实量化结果"
+                if not is_integrity_warning and not any(
+                    requirement in gap for requirement in incomplete_requirements
+                ):
+                    raise RuntimeError(
+                        f"Persisted gap is not grounded in incomplete coverage: {gap}"
+                    )
+
         sources = sorted({item["source"] for item in final["evidence"]})
         result = {
             "session_id": session_id,
+            "test_username": test_username,
             "complete": True,
             "timings": timings,
             "total_seconds": round(time.perf_counter() - started_at, 3),
@@ -126,6 +170,9 @@ def main() -> None:
             "recorded_answers": len(final["mock_session"]["responses"]),
             "evidence_items": len(final["evidence"]),
             "evidence_sources": sources,
+            "all_answers_model_scored": True,
+            "final_narrative_source": final["evaluation"]["narrative_source"],
+            "coverage_gap_contract_consistent": True,
             "recommendation": final["evaluation"]["recommendation"],
             "feedback_evidence_safe": "证据不足" in final["feedback"]["overall"]
             if final["evaluation"]["recommendation"] == "insufficient_evidence"

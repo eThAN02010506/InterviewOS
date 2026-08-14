@@ -108,7 +108,7 @@ async function api(path, options = {}) {
     // Login/register/logout 401s are expected (wrong password) and must not
     // clear the stored token; every other 401 means the session expired.
     const authEndpoint = /^\/api\/auth\/(login|register|logout)$/.test(path);
-    if (response.status === 401 && !authEndpoint) { state.token = ''; localStorage.removeItem('interviewos.token'); showLogin(); }
+    if (response.status === 401 && !authEndpoint) { clearAuthenticatedState(); showLogin(); }
     throw new Error(data.detail || `请求失败 (${response.status})`);
   }
   return data;
@@ -213,14 +213,21 @@ function showLogin() {
 
 function hideLogin() { $('login-dialog')?.close(); }
 
-function logout() {
-  if (state.token) { api('/api/auth/logout', {method: 'POST'}).catch(() => {}); }
+function clearAuthenticatedState() {
   resetMockAudioExperience();
   activeLoadedSessionId = '';
   state.token = ''; state.sessionId = ''; state.session = null;
   localStorage.removeItem('interviewos.token');
   localStorage.removeItem('interviewos.session');
+  const select = $('session-select');
+  if (select) select.innerHTML = '<option value="">选择会话</option>';
   $('user-chip').textContent = '';
+  renderAll();
+}
+
+function logout() {
+  if (state.token) { api('/api/auth/logout', {method: 'POST'}).catch(() => {}); }
+  clearAuthenticatedState();
   showLogin();
 }
 

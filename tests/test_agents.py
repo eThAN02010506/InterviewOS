@@ -47,13 +47,23 @@ class EvaluationNarrativeLLM:
         return (
             '{"summary":"现有回答显示候选人能够拆解招聘目标，但结果证据仍需核验。",'
             '"competency_reviews":['
-            '{"competency":"招聘战略","evidence_numbers":[1,2],'
+            '{"competency_id":"C1","evidence_numbers":[1,2],'
             '"assessment":"两条证据分别说明了画像拆解和漏斗复盘；当前优势是方法清楚，缺口是结果尚未核验。",'
             '"next_probe":"请说明这套策略在多长时间内改善了哪个已核验指标？"},'
-            '{"competency":"团队领导","evidence_numbers":[1],'
+            '{"competency_id":"C2","evidence_numbers":[1],'
             '"assessment":"现有证据说明候选人推动了协作，但不足以判断长期辅导成效。",'
             '"next_probe":"请讲一个持续辅导团队成员并验证其成长结果的案例。"}'
             ']}'
+        )
+
+
+class ContradictorySingleEvidenceNarrativeLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":"已有一条证据。","competency_reviews":['
+            '{"competency_id":"C1","evidence_numbers":[1],'
+            '"assessment":"回答说明了性能改进，但当前回答尚未提供证据。",'
+            '"next_probe":"请再讲一个不同案例。"}]}'
         )
 
 
@@ -127,6 +137,16 @@ class HallucinatingCoachLLM:
             '"feedback":[],"observed_signals":["推动团队扩张"],'
             '"missing_signals":[],"improved_answer":'
             '"团队从80人增长到250人，交付周期缩短30%，收入增长18%。"}'
+        )
+
+
+class ContradictoryGapCoachLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"content":0.8,"technical_depth":0.8,"structure":0.8,"impact":0.8,'
+            '"feedback":[],"observed_signals":[],'
+            '"missing_signals":["验证结果：P95 降到 180ms","具体行动：增加索引"],'
+            '"improved_answer":""}'
         )
 
 
@@ -239,7 +259,7 @@ async def test_coach_deterministic_fallback_rewards_grounded_detail():
     assert all(item.evidence and item.suggestion for item in evaluation.dimension_feedback)
     assert evaluation.spoken_analysis.semantic_steps
     assert evaluation.spoken_analysis.rubric_version == "evidence-v2"
-    assert "缺少已核验的量化结果" in evaluation.missing_signals
+    assert any("给出结果与验证方式仍需补充" in item for item in evaluation.missing_signals)
     assert detailed in evaluation.improved_answer
 
 
@@ -270,6 +290,27 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     assert state.evidence[0].signal == original
     assert state.evidence[0].polarity == EvidencePolarity.NEUTRAL
     assert all("推动团队扩张" not in item.evidence for item in evaluation.dimension_feedback)
+
+
+@pytest.mark.asyncio
+async def test_coach_discards_model_gaps_contradicted_by_coverage_evidence():
+    agent = CoachAgent(llm_client=ContradictoryGapCoachLLM())
+    state = InterviewState()
+    answer = (
+        "在订单服务高峰期间，我负责性能治理。"
+        "我先分析 tracing 和慢查询，再增加索引并拆分批量写入。"
+        "最终 P95 从 420ms 降到 180ms，错误率下降 60%。"
+    )
+
+    message = await agent.execute(
+        state,
+        '{"question":"请描述你在订单服务中如何解决性能问题？",'
+        '"answer":"' + answer + '","competency":"系统性能"}',
+    )
+
+    evaluation = AnswerEvaluation.model_validate_json(message.content)
+    assert evaluation.missing_signals == []
+    assert state.evidence[0].notes == ""
 
 
 @pytest.mark.asyncio
@@ -393,6 +434,22 @@ async def test_evaluation_agent_rejects_invalid_model_narrative_as_one_unit():
     assert state.evaluation.narrative_source == "deterministic"
     assert state.evaluation.competencies[0].assessment == ""
     assert "已按已记录证据" in state.evaluation.summary
+
+
+@pytest.mark.asyncio
+async def test_evaluation_narrative_does_not_deny_existing_single_evidence():
+    agent = EvaluationAgent(llm_client=ContradictorySingleEvidenceNarrativeLLM())
+    state = InterviewState()
+    state.evidence = [
+        Evidence(competency="系统性能", signal="最终 P95 降到 180ms。", confidence=0.7)
+    ]
+
+    await agent.execute(state)
+
+    result = state.evaluation.competencies[0]
+    assert state.evaluation.narrative_source == "model"
+    assert "尚未提供证据" not in result.assessment
+    assert "仍需要第二个独立案例交叉验证" in result.assessment
 
 
 @pytest.mark.asyncio
@@ -669,6 +726,32 @@ def test_mock_quality_contract_does_not_treat_project_method_as_past_case():
     assert "按顺序执行的步骤" in question.question
     assert "具体且已经发生的案例" not in question.question
     assert question.question_requirements == ["说明方法或制定过程", "给出结果与验证方式"]
+
+
+def test_mock_quality_contract_recognizes_past_context_behavioral_question():
+    question = InterviewQuestion(
+        question="请描述你在订单服务中，如何完成容量规划与故障恢复？",
+        competency="可靠性",
+    )
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "提供一个真实案例" in question.question_requirements
+    assert "明确个人职责与关键决策" in question.question_requirements
+    assert "说明方法或制定过程" in question.question_requirements
+    assert "给出结果与验证方式" in question.question_requirements
+
+
+def test_mock_quality_contract_recognizes_past_context_with_shi_ruhe():
+    question = InterviewQuestion(
+        question="在带领 4 人小组做容量压测时，你是如何规划测试场景的？",
+        competency="容量规划",
+    )
+
+    MockInterviewAgent.enrich_question(question)
+
+    assert "提供一个真实案例" in question.question_requirements
+    assert "明确个人职责与关键决策" in question.question_requirements
 
 
 @pytest.mark.asyncio

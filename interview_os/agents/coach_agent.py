@@ -11,7 +11,11 @@ from interview_os.core.agent import Agent
 from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.message import Message
-from interview_os.core.spoken_answer import analyze_spoken_answer, calibrate_evaluation
+from interview_os.core.spoken_answer import (
+    analyze_spoken_answer,
+    calibrate_evaluation,
+    grounded_missing_signals,
+)
 from interview_os.core.state import (
     AnswerEvaluation,
     AnswerEvaluationDraft,
@@ -82,6 +86,10 @@ class CoachAgent(Agent):
             answer_modality=coach_input.answer_modality,
         )
         calibrate_evaluation(evaluation, analysis)
+        # Persist only gaps supported by the same coverage contract used to
+        # calibrate scores. Model-only gaps remain too easy to contradict with
+        # evidence present in the answer.
+        evaluation.missing_signals = grounded_missing_signals(analysis)
         self._build_grounded_improvement(
             evaluation, coach_input.answer, question=coach_input.question
         )

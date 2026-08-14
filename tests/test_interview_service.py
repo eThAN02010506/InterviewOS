@@ -119,7 +119,7 @@ class WorkflowMockLLM:
         if "structured final interview evaluation" in lowered:
             return (
                 '{"summary":"现有证据显示了系统设计取舍，但业务结果仍需补充。",'
-                '"competency_reviews":[{"competency":"System Design",'
+                '"competency_reviews":[{"competency_id":"C1",'
                 '"evidence_numbers":[1],"assessment":"回答说明了方案取舍；当前分数受结果证据不足限制。",'
                 '"next_probe":"请补充该方案上线后的已核验业务或稳定性结果。"}]}'
             )
@@ -178,7 +178,7 @@ class UngroundedEvaluationWorkflowLLM(WorkflowMockLLM):
         if "structured final interview evaluation" in prompt:
             return (
                 '{"summary":"Strong","competency_reviews":['
-                '{"competency":"Generic Communication","evidence_numbers":[1],'
+                '{"competency_id":"C99","evidence_numbers":[1],'
                 '"assessment":"Strong","next_probe":"More?"}]}'
             )
         if "based on the following evidence" in prompt:
@@ -801,10 +801,10 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     # result requirements, so evidence calibration lowers the raw 0.75 average.
     assert state.evaluation.overall_score == pytest.approx(0.575)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
-    assert state.feedback.action_plan == [
-        "准备并练习：Business impact",
-        "准备并练习：需要更多独立回答交叉验证",
-    ]
+    assert "Business impact" not in state.feedback.action_plan
+    assert any("明确具体公司/业务场景" in item for item in state.feedback.action_plan)
+    assert any("明确个人职责与关键决策" in item for item in state.feedback.action_plan)
+    assert "需要更多独立回答交叉验证" in state.evaluation.competencies[0].gaps
     assert state.evaluated_competencies["System Design"] == pytest.approx(0.575)
     assert state.current_stage.value == "completed"
     await storage.close()

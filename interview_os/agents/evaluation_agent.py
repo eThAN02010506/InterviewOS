@@ -59,10 +59,13 @@ class EvaluationAgent(Agent):
             return
         frame = []
         evidence_ids: dict[str, dict[int, UUID]] = {}
+        competency_names: dict[str, str] = {}
         evidence_by_competency: dict[str, list[Evidence]] = {}
         for item in state.evidence:
             evidence_by_competency.setdefault(item.competency or "综合能力", []).append(item)
-        for result in report.competencies:
+        for competency_index, result in enumerate(report.competencies, start=1):
+            competency_id = f"C{competency_index}"
+            competency_names[competency_id] = result.competency
             items = evidence_by_competency.get(result.competency, [])
             numbered = {}
             evidence_rows = []
@@ -76,10 +79,11 @@ class EvaluationAgent(Agent):
                         "polarity": item.polarity.value,
                     }
                 )
-            evidence_ids[result.competency] = numbered
+            evidence_ids[competency_id] = numbered
             frame.append(
                 {
-                    "competency": result.competency,
+                    "competency_id": competency_id,
+                    "competency_label": result.competency,
                     "fixed_score": round(result.score, 4),
                     "fixed_gaps": result.gaps,
                     "evidence": evidence_rows,
@@ -94,7 +98,9 @@ class EvaluationAgent(Agent):
                 EvaluationNarrativeDraft,
                 max_tokens=1800,
             )
-            if not self._apply_model_narrative(report, draft, evidence_ids):
+            if not self._apply_model_narrative(
+                report, draft, evidence_ids, competency_names
+            ):
                 raise ValueError("narrative competency or evidence references did not match")
         except Exception as exc:  # noqa: BLE001 - optional narrative must not block report
             self.record_degradation(
@@ -102,14 +108,30 @@ class EvaluationAgent(Agent):
             )
 
     @staticmethod
+    def _normalize_assessment_for_locked_gaps(assessment: str, gaps: list[str]) -> str:
+        """Prevent a model narrative from contradicting the locked evidence frame."""
+        independent_gap = "需要更多独立回答交叉验证"
+        if gaps == [independent_gap]:
+            replacement = "仍需要第二个独立案例交叉验证"
+            for contradiction in (
+                "当前回答尚未提供证据",
+                "当前没有提供证据",
+                "缺少任何证据",
+                "没有证据",
+            ):
+                assessment = assessment.replace(contradiction, replacement)
+        return assessment
+
+    @staticmethod
     def _apply_model_narrative(
         report: EvaluationReport,
         draft: EvaluationNarrativeDraft,
         evidence_ids: dict[str, dict[int, UUID]],
+        competency_names: dict[str, str],
     ) -> bool:
         """Atomically apply a complete narrative whose references all resolve."""
-        reviews = {item.competency: item for item in draft.competency_reviews}
-        expected = {item.competency for item in report.competencies}
+        reviews = {item.competency_id: item for item in draft.competency_reviews}
+        expected = set(competency_names)
         if (
             not draft.summary.strip()
             or len(reviews) != len(draft.competency_reviews)
@@ -117,9 +139,9 @@ class EvaluationAgent(Agent):
         ):
             return False
         resolved: dict[str, tuple[str, str, list[UUID]]] = {}
-        for competency in expected:
-            review = reviews[competency]
-            allowed = evidence_ids.get(competency, {})
+        for competency_id in expected:
+            review = reviews[competency_id]
+            allowed = evidence_ids.get(competency_id, {})
             numbers = list(dict.fromkeys(review.evidence_numbers))
             if (
                 not review.assessment.strip()
@@ -128,14 +150,16 @@ class EvaluationAgent(Agent):
                 or any(number not in allowed for number in numbers)
             ):
                 return False
-            resolved[competency] = (
+            resolved[competency_names[competency_id]] = (
                 review.assessment.strip()[:600],
                 review.next_probe.strip()[:300],
                 [allowed[number] for number in numbers],
             )
         for result in report.competencies:
             assessment, next_probe, refs = resolved[result.competency]
-            result.assessment = assessment
+            result.assessment = EvaluationAgent._normalize_assessment_for_locked_gaps(
+                assessment, result.gaps
+            )
             result.next_probe = next_probe
             result.narrative_evidence_ids = refs
         report.summary = draft.summary.strip()[:1000]

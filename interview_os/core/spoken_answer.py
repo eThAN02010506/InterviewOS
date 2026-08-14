@@ -140,7 +140,11 @@ def _excerpt(sentences: list[str], keywords: tuple[str, ...]) -> str:
 
 def _answer_type(question: str) -> str:
     folded = question.casefold()
-    if re.search(r"请讲|举例|一次|经历|期间|已经发生|已经结束|具体项目|你是如何", question) or re.search(
+    if re.search(
+        r"请讲|举例|一次|(?:谈谈|描述|说明).{0,30}经历|期间|已经发生|已经结束|具体项目|你是如何|"
+        r"请(?:描述|说明)你在|(?:你)?在.{2,80}(?:时|中)[，,]?(?:你)?(?:是)?如何",
+        question,
+    ) or re.search(
         r"\b(?:tell me about a time|describe a time|give (?:me )?an example|experience where|when you)\b",
         folded,
     ):
@@ -209,7 +213,7 @@ def _coverage(
                 sentence
                 for sentence in sentences
                 if re.search(
-                    r"(?:当时|那次|在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务|阶段|期间)|"
+                    r"(?:当时|那次|背景是|场景是|在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务|阶段|期间)|"
                     r"\b(?:during|at the time|in (?:that|a|the) (?:project|team|company))\b)",
                     sentence,
                     re.IGNORECASE,
@@ -276,28 +280,49 @@ def _coverage(
             "i implemented",
         ),
     )
+    # Prefer explicit result language. Bare domain words such as “故障恢复” or
+    # a baseline P95 are context, not proof that an outcome was achieved.
     outcome = _excerpt(
+        sentences,
+        (
+            "最终",
+            "结果",
+            "最后",
+            "上线后",
+            "实施后",
+            "两周后",
+            "as a result",
+            "after launch",
+        ),
+    ) or _excerpt(
         sentences,
         (
             "提升",
             "降低",
+            "降到",
+            "下降",
             "缩短",
             "增长",
+            "恢复到",
+            "恢复至",
+            "improved",
+            "reduced",
+            "restored to",
+            "returned to",
+            "returned below",
+            "resolved",
+            "increased",
+        ),
+    ) or _excerpt(
+        sentences,
+        (
             "达成",
             "达到",
             "完成",
-            "恢复",
             "交付",
-            "p95",
-            "improved",
-            "reduced",
-            "restored",
-            "returned",
-            "resolved",
             "delivered",
             "completed",
             "achieved",
-            "increased",
         ),
     )
     metric = _METRIC_PATTERN.search(answer)
@@ -338,10 +363,30 @@ def _coverage(
         )
     )
     if asks_method:
-        method_evidence = steps[0].evidence if len(steps) >= 2 else execution
+        method_steps = [
+            step.evidence
+            for step in steps
+            if step.label
+            in {
+                "分析与诊断",
+                "方案比较与决策",
+                "执行与推进",
+                "评估体系",
+                "项目治理与复盘",
+            }
+        ]
+        method_evidence = "；".join(dict.fromkeys(method_steps[:2])) or execution
+        has_ordered_actions = bool(
+            re.search(r"(?:先|首先).{2,160}(?:再|然后|随后|其次)", answer)
+            or re.search(r"\b(?:first|then|next|after that)\b", answer.casefold())
+        )
         add(
             "说明方法或制定过程",
-            "covered" if len(steps) >= 2 else "partial" if method_evidence else "missing",
+            "covered"
+            if len(method_steps) >= 2 or (method_evidence and has_ordered_actions)
+            else "partial"
+            if method_evidence
+            else "missing",
             method_evidence,
             "把方法压缩为三到五个按顺序执行的步骤。",
         )
@@ -393,6 +438,22 @@ def _coverage(
             "连接公司/岗位特点、你的经历和下一阶段目标。",
         )
     return requirements
+
+
+def grounded_missing_signals(analysis: SpokenAnswerAnalysis) -> list[str]:
+    """Derive persisted gaps only from the auditable coverage contract.
+
+    The model may suggest useful coaching angles, but it must not persist a
+    statement as missing when the deterministic analyzer has evidence that the
+    same requirement was covered.
+    """
+    gaps: list[str] = []
+    for item in analysis.question_coverage:
+        if item.status == "missing":
+            gaps.append(f"{item.requirement}：{item.suggestion}")
+        elif item.status == "partial":
+            gaps.append(f"{item.requirement}仍需补充：{item.suggestion}")
+    return gaps
 
 
 def analyze_spoken_answer(

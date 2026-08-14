@@ -83,6 +83,39 @@ def test_chinese_technical_answer_recognizes_latency_metric_and_result():
     assert statuses["给出结果与验证方式"] == "covered"
 
 
+def test_past_context_question_uses_behavioral_contract_and_precise_evidence():
+    analysis = analyze_spoken_answer(
+        "请描述你在订单服务中，如何完成容量规划与故障恢复？",
+        (
+            "背景是订单服务高峰 P95 达到 420ms。"
+            "我先用 tracing 和慢查询日志定位热点，再拆分批量写入并设置有界缓存。"
+            "最终 P95 降到 180ms，高峰错误率下降 60%。"
+        ),
+    )
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+
+    assert analysis.answer_type == "behavioral_example"
+    assert coverage["明确具体公司/业务场景"].status == "covered"
+    assert "tracing" in coverage["说明方法或制定过程"].evidence
+    assert "最终 P95 降到 180ms" in coverage["给出结果与验证方式"].evidence
+    assert "容量规划与故障恢复" not in coverage["给出结果与验证方式"].evidence
+
+
+def test_result_evidence_does_not_confuse_target_with_achieved_outcome():
+    analysis = analyze_spoken_answer(
+        "请描述你如何降低订单服务延迟，并说明结果。",
+        (
+            "背景是订单服务促销高峰 P95 达到 420ms。"
+            "我的任务是把 P95 降到 200ms 以下。"
+            "我先分析慢查询，再增加索引。"
+            "最终 P95 降到 180ms，高峰错误率下降 60%。"
+        ),
+    )
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+
+    assert coverage["给出结果与验证方式"].evidence.startswith("最终 P95 降到 180ms")
+
+
 def test_method_question_with_choice_is_not_misclassified_as_motivation():
     analysis = analyze_spoken_answer(
         "你如何选择项目架构方案？",

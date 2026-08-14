@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 import httpx
+from e2e_support import authenticate_e2e_client
 
 
 def request_json(
@@ -22,7 +23,12 @@ def request_json(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response = client.request(method, path, json=payload)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"{method} {path} returned {response.status_code}: {response.text[:500]}"
+        ) from exc
     return response.json()
 
 
@@ -62,6 +68,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument("--username", default="")
+    parser.add_argument("--password", default="")
     args = parser.parse_args()
 
     started_at = time.perf_counter()
@@ -81,6 +89,12 @@ def main() -> None:
         )
 
     with httpx.Client(base_url=args.base_url, timeout=args.timeout) as client:
+        test_username = authenticate_e2e_client(
+            client,
+            username=args.username,
+            password=args.password,
+            prefix="interviewer_e2e",
+        )
         session = request_json(
             client,
             "POST",
@@ -217,11 +231,37 @@ def main() -> None:
         checkpoint("completed", completed)
         require(action_type(completed) == "evaluate", "completed sufficient evidence should evaluate")
 
+        # Live scoring is intentionally asynchronous. A real client must wait
+        # until every confirmed answer is scored (or fail loudly) before asking
+        # for the evidence-locked final report.
+        scoring_started = time.perf_counter()
+        scoring_deadline = scoring_started + min(args.timeout, 90.0)
+        while True:
+            snapshot = request_json(
+                client, "GET", f"/api/interviews/sessions/{session_id}"
+            )["state"]
+            records = snapshot["live_interview_records"]
+            failed = [record for record in records if record["scoring_status"] == "failed"]
+            if failed:
+                raise RuntimeError(
+                    f"live answer scoring failed: {failed[0]['scoring_error']}"
+                )
+            if records and all(record["scoring_status"] == "scored" for record in records):
+                break
+            if time.perf_counter() >= scoring_deadline:
+                raise RuntimeError("Timed out waiting for asynchronous live answer scoring")
+            time.sleep(0.25)
+        timings["scoring_wait_seconds"] = round(time.perf_counter() - scoring_started, 3)
+
         phase_started = time.perf_counter()
         evaluated = request_json(client, "POST", f"/api/evaluations/{session_id}")
         timings["evaluation_seconds"] = round(time.perf_counter() - phase_started, 3)
         final = evaluated["state"]
         require(final["evaluation"]["recommendation"], "evaluation recommendation is required")
+        require(
+            final["evaluation"].get("narrative_source") == "model",
+            "final live evaluation should use the evidence-locked model narrative",
+        )
         require(len(final["evidence"]) >= 3, "evaluation should have at least three evidence items")
         require(
             len({item["competency"] for item in final["evidence"] if item["competency"]}) >= 2,
@@ -230,6 +270,7 @@ def main() -> None:
 
         result = {
             "session_id": session_id,
+            "test_username": test_username,
             "complete": True,
             "timings": timings,
             "total_seconds": round(time.perf_counter() - started_at, 3),
@@ -237,6 +278,7 @@ def main() -> None:
             "live_records": len(final["live_interview_records"]),
             "evidence_items": len(final["evidence"]),
             "recommendation": final["evaluation"]["recommendation"],
+            "final_narrative_source": final["evaluation"]["narrative_source"],
         }
         print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -364,9 +364,13 @@ from persisted `Evidence` records before fixed thresholds are applied. The evalu
 agent then makes one optional structured LLM call for the narrative layer only. For each
 competency the model must cite numbered Evidence from that same competency and return an
 assessment plus one next verification question; it cannot return scores, recommendations,
-or new gaps. Competency-name and Evidence-reference validation is atomic, and invalid
+or new gaps. The prompt uses stable `C1`/`C2` competency IDs so a local model cannot break
+validation by translating or rephrasing a competency label. Competency-ID and
+Evidence-reference validation is atomic, and invalid
 output leaves the complete deterministic report intact. The UI labels whether the prose
-is model-generated or deterministic. `strong_hire`
+is model-generated or deterministic. A single recorded answer is never described as “no
+evidence”: the locked cross-validation gap is rendered as a request for a second independent
+case. `strong_hire`
 requires at least 0.85 score and 0.75 aggregate confidence, so a model cannot promote
 weak evidence by returning matching competency names with invented high scores.
 The answer-scoring model returns an untrusted `AnswerEvaluationDraft`; the service adds
@@ -662,6 +666,17 @@ was slimmed. That historical final-evaluation timing predates the current locked
 aggregation plus one bounded narrative call; feedback aggregation itself remains deterministic.
 The loop is usable end to end; the remaining gap to the 5s
 next-question target is the 20B model's own generation time, not code-path work.
+
+Both scripts create an isolated synthetic account by default (or accept explicit
+`--username`/`--password`), never print credentials or tokens, and encode release-quality
+assertions instead of merely checking HTTP 200. The candidate script explicitly starts and
+finishes the otherwise infinite mock, requires model scoring for every answer, requires the
+evidence-locked model narrative, and verifies every persisted gap maps to a missing/partial
+question requirement. The live script waits for asynchronous scoring before evaluation and
+requires a model narrative. On 2026-08-14, the configured 8001 model completed the candidate
+three-answer path in 92.853s and the interviewer path in 23.135s (8.026s live actions, 5.330s
+scoring wait, 4.509s final evaluation). The complete automated gate passed 295 tests plus
+Ruff, mypy, JavaScript syntax, and diff checks.
 
 The full audio loop (the interviewer's primary input path) was verified against the
 real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s

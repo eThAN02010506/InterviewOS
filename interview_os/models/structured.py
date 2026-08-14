@@ -25,7 +25,7 @@ class FrameworkMap(BaseModel):
 class CompetencyNarrativeDraft(BaseModel):
     """Model-written interpretation anchored to numbered persisted evidence."""
 
-    competency: str
+    competency_id: str
     evidence_numbers: list[int]
     assessment: str
     next_probe: str

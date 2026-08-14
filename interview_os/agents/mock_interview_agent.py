@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from pydantic import ValidationError
 
@@ -50,6 +51,29 @@ class MockInterviewAgent(Agent):
         )
 
     @staticmethod
+    def _is_behavioral_question(question: str) -> bool:
+        folded = question.casefold()
+        return any(
+            word in folded
+            for word in (
+                "案例",
+                "一次",
+                "已经发生",
+                "已经结束",
+                "请描述你在",
+                "请说明你在",
+                "tell me about a time",
+                "describe a time",
+            )
+        ) or bool(
+            re.search(
+                r"(?:请讲|谈谈|描述|说明).{0,30}经历|"
+                r"(?:你)?在.{2,80}(?:时|中)[，,]?(?:你)?(?:是)?如何",
+                question,
+            )
+        )
+
+    @staticmethod
     def deterministic_framework(state: InterviewState, competency: str) -> str:
         """Build a per-question reference-answer hint from the resume materials.
 
@@ -92,18 +116,10 @@ class MockInterviewAgent(Agent):
     def question_requirements(question: str) -> list[str]:
         """Return explicit requirements the answer and feedback must share."""
         folded = question.casefold()
-        explicit_case_markers = (
-            "案例",
-            "一次",
-            "已经发生",
-            "已经结束",
-            "tell me about a time",
-            "describe a time",
-        )
+        behavioral = MockInterviewAgent._is_behavioral_question(question)
         motivation = any(
             word in folded for word in ("为什么", "动机", "why this", "why do you")
-        ) and not any(word in folded for word in explicit_case_markers)
-        behavioral = any(word in folded for word in (*explicit_case_markers, "经历"))
+        ) and not behavioral
         if motivation:
             return ["说明动机与匹配关系"]
         if any(
@@ -131,7 +147,22 @@ class MockInterviewAgent(Agent):
             "明确个人职责与关键决策",
             "说明执行动作",
         ]
-        if any(word in folded for word in ("取舍", "权衡", "方案", "选择", "分歧", "约束")):
+        if any(
+            word in folded
+            for word in (
+                "如何",
+                "怎么",
+                "方法",
+                "取舍",
+                "权衡",
+                "方案",
+                "选择",
+                "分歧",
+                "约束",
+                "关键决定",
+                "关键决策",
+            )
+        ):
             requirements.append("说明方法或制定过程")
         requirements.append("给出结果与验证方式")
         return requirements
@@ -175,18 +206,10 @@ class MockInterviewAgent(Agent):
     def enrich_question(cls, question: InterviewQuestion) -> None:
         text = question.question.strip()
         folded = text.casefold()
-        explicit_case_markers = (
-            "案例",
-            "一次",
-            "已经发生",
-            "已经结束",
-            "tell me about a time",
-            "describe a time",
-        )
+        behavioral = cls._is_behavioral_question(text)
         motivation = any(
             word in folded for word in ("为什么", "动机", "why this", "why do you")
-        ) and not any(word in folded for word in explicit_case_markers)
-        behavioral = any(word in folded for word in (*explicit_case_markers, "经历"))
+        ) and not behavioral
         bounded = any(
             marker in folded
             for marker in ("结果", "验证", "复盘", "影响", "result", "impact", "outcome")
