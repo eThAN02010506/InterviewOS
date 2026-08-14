@@ -251,7 +251,9 @@ class CoachAgent(Agent):
         if len(action_markers) < 2:
             missing.append("需要补充关键决策或执行步骤")
 
-        feedback = ["本次模型结构化评分无效，以下为可解释规则评分，建议人工复核。"]
+        feedback = [
+            "评分模型经自动纠错后仍未返回有效 JSON；本题暂用可解释规则评分，建议人工复核。"
+        ]
         if not verified_metric:
             feedback.append("请从 ATS 或原始材料核对真实指标后再补充，不要估算数字。")
         if len(structure_markers) < 2:

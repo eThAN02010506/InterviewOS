@@ -54,3 +54,14 @@ def test_lan_microphone_requires_secure_context_with_actionable_message():
     assert 'id="secure-context-warning"' in html
     assert "window.isSecureContext" in script
     assert "局域网语音功能需要 HTTPS" in script
+
+
+def test_final_report_distinguishes_locked_scores_from_model_narrative():
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "AI 按证据框架生成 · 分数与缺口由规则锁定" in script
+    assert "item.assessment" in script
+    assert "item.next_probe" in script
+    assert ".evaluation-narrative" in styles
+    assert ".next-probe" in styles

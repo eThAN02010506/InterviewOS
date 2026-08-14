@@ -42,6 +42,21 @@ class InvalidLLM:
         return "not json"
 
 
+class EvaluationNarrativeLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":"现有回答显示候选人能够拆解招聘目标，但结果证据仍需核验。",'
+            '"competency_reviews":['
+            '{"competency":"招聘战略","evidence_numbers":[1,2],'
+            '"assessment":"两条证据分别说明了画像拆解和漏斗复盘；当前优势是方法清楚，缺口是结果尚未核验。",'
+            '"next_probe":"请说明这套策略在多长时间内改善了哪个已核验指标？"},'
+            '{"competency":"团队领导","evidence_numbers":[1],'
+            '"assessment":"现有证据说明候选人推动了协作，但不足以判断长期辅导成效。",'
+            '"next_probe":"请讲一个持续辅导团队成员并验证其成长结果的案例。"}'
+            ']}'
+        )
+
+
 class WrongEntityLLM:
     async def chat(self, messages, **kwargs):
         return (
@@ -325,6 +340,59 @@ async def test_evaluation_agent_uses_only_persisted_evidence_aggregates():
     assert all(item.score == pytest.approx(0.51) for item in state.evaluation.competencies)
     assert all("模型声称高分" not in item.supporting_evidence for item in state.evaluation.competencies)
     assert state.evaluation.summary == "已按已记录证据完成确定性聚合。"
+
+
+@pytest.mark.asyncio
+async def test_evaluation_agent_adds_model_narrative_without_delegating_scores_or_gaps():
+    agent = EvaluationAgent(llm_client=EvaluationNarrativeLLM())
+    state = InterviewState()
+    state.evidence = [
+        Evidence(
+            competency="招聘战略",
+            signal="我先拆解岗位画像。",
+            confidence=0.62,
+            notes="缺少已核验结果",
+        ),
+        Evidence(
+            competency="招聘战略",
+            signal="我每周复盘招聘漏斗。",
+            confidence=0.68,
+            notes="缺少具体时间线",
+        ),
+        Evidence(
+            competency="团队领导",
+            signal="我组织业务和招聘团队对齐标准。",
+            confidence=0.51,
+            notes="缺少长期辅导成果",
+        ),
+    ]
+
+    await agent.execute(state)
+
+    results = {item.competency: item for item in state.evaluation.competencies}
+    assert state.evaluation.narrative_source == "model"
+    assert "候选人能够拆解招聘目标" in state.evaluation.summary
+    assert results["招聘战略"].score == pytest.approx(0.65)
+    assert results["招聘战略"].gaps == ["缺少已核验结果", "缺少具体时间线"]
+    assert len(results["招聘战略"].narrative_evidence_ids) == 2
+    assert "结果尚未核验" in results["招聘战略"].assessment
+    assert results["团队领导"].gaps == ["缺少长期辅导成果", "需要更多独立回答交叉验证"]
+    assert results["团队领导"].next_probe.endswith("案例。")
+
+
+@pytest.mark.asyncio
+async def test_evaluation_agent_rejects_invalid_model_narrative_as_one_unit():
+    agent = EvaluationAgent(llm_client=InvalidLLM())
+    state = InterviewState()
+    state.evidence = [
+        Evidence(competency="招聘战略", signal="我复盘漏斗。", confidence=0.6)
+    ]
+
+    await agent.execute(state)
+
+    assert state.evaluation.narrative_source == "deterministic"
+    assert state.evaluation.competencies[0].assessment == ""
+    assert "已按已记录证据" in state.evaluation.summary
 
 
 @pytest.mark.asyncio

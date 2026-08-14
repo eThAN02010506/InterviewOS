@@ -116,6 +116,13 @@ class WorkflowMockLLM:
             return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"],"answer_framework":"讲清取舍并给出量化结果"}]}'
         if "analyze this interview answer" in lowered:
             return '{"content":0.8,"technical_depth":0.9,"structure":0.7,"impact":0.6,"feedback":["Add metrics"],"improved_answer":"Improved","observed_signals":["Explained trade-offs"],"missing_signals":["Business impact"]}'
+        if "structured final interview evaluation" in lowered:
+            return (
+                '{"summary":"现有证据显示了系统设计取舍，但业务结果仍需补充。",'
+                '"competency_reviews":[{"competency":"System Design",'
+                '"evidence_numbers":[1],"assessment":"回答说明了方案取舍；当前分数受结果证据不足限制。",'
+                '"next_probe":"请补充该方案上线后的已核验业务或稳定性结果。"}]}'
+            )
         if "based on the following evidence" in lowered:
             return '{"competencies":[{"competency":"System Design","score":0.78,"confidence":0.75,"supporting_evidence":["Explained trade-offs"],"gaps":["Scale evidence"]}],"overall_score":0.78,"recommendation":"lean_hire","summary":"Solid fundamentals","risks":["Limited scale evidence"]}'
         if "generate evidence-based feedback" in lowered:
@@ -158,6 +165,8 @@ class IdentityOmittingWorkflowLLM(WorkflowMockLLM):
 class EmptyEvaluationWorkflowLLM(WorkflowMockLLM):
     async def chat(self, messages, **kwargs):
         prompt = messages[-1]["content"].lower()
+        if "structured final interview evaluation" in prompt:
+            return '{"summary":"","competency_reviews":[]}'
         if "based on the following evidence" in prompt:
             return '{"competencies":[],"overall_score":0,"recommendation":"insufficient_evidence","summary":"","risks":[]}'
         return await super().chat(messages, **kwargs)
@@ -166,6 +175,12 @@ class EmptyEvaluationWorkflowLLM(WorkflowMockLLM):
 class UngroundedEvaluationWorkflowLLM(WorkflowMockLLM):
     async def chat(self, messages, **kwargs):
         prompt = messages[-1]["content"].lower()
+        if "structured final interview evaluation" in prompt:
+            return (
+                '{"summary":"Strong","competency_reviews":['
+                '{"competency":"Generic Communication","evidence_numbers":[1],'
+                '"assessment":"Strong","next_probe":"More?"}]}'
+            )
         if "based on the following evidence" in prompt:
             return '{"competencies":[{"competency":"Generic Communication","score":0.9,"confidence":0.9,"supporting_evidence":[],"gaps":[]}],"overall_score":0.9,"recommendation":"hire","summary":"Strong","risks":[]}'
         return await super().chat(messages, **kwargs)

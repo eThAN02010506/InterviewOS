@@ -487,6 +487,9 @@ class CompetencyEvaluation(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     supporting_evidence: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    assessment: str = ""
+    next_probe: str = ""
+    narrative_evidence_ids: list[UUID] = Field(default_factory=list)
 
 
 class EvaluationReport(BaseModel):
@@ -495,6 +498,7 @@ class EvaluationReport(BaseModel):
     recommendation: HiringRecommendation = HiringRecommendation.INSUFFICIENT_EVIDENCE
     summary: str = ""
     risks: list[str] = Field(default_factory=list)
+    narrative_source: str = "deterministic"  # model | deterministic
     finalized_at: datetime | None = None
 
 

@@ -366,6 +366,13 @@ textarea { resize: vertical; line-height: 1.55; }
 .evidence-row small { margin-top: 3px; color: var(--muted); }
 .evidence-row em { margin-top: 4px; color: var(--amber); font-size: 10px; font-style: normal; }
 .evidence-row b { color: var(--green); font-size: 17px; }
+.evaluation-narrative { margin-bottom: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft); }
+.evaluation-narrative small { color: var(--muted); }
+.evaluation-narrative p { margin: 7px 0 0; line-height: 1.65; }
+.evidence-row .competency-assessment { margin: 8px 0 0; line-height: 1.6; color: var(--ink); }
+.evidence-row .competency-assessment small { display: inline; color: var(--muted); }
+.evidence-row .next-probe { margin: 8px 0 0; padding: 9px 11px; border-left: 3px solid var(--green); background: var(--soft); line-height: 1.55; }
+.evidence-row .next-probe b { display: block; margin-bottom: 3px; font-size: 10px; color: var(--green); }
 
 .debug-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .debug-toolbar h2 { margin: 0 0 5px; }

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
+from uuid import UUID
 
 from interview_os.core.agent import Agent
-from interview_os.core.evidence import EvidencePolarity
+from interview_os.core.evidence import Evidence, EvidencePolarity
 from interview_os.core.message import Message
 from interview_os.core.state import (
     AnswerReviewStatus,
@@ -16,6 +18,8 @@ from interview_os.core.state import (
     HiringRecommendation,
     InterviewState,
 )
+from interview_os.models.prompt_templates import EVALUATION_NARRATIVE_PROMPT
+from interview_os.models.structured import EvaluationNarrativeDraft
 
 
 class EvaluationAgent(Agent):
@@ -30,10 +34,11 @@ class EvaluationAgent(Agent):
         )
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
-        # Recruitment decisions are a trust boundary. The model scores individual
-        # answers, but final aggregation and every narrative field are rebuilt from
-        # persisted Evidence so free-form output cannot introduce new allegations.
+        # Recruitment decisions are a trust boundary. Scores and factual fields are
+        # rebuilt from persisted Evidence; the optional model pass can only explain
+        # that locked result through validated same-competency references.
         report = self._fallback_report(state)
+        await self._add_model_narrative(state, report)
         provisional_scoring = self._has_provisional_scores(state)
         self._calibrate_recommendation(report, provisional_scoring=provisional_scoring)
         state.evaluation = report
@@ -45,6 +50,97 @@ class EvaluationAgent(Agent):
             dict.fromkeys(gap for item in report.competencies for gap in item.gaps)
         )
         return self.make_response(report.model_dump_json())
+
+    async def _add_model_narrative(
+        self, state: InterviewState, report: EvaluationReport
+    ) -> None:
+        """Add explanation and next probes without delegating factual aggregation."""
+        if self.llm_client is None or not report.competencies:
+            return
+        frame = []
+        evidence_ids: dict[str, dict[int, UUID]] = {}
+        evidence_by_competency: dict[str, list[Evidence]] = {}
+        for item in state.evidence:
+            evidence_by_competency.setdefault(item.competency or "综合能力", []).append(item)
+        for result in report.competencies:
+            items = evidence_by_competency.get(result.competency, [])
+            numbered = {}
+            evidence_rows = []
+            for number, item in enumerate(items, start=1):
+                numbered[number] = item.id
+                evidence_rows.append(
+                    {
+                        "number": number,
+                        "candidate_evidence": item.signal[:500],
+                        "confidence": round(item.confidence, 4),
+                        "polarity": item.polarity.value,
+                    }
+                )
+            evidence_ids[result.competency] = numbered
+            frame.append(
+                {
+                    "competency": result.competency,
+                    "fixed_score": round(result.score, 4),
+                    "fixed_gaps": result.gaps,
+                    "evidence": evidence_rows,
+                }
+            )
+        prompt = EVALUATION_NARRATIVE_PROMPT.format(
+            evaluation_frame=json.dumps(frame, ensure_ascii=False)
+        )
+        try:
+            draft = await self.think_structured(
+                prompt,
+                EvaluationNarrativeDraft,
+                max_tokens=1800,
+            )
+            if not self._apply_model_narrative(report, draft, evidence_ids):
+                raise ValueError("narrative competency or evidence references did not match")
+        except Exception as exc:  # noqa: BLE001 - optional narrative must not block report
+            self.record_degradation(
+                f"Final narrative validation failed; deterministic report retained ({type(exc).__name__})"
+            )
+
+    @staticmethod
+    def _apply_model_narrative(
+        report: EvaluationReport,
+        draft: EvaluationNarrativeDraft,
+        evidence_ids: dict[str, dict[int, UUID]],
+    ) -> bool:
+        """Atomically apply a complete narrative whose references all resolve."""
+        reviews = {item.competency: item for item in draft.competency_reviews}
+        expected = {item.competency for item in report.competencies}
+        if (
+            not draft.summary.strip()
+            or len(reviews) != len(draft.competency_reviews)
+            or set(reviews) != expected
+        ):
+            return False
+        resolved: dict[str, tuple[str, str, list[UUID]]] = {}
+        for competency in expected:
+            review = reviews[competency]
+            allowed = evidence_ids.get(competency, {})
+            numbers = list(dict.fromkeys(review.evidence_numbers))
+            if (
+                not review.assessment.strip()
+                or not review.next_probe.strip()
+                or not numbers
+                or any(number not in allowed for number in numbers)
+            ):
+                return False
+            resolved[competency] = (
+                review.assessment.strip()[:600],
+                review.next_probe.strip()[:300],
+                [allowed[number] for number in numbers],
+            )
+        for result in report.competencies:
+            assessment, next_probe, refs = resolved[result.competency]
+            result.assessment = assessment
+            result.next_probe = next_probe
+            result.narrative_evidence_ids = refs
+        report.summary = draft.summary.strip()[:1000]
+        report.narrative_source = "model"
+        return True
 
     @staticmethod
     def _has_provisional_scores(state: InterviewState) -> bool:

@@ -22,6 +22,22 @@ class FrameworkMap(BaseModel):
         return {item.question_index: item for item in self.frameworks}
 
 
+class CompetencyNarrativeDraft(BaseModel):
+    """Model-written interpretation anchored to numbered persisted evidence."""
+
+    competency: str
+    evidence_numbers: list[int]
+    assessment: str
+    next_probe: str
+
+
+class EvaluationNarrativeDraft(BaseModel):
+    """Narrative-only final report draft; scores and gaps are intentionally absent."""
+
+    summary: str
+    competency_reviews: list[CompetencyNarrativeDraft] = Field(default_factory=list)
+
+
 
 def parse_model_output(raw: str, model: type[ModelT]) -> ModelT:
     """Parse a JSON object (optionally fenced) and validate it as ``model``.

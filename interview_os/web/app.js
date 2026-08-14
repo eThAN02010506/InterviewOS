@@ -508,7 +508,9 @@ function renderReports() {
   const recommendationLabels = {strong_hire:'强烈建议录用',hire:'建议录用',lean_hire:'倾向录用',lean_no_hire:'倾向不录用',no_hire:'不建议录用',insufficient_evidence:'证据不足'};
   $('recommendation-label').textContent = recommendationLabels[evaluation?.recommendation] || '待评估';
   const competencyItems = evaluation?.competencies?.length ? evaluation.competencies : evidence;
-  const evidenceHtml = competencyItems.map(item => `<div class="evidence-row"><div><strong>${esc(item.competency)}</strong><small>${esc((item.supporting_evidence || [item.signal]).filter(Boolean).join(' · '))}</small>${item.gaps?.length?`<em>缺口：${esc(item.gaps.join(' · '))}</em>`:''}</div><b>${Math.round((item.score ?? item.confidence) * 100)}</b></div>`).join('');
+  const narrativeLabel=evaluation?.narrative_source==='model'?'AI 按证据框架生成 · 分数与缺口由规则锁定':'确定性证据聚合';
+  const narrativeHeader=evaluation?.summary?`<div class="evaluation-narrative"><small>${esc(narrativeLabel)}</small><p>${esc(evaluation.summary)}</p></div>`:'';
+  const evidenceHtml = narrativeHeader+competencyItems.map(item => `<div class="evidence-row"><div><strong>${esc(item.competency)}</strong><small>${esc((item.supporting_evidence || [item.signal]).filter(Boolean).join(' · '))}</small>${item.assessment?`<p class="competency-assessment">${esc(item.assessment)}${item.narrative_evidence_ids?.length?` <small>引用 ${item.narrative_evidence_ids.length} 条本能力证据</small>`:''}</p>`:''}${item.gaps?.length?`<em>缺口：${esc(item.gaps.join(' · '))}</em>`:''}${item.next_probe?`<p class="next-probe"><b>建议追问</b>${esc(item.next_probe)}</p>`:''}</div><b>${Math.round((item.score ?? item.confidence) * 100)}</b></div>`).join('');
   $('candidate-evidence').className = evidence.length ? '' : 'empty-state';
   $('candidate-evidence').innerHTML = evidenceHtml || '完成模拟面试后生成。';
   $('evaluation-evidence').className = evidence.length ? '' : 'empty-state';

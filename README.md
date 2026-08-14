@@ -358,11 +358,15 @@ Candidate-facing `overall` and `action_plan` fields are post-validated: hiring o
 employment recommendations are replaced with a preparation-only evidence summary,
 and interviewer commands such as “要求候选人…” are converted into direct candidate
 practice actions. Hiring decisions remain exclusive to the interviewer workspace.
-Interviewer recommendations are also deterministic: every competency score,
-confidence, supporting signal, gap, summary, and risk is rebuilt from persisted
-`Evidence` records before the final `overall_score` and recommendation thresholds are
-applied. The final evaluation and feedback stages do not call an LLM, so model-returned
-claims cannot enter the report. `strong_hire`
+Interviewer recommendations use a locked evidence core: every competency score,
+confidence, supporting signal, gap, risk, `overall_score`, and recommendation is rebuilt
+from persisted `Evidence` records before fixed thresholds are applied. The evaluation
+agent then makes one optional structured LLM call for the narrative layer only. For each
+competency the model must cite numbered Evidence from that same competency and return an
+assessment plus one next verification question; it cannot return scores, recommendations,
+or new gaps. Competency-name and Evidence-reference validation is atomic, and invalid
+output leaves the complete deterministic report intact. The UI labels whether the prose
+is model-generated or deterministic. `strong_hire`
 requires at least 0.85 score and 0.75 aggregate confidence, so a model cannot promote
 weak evidence by returning matching competency names with invented high scores.
 The answer-scoring model returns an untrusted `AnswerEvaluationDraft`; the service adds
@@ -654,8 +658,8 @@ generate a hiring evaluation. On the 2026-08-05 local run against the configured
 8001 text model, the script completed in 86.307 seconds; action-card planning took
 24.631 seconds and final evaluation took 40.886 seconds, down from 113.823 / 33.033 /
 51.191 on the 2026-08-02 run before scoring was made async and the planner context
-was slimmed. That historical final-evaluation timing predates the current deterministic
-aggregation, which removes the final evaluation and feedback model calls entirely.
+was slimmed. That historical final-evaluation timing predates the current locked-core
+aggregation plus one bounded narrative call; feedback aggregation itself remains deterministic.
 The loop is usable end to end; the remaining gap to the 5s
 next-question target is the 20B model's own generation time, not code-path work.
 
