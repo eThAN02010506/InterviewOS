@@ -42,7 +42,7 @@
 
       <section class="view active" id="view-candidate-home">
         <div class="hero panel dark-panel">
-          <div><p class="eyebrow mint">CANDIDATE WORKSPACE</p><h2>了解面试环境，打磨你的表达。</h2>
+          <div><h2>了解面试环境，打磨你的表达。</h2>
           <p>从你的经历出发，融合岗位要求、公司特征与面试官偏好，生成个人策略并通过模拟回答持续改进。</p></div>
           <div class="hero-orbit" aria-hidden="true"><span>候选人</span><span>岗位</span><span>公司</span><span>面试官</span><b>策略</b></div>
         </div>
@@ -60,7 +60,7 @@
 
       <section class="view" id="view-interviewer-home">
         <div class="hero panel interviewer-hero">
-          <div><p class="eyebrow">INTERVIEWER WORKSPACE</p><h2>把每个问题，变成有效证据。</h2>
+          <div><h2>把每个问题，变成有效证据。</h2>
           <p>从岗位能力模型出发，结合候选人经历设计面试轮次、追问策略和可观察信号，减少凭感觉的招聘判断。</p></div>
           <div class="interviewer-principles"><span>能力对齐</span><span>结构化问题</span><span>证据记录</span></div>
         </div>
@@ -124,7 +124,7 @@
 
       <section class="view" id="view-live">
         <div class="live-toolbar panel">
-          <div><p class="eyebrow">LIVE INTERVIEW COPILOT</p><h2>实时面试辅助</h2><p>录制当前发言，由局域网 ASR 转写；候选人回答结束后，8001 模型准备下一问题。</p></div>
+          <div><p class="eyebrow">LIVE INTERVIEW COPILOT</p><h2>会话控制</h2><p>录制当前发言，由局域网 ASR 转写；候选人回答结束后，8001 模型准备下一问题。</p></div>
           <div class="live-status"><span id="live-status-dot"></span><strong id="live-status-label">尚未开始</strong></div>
         </div>
         <div class="live-consent panel" id="live-consent-panel">
@@ -168,12 +168,12 @@
       </section>
 
       <section class="view" id="view-candidate-report">
-        <div class="report-head panel"><div><p class="eyebrow">GROWTH REPORT</p><h2>个人改进报告</h2><p>汇总模拟面试中的能力信号、稳定优势和待加强项。</p><button class="btn primary evaluation-trigger">生成最终报告</button></div><span class="report-score" id="report-score">—</span></div>
+        <div class="report-head panel"><div><p class="eyebrow">GROWTH REPORT</p><h2>本轮改进摘要</h2><p>汇总模拟面试中的能力信号、稳定优势和待加强项。</p><button class="btn primary evaluation-trigger">生成最终报告</button></div><span class="report-score" id="report-score">—</span></div>
         <div class="two-col"><article class="panel"><h3>能力证据</h3><div id="candidate-evidence" class="empty-state">完成模拟面试后生成。</div></article><article class="panel"><h3>建议优先级</h3><div id="candidate-priorities" class="empty-state">尚无足够回答数据。</div></article></div>
       </section>
 
       <section class="view" id="view-evaluation">
-        <div class="report-head panel"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2>候选人评估</h2><p>按胜任力查看已观察信号，明确哪些判断仍然缺乏证据。</p><button class="btn primary evaluation-trigger">聚合证据并评估</button></div><div class="recommendation"><small>招聘建议</small><strong id="recommendation-label">待评估</strong><span class="report-score" id="evaluation-score">—</span></div></div>
+        <div class="report-head panel"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2>证据汇总与招聘判断</h2><p>按胜任力查看已观察信号，明确哪些判断仍然缺乏证据。</p><button class="btn primary evaluation-trigger">聚合证据并评估</button></div><div class="recommendation"><small>招聘建议</small><strong id="recommendation-label">待评估</strong><span class="report-score" id="evaluation-score">—</span></div></div>
         <div class="two-col"><article class="panel"><h3>胜任力信号</h3><div id="evaluation-evidence" class="empty-state">尚无面试证据。</div></article><article class="panel"><h3>信号缺口</h3><div id="evaluation-gaps" class="empty-state">完成面试后更新。</div></article></div>
         <form class="panel transcript-form" id="transcript-form"><p class="eyebrow">REAL INTERVIEW IMPORT</p><h3>导入真实面试记录</h3><p>每行填写：能力 | 问题 | 候选人回答。导入后 AI 会逐条评分、记录证据并生成招聘建议。</p><textarea id="transcript-input" rows="7" required placeholder="系统设计 | 请描述你主导的一次架构演进 | 我先确认了流量目标……"></textarea><button class="btn primary" id="import-transcript" type="button">导入、评价并生成报告</button></form>
       </section>

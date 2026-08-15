@@ -157,6 +157,31 @@ const viewMeta = {
   settings:['RUNTIME CONFIGURATION','模型与搜索'], debug:['LOCAL OBSERVABILITY','Debug Console']
 };
 
+const nextActionLabels = {
+  'Review resume checks, then continue the interview workflow':'先完成简历待确认项，再继续生成面试策略',
+  'Start mock interview':'开始模拟面试',
+  'Answer the current mock interview question':'回答当前模拟面试问题',
+  'Answer the next mock interview question':'回答下一道模拟面试问题',
+  'Answer the evidence-seeking follow-up question':'回答当前证据追问',
+  'Generate evidence-based evaluation':'生成基于证据的面试评价',
+  'Mock interview completed without answers':'本轮尚无回答，可返回重新练习',
+  'Listen to the interview and prepare the next question':'监听面试并准备下一道问题',
+  'Review the transcript before final evaluation':'在最终评价前审阅转写内容',
+  'Interviewer reviews the suggested next question':'审阅并决定是否采用建议问题',
+  'Review more live evidence or generate evaluation':'继续补充现场证据，或生成候选人评价',
+  'Review updated live evidence or generate evaluation':'审阅更新后的证据，或生成候选人评价',
+  'Review corrected live evidence before evaluation':'评价前审阅修正后的现场证据',
+  'Regenerate candidate-dependent interview artifacts':'重新生成与候选人相关的面试材料',
+  'Regenerate evaluation after human score review':'人工复核后重新生成最终评价',
+  'Generate evidence-based hiring evaluation':'生成基于证据的招聘评价',
+  'Review the final evaluation and feedback':'审阅最终评价与改进反馈',
+  'Evaluation was interrupted; retry ending the interview':'评价过程曾中断，请重新结束面试以继续'
+};
+
+function localizedNextAction(value) {
+  return nextActionLabels[value] || value || '创建一个会话，然后选择候选人准备或企业面试设计。';
+}
+
 function candidateHomeAction(session) {
   if (!session) return {view:'', label:'创建第一个会话'};
   if (session.mock_session?.status === 'completed') return {view:'candidate-report', label:'查看本轮改进报告'};
@@ -176,6 +201,7 @@ function renderNavigation() {
 function setRole(role) {
   if (!navigation[role]) return;
   state.role = role;
+  document.documentElement.dataset.role = role;
   localStorage.setItem('interviewos.role', role);
   setView(`${role}-home`);
 }
@@ -295,11 +321,12 @@ function hydrateSessionForms() {
 function renderState() {
   const s = state.session;
   renderSecureContextWarning();
-  $('metric-workflow').textContent = s?.workflow?.status || '未开始';
+  const workflowLabels = {idle:'待开始', running:'分析中', completed:'已完成', failed:'需要处理'};
+  $('metric-workflow').textContent = workflowLabels[s?.workflow?.status] || s?.workflow?.status || '未开始';
   $('metric-step').textContent = s?.autopilot?.enabled ? `AI · ${s.autopilot.phase || s.autopilot.status}` : (s?.workflow?.current_step || '等待输入资料');
   const sources = (s?.company?.public_sources?.length || 0) + (s?.interviewer?.public_expressions?.length || 0);
   $('metric-sources').textContent = sources; $('metric-questions').textContent = s?.mock_interview?.questions?.length || 0; $('metric-evidence').textContent = s?.evidence?.length || 0;
-  $('next-action').textContent = s?.next_action || '创建一个会话，然后选择候选人准备或企业面试设计。';
+  $('next-action').textContent = localizedNextAction(s?.next_action);
   const homeAction=candidateHomeAction(s); const homeButton=$('candidate-next-action'); homeButton.textContent=homeAction.label; if(homeAction.view){homeButton.dataset.route=homeAction.view;delete homeButton.dataset.newPractice;}else{delete homeButton.dataset.route;homeButton.dataset.newPractice='true';}
   renderResumeReview(); renderJDReview(); renderFacts(); maybePromptEntityResolution();
   const profiles = [['候选人', !!s?.candidate?.skills?.length],['岗位',!!s?.job?.competencies?.length],['公司',!!s?.company?.dna],['面试官',!!s?.interviewer?.name]];
@@ -1129,6 +1156,7 @@ setInterval(()=>{if(state.view==='live')refreshLive()},3000);
 const requestedView = (location.hash || '').slice(1);
 if (navigation.interviewer.some(([view]) => view === requestedView)) state.role = 'interviewer';
 if (navigation.candidate.some(([view]) => view === requestedView)) state.role = 'candidate';
+document.documentElement.dataset.role = state.role;
 setView(viewMeta[requestedView] ? requestedView : `${state.role}-home`);
 checkHealth();
 async function restoreAuthenticatedSession() {

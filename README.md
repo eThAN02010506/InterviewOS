@@ -95,6 +95,17 @@ InterviewOS currently has two primary UI modes:
   copilot, debug console, and hiring evaluation once enough confirmed evidence
   exists.
 
+The web client uses one compact top workspace bar for both roles while keeping
+their workflows visually distinct: candidate surfaces use the preparation green
+palette and interviewer surfaces use a cooler evidence-review palette. Home pages
+prioritize the current session, next action, progress, and four scan-friendly
+metrics instead of repeating workspace labels. On narrow screens the role switch,
+four-step navigation, session selector, review actions, recording controls, and
+mock navigation reflow without horizontal scrolling; secondary account text is
+removed before any task action is hidden. Static workflow states and next-action
+copy are localized at the UI boundary so persisted legacy English state remains
+compatible without leaking mixed-language controls into the Chinese interface.
+
 The system is built around a few product rules:
 
 - Public research enriches company and interviewer understanding, but searched

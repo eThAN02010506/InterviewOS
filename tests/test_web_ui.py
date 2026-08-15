@@ -39,6 +39,18 @@ def test_accessible_interaction_states_are_styled():
     assert "prefers-reduced-motion" in styles
 
 
+def test_role_theme_and_mobile_layout_contracts_are_present():
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "document.documentElement.dataset.role = role" in script
+    assert "function localizedNextAction(value)" in script
+    assert 'html[data-role="interviewer"]' in styles
+    assert ".user-chip { display: none; }" in styles
+    assert ".review-summary, .review-claim" in styles
+    assert "overflow-x: hidden" in styles
+
+
 def test_mock_auto_speech_is_scoped_to_visible_mock_view():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 
