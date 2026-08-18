@@ -31,7 +31,11 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     assert 'id="custom-question-form"' in html
     assert 'id="custom-question-text"' in html
     assert "/questions`" in script
-    assert "自定义问题已加入，开始练习" in script
+    assert "问题已解析并加入练习" in script
+    assert 'id="mock-question-understanding"' in html
+    assert 'id="mock-question-understanding-body"' in html
+    assert "这道题真正想验证什么" in script
+    assert "data-related-question" in script
 
 
 def test_accessible_interaction_states_are_styled():

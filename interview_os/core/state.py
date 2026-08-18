@@ -285,6 +285,26 @@ class InterviewStrategy(BaseModel):
     likely_questions: list[str] = Field(default_factory=list)
 
 
+class QuestionUnderstanding(BaseModel):
+    """Persisted interpretation of what an interview question is testing.
+
+    The original question remains the source of truth. This metadata helps the
+    candidate transfer one answer asset across related phrasings without
+    silently adding model-generated questions to the interview queue.
+    """
+
+    answer_type: str = "general"
+    answer_type_label: str = "综合问题"
+    assessment_goal: str = "确认候选人能否直接回应问题并提供可信依据"
+    competency: str = "综合能力"
+    answer_boundary: list[str] = Field(default_factory=list)
+    common_mistakes: list[str] = Field(default_factory=list)
+    transfer_principle: str = "先识别不变的考察目标，再替换最匹配的真实证据。"
+    related_questions: list[str] = Field(default_factory=list)
+    likely_follow_ups: list[str] = Field(default_factory=list)
+    analysis_source: str = "rules"  # rules | model
+
+
 class InterviewQuestion(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     question: str = ""
@@ -296,6 +316,7 @@ class InterviewQuestion(BaseModel):
     question_requirements: list[str] = Field(default_factory=list)
     example_answer: str = ""
     example_answer_note: str = "教学示例为虚构场景，只示范表达方式；请替换为你的真实经历和可核验结果。"
+    understanding: QuestionUnderstanding | None = None
     source: str = "initial"  # initial | likely | competency | refill | custom
 
 

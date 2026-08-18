@@ -247,7 +247,13 @@ After candidate preparation, run an interactive mock interview:
    therefore returns to the interrupted question. Exact wording is preserved,
    normalized duplicates reuse the existing pool item, and the server attaches
    answer requirements, a candidate-grounded framework, and a clearly fictional
-   teaching example without waiting for another model call.
+   teaching example. It also persists a structured `understanding` object with
+   the question type, assessment goal, answer boundary, question-specific common
+   mistakes, transfer principle, likely verification follow-ups, and three
+   related phrasings. The local model may semantically refine that interpretation
+   within a bounded call; deterministic rules remain the scoring contract and
+   the complete fallback when the model is slow or invalid. Related phrasings are
+   suggestions only and enter the pool only when the user explicitly chooses one.
 2. `POST /api/mock-interviews/{session_id}/start`
 3. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,

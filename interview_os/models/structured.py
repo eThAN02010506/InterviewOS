@@ -38,6 +38,20 @@ class EvaluationNarrativeDraft(BaseModel):
     competency_reviews: list[CompetencyNarrativeDraft] = Field(default_factory=list)
 
 
+class CustomQuestionAnalysisDraft(BaseModel):
+    """Bounded semantic interpretation returned by the local model."""
+
+    answer_type: str
+    answer_type_label: str
+    assessment_goal: str
+    competency: str
+    answer_boundary: list[str]
+    common_mistakes: list[str]
+    transfer_principle: str
+    related_questions: list[str]
+    likely_follow_ups: list[str]
+
+
 
 def parse_model_output(raw: str, model: type[ModelT]) -> ModelT:
     """Parse a JSON object (optionally fenced) and validate it as ``model``.

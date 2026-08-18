@@ -386,6 +386,11 @@ def question_requirements(question: str) -> list[str]:
     return list(dict.fromkeys(requirements))
 
 
+def question_answer_type(question: str) -> str:
+    """Expose the shared answer taxonomy used by guidance and scoring."""
+    return _answer_type(question)
+
+
 def _coverage(
     question: str, answer: str, steps: list[SemanticAnswerStep]
 ) -> list[QuestionCoverageItem]:

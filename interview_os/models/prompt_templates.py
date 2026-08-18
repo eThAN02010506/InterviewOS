@@ -160,6 +160,22 @@ MOCK_FRAMEWORK_PROMPT = (
     "每一道题恰好一条, question_index 对应题目列表中的序号。\n"
 )
 
+CUSTOM_QUESTION_ANALYSIS_PROMPT = (
+    "你是面试问题分析器。只分析问题要收集什么证据，不要回答问题。\n\n"
+    "用户原始问题：{question}\n"
+    "用户指定关注点：{competency}\n"
+    "目标岗位：{job_title}\n"
+    "已知岗位要求：{job_requirement}\n\n"
+    "输出严格 JSON：answer_type 使用 behavioral_example、methodology、situational、"
+    "motivation、technical、case_analysis 或 general 之一；answer_type_label 用简短中文；"
+    "assessment_goal 说明面试官真正想验证的判断；competency 是一个具体能力；"
+    "answer_boundary 列出 2-5 个这道题必须覆盖且不得擅自扩大的边界；"
+    "common_mistakes 列出 2-4 个针对本题的常见误区；transfer_principle 说明如何复用同一"
+    "真实经历回答同类问题但调整重点；related_questions 给出 3 个考察目标相同但角度明显"
+    "不同的真实面试问法；likely_follow_ups 给出 2-4 个用于验证回答真实性或深度的追问。"
+    "变体不得只是替换同义词，不得假定候选人具有题目未给出的经历。"
+)
+
 ANSWER_COACH_PROMPT = (
     "Analyze this interview answer and provide coaching.\n\n"
     "Question: {question}\n"

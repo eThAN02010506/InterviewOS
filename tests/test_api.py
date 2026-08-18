@@ -35,6 +35,8 @@ class WorkflowLLM:
             return '{"summary":"Show impact","key_risks":["Scope"]}'
         if "mock interview plan" in prompt:
             return '{"questions":[{"question":"Design it","competency":"System Design"}]}'
+        if "你是面试问题分析器" in messages[-1]["content"]:
+            return '{"answer_type":"behavioral_example","answer_type_label":"行为经历题","assessment_goal":"验证复盘能力是否有真实证据","competency":"复盘能力","answer_boundary":["提供真实案例"],"common_mistakes":["只讲团队"],"transfer_principle":"复用事实，切换取舍、修正或协作重点。","related_questions":["讲一次关键取舍。","讲一次失败后的调整。","同事会如何描述你的贡献？"],"likely_follow_ups":["你个人做了什么？","结果如何验证？"]}'
         if "analyze this interview answer" in prompt:
             return '{"content":0.8,"technical_depth":0.8,"structure":0.8,"impact":0.8,"feedback":[],"improved_answer":"Better","observed_signals":["Clear design"],"missing_signals":[]}'
         if "based on the following evidence" in prompt:
@@ -1631,6 +1633,9 @@ def test_custom_mock_question_api_adds_and_activates_question(tmp_path):
     assert payload["current_question"]["source"] == "custom"
     assert payload["current_question"]["answer_framework"]
     assert payload["current_question"]["question_requirements"]
+    understanding = payload["current_question"]["understanding"]
+    assert understanding["answer_type"] == "behavioral_example"
+    assert len(understanding["related_questions"]) == 3
 
 
 def test_custom_mock_question_api_validates_length(tmp_path):

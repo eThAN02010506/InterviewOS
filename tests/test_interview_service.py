@@ -114,6 +114,8 @@ class WorkflowMockLLM:
             )
         if "mock interview plan" in lowered:
             return '{"questions":[{"question":"Explain the architecture","competency":"System Design","rationale":"Tests depth","strong_signals":["Trade-offs"],"follow_ups":["How does it scale?"],"answer_framework":"讲清取舍并给出量化结果"}]}'
+        if "你是面试问题分析器" in prompt:
+            return '{"answer_type":"motivation","answer_type_label":"动机匹配题","assessment_goal":"验证职业选择是否具体且稳定","competency":"求职动机","answer_boundary":["说明动机与匹配关系"],"common_mistakes":["只谈离职原因","没有岗位证据"],"transfer_principle":"保留选择证据，按问法切换决策标准和长期目标。","related_questions":["这个岗位最吸引你的工作内容是什么？","你会用哪些标准决定是否加入？","这次选择与三年目标有什么关系？"],"likely_follow_ups":["什么经历支持这个判断？","什么情况会改变你的决定？"]}'
         if "analyze this interview answer" in lowered:
             return '{"content":0.8,"technical_depth":0.9,"structure":0.7,"impact":0.6,"feedback":["Add metrics"],"improved_answer":"Improved","observed_signals":["Explained trade-offs"],"missing_signals":["Business impact"]}'
         if "structured final interview evaluation" in lowered:
@@ -1484,9 +1486,10 @@ async def test_custom_mock_question_starts_practice_with_full_support(tmp_path):
     assert question.question_requirements
     assert question.answer_framework
     assert question.example_answer
-    assert question.follow_ups == [
-        "请用一段具体经历说明这个选择与长期目标的关系，并说明你会如何验证双方匹配。"
-    ]
+    assert question.understanding is not None
+    assert question.understanding.answer_type == "motivation"
+    assert len(question.understanding.related_questions) == 3
+    assert question.follow_ups == question.understanding.likely_follow_ups[:3]
 
     persisted = await storage.get_session_state(session_id, owner_id="local")
     assert persisted is not None
@@ -1497,6 +1500,7 @@ async def test_custom_mock_question_starts_practice_with_full_support(tmp_path):
     restored_question = restored.current_mock_question(loaded)
     assert restored_question is not None
     assert restored_question.question == original
+    assert restored_question.understanding is not None
     await storage.close()
 
 

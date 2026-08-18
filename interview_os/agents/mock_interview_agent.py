@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -9,6 +10,10 @@ from pydantic import ValidationError
 
 from interview_os.core.agent import Agent
 from interview_os.core.message import Message
+from interview_os.core.question_understanding import (
+    deterministic_question_understanding,
+    merge_model_understanding,
+)
 from interview_os.core.spoken_answer import analyze_spoken_answer
 from interview_os.core.spoken_answer import (
     question_requirements as derive_question_requirements,
@@ -19,13 +24,15 @@ from interview_os.core.state import (
     InterviewQuestion,
     InterviewState,
     MockInterviewPlan,
+    QuestionUnderstanding,
 )
 from interview_os.models.prompt_templates import (
+    CUSTOM_QUESTION_ANALYSIS_PROMPT,
     MOCK_FRAMEWORK_PROMPT,
     MOCK_QUESTION_PROMPT,
     MOCK_REFILL_PROMPT,
 )
-from interview_os.models.structured import FrameworkMap
+from interview_os.models.structured import CustomQuestionAnalysisDraft, FrameworkMap
 from interview_os.tools.web_search import format_employer_business_context
 
 logger = logging.getLogger(__name__)
@@ -129,6 +136,51 @@ class MockInterviewAgent(Agent):
     def question_requirements(question: str) -> list[str]:
         """Return explicit requirements the answer and feedback must share."""
         return derive_question_requirements(question)
+
+    async def analyze_custom_question(
+        self,
+        state: InterviewState,
+        question: str,
+        *,
+        competency: str = "",
+    ) -> QuestionUnderstanding:
+        """Interpret a user question with a deterministic, model-enhanced contract.
+
+        Model analysis is optional and bounded. The deterministic answer
+        requirements remain authoritative so pre-answer coaching cannot drift
+        away from the post-answer scoring contract.
+        """
+        fallback = deterministic_question_understanding(question, competency=competency)
+        if self.llm_client is None:
+            return fallback
+        prompt = CUSTOM_QUESTION_ANALYSIS_PROMPT.format(
+            question=question,
+            competency=competency or "（未指定，请从问题推断）",
+            job_title=state.job.title or "（未提供）",
+            job_requirement=(
+                state.job.model_dump_json() + "\n" + state.job_review.model_dump_json()
+            )[:5000],
+        )
+        try:
+            draft = await asyncio.wait_for(
+                self.think_structured(
+                    prompt,
+                    CustomQuestionAnalysisDraft,
+                    context="只解释题目本身，不推断候选人经历。",
+                    max_tokens=900,
+                ),
+                timeout=30,
+            )
+        except (TimeoutError, ValueError, TypeError, ValidationError) as exc:
+            logger.warning("Custom question semantic analysis fell back to rules: %s", exc)
+            self.record_degradation("自定义问题语义解析失败，已使用确定性题型与题族分析")
+            return fallback
+        return merge_model_understanding(
+            fallback,
+            **draft.model_dump(),
+            original_question=question,
+            explicit_competency=competency,
+        )
 
     @staticmethod
     def teaching_example(competency: str, question: str = "") -> str:

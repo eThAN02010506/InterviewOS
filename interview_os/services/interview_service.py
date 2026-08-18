@@ -21,6 +21,7 @@ from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
+from interview_os.core.question_understanding import deterministic_question_understanding
 from interview_os.core.request_context import current_owner
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
@@ -2395,17 +2396,41 @@ class InterviewService:
         competency: str = "",
         practice_now: bool = True,
     ) -> InterviewState:
-        """Persist a user-supplied question in the regular mock pipeline.
+        """Interpret and persist a user-supplied question in the mock pipeline.
 
-        Custom wording stays untouched. The deterministic question contract,
-        candidate-grounded framework, and fictional teaching example are added
-        locally so the request remains fast and cannot fail on a slow LLM.
+        The semantic model call runs outside the session mutation lock. A
+        deterministic interpretation is always available, and the original
+        wording stays untouched regardless of model output.
         """
         runtime = await self._get_runtime(session_id)
         normalized_text = " ".join(question_text.split()).strip()
         normalized_competency = " ".join(competency.split()).strip()
         if len(normalized_text) < 2:
             raise MockInterviewStateError("自定义问题至少需要 2 个字符")
+
+        # Analyze from a stable snapshot without blocking answers/navigation.
+        # The write phase below revalidates status and duplicates after the
+        # optional model call completes.
+        async with self._lock_for(session_id):
+            state = runtime.state
+            if state.mock_session.status in {
+                MockSessionStatus.EVALUATING,
+                MockSessionStatus.COMPLETED,
+            }:
+                raise MockInterviewStateError("本轮已结束，请新建练习会话后添加问题")
+            state_snapshot = state.model_copy(deep=True)
+        agent = runtime.get_agent("mock_interview_agent")
+        if agent is not None and hasattr(agent, "analyze_custom_question"):
+            understanding = await agent.analyze_custom_question(  # type: ignore[union-attr]
+                state_snapshot,
+                normalized_text,
+                competency=normalized_competency,
+            )
+        else:
+            understanding = deterministic_question_understanding(
+                normalized_text, competency=normalized_competency
+            )
+
         async with self._lock_for(session_id):
             state = runtime.state
             mock_session = state.mock_session
@@ -2426,15 +2451,7 @@ class InterviewService:
                 None,
             )
             if existing_index is None:
-                selected_competency = normalized_competency or next(
-                    (
-                        item
-                        for item in state.job.competencies
-                        if item.casefold() in comparison
-                    ),
-                    "自定义问题",
-                )
-                agent = runtime.get_agent("mock_interview_agent")
+                selected_competency = normalized_competency or understanding.competency
                 requirements = (
                     agent.question_requirements(normalized_text)  # type: ignore[union-attr]
                     if agent is not None and hasattr(agent, "question_requirements")
@@ -2454,27 +2471,16 @@ class InterviewService:
                     if agent is not None and hasattr(agent, "teaching_example")
                     else ""
                 )
-                motivation_question = any(
-                    word in f"{selected_competency} {normalized_text}".casefold()
-                    for word in ("动机", "为什么", "求职", "why", "motivation")
-                )
                 custom_question = InterviewQuestion(
                     question=normalized_text,
                     competency=selected_competency,
                     rationale="用户认为面试中可能出现的问题",
                     strong_signals=requirements,
-                    follow_ups=[
-                        (
-                            "请用一段具体经历说明这个选择与长期目标的关系，"
-                            "并说明你会如何验证双方匹配。"
-                            if motivation_question
-                            else "请针对刚才尚未展开的部分，补充一个具体事实、"
-                            "你的判断依据或可验证结果。"
-                        )
-                    ],
+                    follow_ups=understanding.likely_follow_ups[:3],
                     answer_framework=framework,
                     question_requirements=requirements,
                     example_answer=example,
+                    understanding=understanding,
                     source="custom",
                 )
                 if practice_now:
@@ -3870,7 +3876,14 @@ class InterviewService:
                 # User-supplied wording is itself part of the practice contract.
                 # It already receives requirements/framework/example at insert
                 # time and must not be rewritten by legacy-question migration.
-                if question.source != "custom":
+                if question.source == "custom" and question.understanding is None:
+                    question.understanding = deterministic_question_understanding(
+                        question.question,
+                        competency=(
+                            "" if question.competency == "自定义问题" else question.competency
+                        ),
+                    )
+                elif question.source != "custom":
                     mock_agent.enrich_question(question)  # type: ignore[union-attr]
         # In-process refill tasks do not survive a service restart.
         runtime.state.mock_session.refill_in_flight = False
