@@ -296,7 +296,7 @@ class InterviewQuestion(BaseModel):
     question_requirements: list[str] = Field(default_factory=list)
     example_answer: str = ""
     example_answer_note: str = "教学示例为虚构场景，只示范表达方式；请替换为你的真实经历和可核验结果。"
-    source: str = "initial"  # initial | likely | competency | refill
+    source: str = "initial"  # initial | likely | competency | refill | custom
 
 
 class InterviewRound(BaseModel):

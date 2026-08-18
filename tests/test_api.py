@@ -1609,6 +1609,43 @@ def test_mock_interview_retry_endpoint(tmp_path):
         assert responses[0]["answer"] == "better"
 
 
+def test_custom_mock_question_api_adds_and_activates_question(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-question-api.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        response = client.post(
+            f"/api/mock-interviews/{session_id}/questions",
+            json={
+                "question": "你如何处理一次关键项目失败？",
+                "competency": "复盘能力",
+                "practice_now": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mock_session"]["status"] == "active"
+    assert payload["current_question"]["question"] == "你如何处理一次关键项目失败？"
+    assert payload["current_question"]["competency"] == "复盘能力"
+    assert payload["current_question"]["source"] == "custom"
+    assert payload["current_question"]["answer_framework"]
+    assert payload["current_question"]["question_requirements"]
+
+
+def test_custom_mock_question_api_validates_length(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-question-validation.db'}")
+    app = create_app(storage=storage, llm_client=WorkflowLLM(), configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        response = client.post(
+            f"/api/mock-interviews/{session_id}/questions",
+            json={"question": "?"},
+        )
+
+    assert response.status_code == 422
+
+
 def test_app_shutdown_stops_background_before_each_distinct_model_client(tmp_path):
     order = []
 

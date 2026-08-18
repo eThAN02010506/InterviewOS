@@ -240,20 +240,28 @@ entity's matching official domain.
 
 After candidate preparation, run an interactive mock interview:
 
-1. `POST /api/mock-interviews/{session_id}/start`
-2. Present the returned `current_question` (each question carries an
+1. Optionally `POST /api/mock-interviews/{session_id}/questions` with a user's
+   expected question and optional competency. With `practice_now: true` (the UI
+   default), an idle session starts immediately or an active session inserts the
+   question directly after the current one and moves to it; previous navigation
+   therefore returns to the interrupted question. Exact wording is preserved,
+   normalized duplicates reuse the existing pool item, and the server attaches
+   answer requirements, a candidate-grounded framework, and a clearly fictional
+   teaching example without waiting for another model call.
+2. `POST /api/mock-interviews/{session_id}/start`
+3. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,
    what structure to follow, and which signals to emphasize, generated per
    question by the model).
-3. `POST /api/mock-interviews/{session_id}/answers` with its `question_id` and
+4. `POST /api/mock-interviews/{session_id}/answers` with its `question_id` and
    answer. A retry also sends `retry: true` plus the exact `retry_response_id`,
    so retrying a follow-up replaces that follow-up rather than its parent answer.
-4. `POST /api/mock-interviews/{session_id}/next` advances to the next question
+5. `POST /api/mock-interviews/{session_id}/next` advances to the next question
    (or offers an evidence-seeking follow-up when signals are missing; advancing
    may skip an unanswered question — the interviewer stays in control).
-5. `POST /api/mock-interviews/{session_id}/previous` goes back to the previous
+6. `POST /api/mock-interviews/{session_id}/previous` goes back to the previous
    question.
-6. `POST /api/mock-interviews/{session_id}/finish` ends the interview and runs
+7. `POST /api/mock-interviews/{session_id}/finish` ends the interview and runs
    the evaluation.
 
 Immediately after a main or follow-up answer is submitted, the question panel keeps
@@ -270,7 +278,12 @@ chooses 结束面试. During the interview 上一题 / 下一题 / 结束面试 
 available so the interviewer can navigate freely. At a pool boundary, a unique
 deterministic question is inserted immediately while the model refill continues,
 so a slow, failed, or duplicate-only refill cannot leave an active interview
-without a current question. An answered question can only be submitted again
+without a current question. A compact “添加我认为会被问的问题” panel is available
+before and during practice; custom questions are persisted with `source=custom`
+and use the same TTS, voice answer, scoring, follow-up, evidence, and final-report
+pipeline as generated questions. A completed/evaluating session remains immutable
+and asks the user to create a new practice session. An answered question can only
+be submitted again
 through explicit retry; the service replaces its response and linked evidence
 instead of silently creating duplicates. Replacing a main answer also invalidates
 the follow-up responses and evidence derived from that superseded answer. Superseded

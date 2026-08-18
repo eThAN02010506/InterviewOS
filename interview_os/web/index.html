@@ -153,7 +153,16 @@
 
       <section class="view" id="view-mock">
         <div class="mock-layout">
-          <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status" aria-live="polite">尚未开始</h2></div><span class="step-badge" id="mock-progress">0 / 0</span></div>
+          <article class="panel question-panel"><div class="section-head"><div><p class="eyebrow">LIVE MOCK</p><h2 id="mock-status" aria-live="polite">尚未开始</h2></div><span class="step-badge hidden" id="mock-progress" aria-hidden="true"></span></div>
+            <details class="custom-question-panel" id="custom-question-panel">
+              <summary>添加我认为会被问的问题</summary>
+              <form id="custom-question-form">
+                <label>问题原文<textarea id="custom-question-text" rows="3" maxlength="4000" required placeholder="例如：为什么你想从大公司转到创业公司？"></textarea></label>
+                <label>考察能力或关注点（可选）<input id="custom-question-competency" maxlength="200" placeholder="例如：求职动机、战略思维、系统设计"></label>
+                <p class="custom-question-note" id="custom-question-note">加入后立即练习，并使用相同的语音、评分、追问和报告流程。</p>
+                <button class="btn primary" id="add-custom-question" type="submit">加入并立即练习</button>
+              </form>
+            </details>
             <div id="mock-question" class="question-copy empty-state">先完成候选人准备工作流，生成个性化问题。</div>
             <div id="mock-requirements" class="question-requirements hidden"></div>
             <div class="question-audio-controls"><button class="btn compact" id="mock-speak-question" type="button">🔊 朗读问题</button><label class="checkbox-inline"><input id="mock-auto-speak" type="checkbox" checked>自动朗读新问题</label><audio id="mock-question-audio" controls class="hidden"></audio></div>

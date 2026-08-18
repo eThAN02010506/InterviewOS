@@ -1462,6 +1462,86 @@ async def test_runtime_reload_recovers_interrupted_mock_evaluation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_custom_mock_question_starts_practice_with_full_support(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-question.db'}")
+    await storage.init_db()
+    service = InterviewService(storage)
+    session_id, _ = await service.create_session(job_title="产品负责人")
+
+    original = "为什么你想从大公司转到创业公司？"
+    state = await service.add_custom_mock_question(
+        session_id,
+        original,
+        competency="求职动机",
+    )
+
+    question = service.current_mock_question(state)
+    assert state.mock_session.status == MockSessionStatus.ACTIVE
+    assert question is not None
+    assert question.question == original
+    assert question.competency == "求职动机"
+    assert question.source == "custom"
+    assert question.question_requirements
+    assert question.answer_framework
+    assert question.example_answer
+    assert question.follow_ups == [
+        "请用一段具体经历说明这个选择与长期目标的关系，并说明你会如何验证双方匹配。"
+    ]
+
+    persisted = await storage.get_session_state(session_id, owner_id="local")
+    assert persisted is not None
+    assert persisted["mock_interview"]["questions"][0]["source"] == "custom"
+
+    restored = InterviewService(storage)
+    loaded = await restored.get_state(session_id)
+    restored_question = restored.current_mock_question(loaded)
+    assert restored_question is not None
+    assert restored_question.question == original
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_mock_question_inserts_after_active_question_and_deduplicates(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-question-order.db'}")
+    await storage.init_db()
+    service = InterviewService(storage)
+    session_id, state = await service.create_session()
+    state.mock_interview.questions = [
+        InterviewQuestion(question="原来的第一题", competency="沟通"),
+        InterviewQuestion(question="原来的第二题", competency="协作"),
+    ]
+    await service._persist(session_id, state)
+    await service.start_mock_interview(session_id)
+
+    state = await service.add_custom_mock_question(session_id, "我最担心被问的问题？")
+    assert state.mock_session.current_question_index == 1
+    assert state.mock_interview.questions[0].question == "原来的第一题"
+    assert state.mock_interview.questions[1].source == "custom"
+    assert state.mock_interview.questions[2].question == "原来的第二题"
+
+    state = await service.add_custom_mock_question(
+        session_id, "  我最担心被问的问题？  "
+    )
+    assert len(state.mock_interview.questions) == 3
+    assert state.mock_session.current_question_index == 1
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_mock_question_rejects_completed_session(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-question-complete.db'}")
+    await storage.init_db()
+    service = InterviewService(storage)
+    session_id, _ = await service.create_session()
+    await service.add_custom_mock_question(session_id, "先练习这个问题")
+    await service.finish_mock_interview(session_id)
+
+    with pytest.raises(MockInterviewStateError, match="本轮已结束"):
+        await service.add_custom_mock_question(session_id, "再添加一个问题")
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_audio_suggestion_is_not_injected_after_live_session_ends(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'stale-live-suggestion.db'}")
     await storage.init_db()

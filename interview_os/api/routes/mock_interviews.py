@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from interview_os.api.dependencies import get_interview_service
-from interview_os.api.schemas.interview import MockAnswerRequest, MockSessionResponse
+from interview_os.api.schemas.interview import (
+    CustomMockQuestionRequest,
+    MockAnswerRequest,
+    MockSessionResponse,
+)
 from interview_os.services.interview_service import InterviewService
 
 router = APIRouter()
@@ -70,6 +74,19 @@ async def start_mock_interview(session_id: str, service: Service):
 @router.get("/{session_id}", response_model=MockSessionResponse)
 async def get_mock_interview(session_id: str, service: Service):
     state = await service.get_state(session_id)
+    return _response(session_id, state, service)
+
+
+@router.post("/{session_id}/questions", response_model=MockSessionResponse)
+async def add_custom_mock_question(
+    session_id: str, req: CustomMockQuestionRequest, service: Service
+):
+    state = await service.add_custom_mock_question(
+        session_id,
+        req.question,
+        competency=req.competency,
+        practice_now=req.practice_now,
+    )
     return _response(session_id, state, service)
 
 

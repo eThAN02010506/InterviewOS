@@ -705,6 +705,20 @@ def test_mock_quality_contract_preserves_motivation_question_type():
     assert question.question_requirements == ["说明动机与匹配关系"]
 
 
+def test_mock_motivation_support_answers_the_actual_question():
+    state = InterviewState()
+    framework = MockInterviewAgent.deterministic_framework(state, "求职动机")
+    example = MockInterviewAgent.teaching_example(
+        "求职动机", "为什么你想从成熟的大公司转到早期创业公司？"
+    )
+
+    assert "主动选择什么" in framework
+    assert "目标公司阶段" in framework
+    assert "不是因为否定成熟平台" in example
+    assert "入职前三个月" in example
+    assert "跨团队项目" not in example
+
+
 def test_mock_quality_contract_keeps_method_question_as_methodology():
     question = InterviewQuestion(
         question="你如何衡量平台健康度？", competency="系统设计"

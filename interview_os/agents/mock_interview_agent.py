@@ -87,6 +87,15 @@ class MockInterviewAgent(Agent):
         repeated template. Rendered as a compact bulleted list.
         """
         competency = competency or "岗位核心能力"
+        folded_competency = competency.casefold()
+        if any(word in folded_competency for word in ("动机", "求职", "意愿", "motivation")):
+            return (
+                "建议这样组织：\n"
+                "· 先说明你主动选择什么，而不是抱怨正在离开什么\n"
+                "· 用一段真实经历证明你在哪类问题、责任范围和工作节奏中最投入\n"
+                "· 对照目标公司阶段与岗位任务，说明双方匹配点和你能立即贡献什么\n"
+                "· 最后说明你已考虑的风险，以及入职后前三个月会如何验证选择"
+            )
 
         # Pool of candidate-specific material lines.
         materials: list[str] = [
@@ -125,6 +134,29 @@ class MockInterviewAgent(Agent):
     def teaching_example(competency: str, question: str = "") -> str:
         """Return a realistic but explicitly fictional behavior example."""
         folded = f"{competency} {question}".casefold()
+        if any(
+            word in folded
+            for word in (
+                "动机",
+                "为什么加入",
+                "为什么选择",
+                "为什么想",
+                "转到创业",
+                "求职",
+                "why join",
+                "why this",
+                "motivation",
+            )
+        ):
+            return (
+                "我考虑转到早期公司，不是因为否定成熟平台，而是过去两年里我最投入的工作，"
+                "都是从问题还不清晰时开始：和客户确认需求、定义首版指标，再带团队快速验证。"
+                "在成熟组织中，这类从零到一的责任通常被拆给多个团队；我下一阶段希望对产品结果承担"
+                "更完整的责任。这个岗位吸引我的具体原因，是公司正在验证新业务的可复制增长方式，"
+                "而我做过用户访谈、指标设计和跨团队落地，能先帮助团队缩短验证周期。我也理解早期"
+                "公司的资源和流程不完整，所以不会把“创业”想成单纯更自由；入职前三个月，我会先"
+                "用客户反馈速度、关键漏斗变化和团队决策周期验证自己是否真的创造了匹配的价值。"
+            )
         if any(word in folded for word in ("容量", "qps", "扩容", "吞吐")):
             return (
                 "去年一次大型促销前，业务预计订单峰值会达到平日的六倍。我负责八人平台团队的容量方案，"

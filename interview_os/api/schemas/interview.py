@@ -146,6 +146,12 @@ class MockAnswerRequest(BaseModel):
     recording_id: UUID | None = None
 
 
+class CustomMockQuestionRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=4000)
+    competency: str = Field(default="", max_length=200)
+    practice_now: bool = True
+
+
 class MockSessionResponse(BaseModel):
     session_id: str
     mock_session: dict[str, Any]

@@ -2387,6 +2387,128 @@ class InterviewService:
             await self._persist(session_id, runtime.state)
             return runtime.state
 
+    async def add_custom_mock_question(
+        self,
+        session_id: str,
+        question_text: str,
+        *,
+        competency: str = "",
+        practice_now: bool = True,
+    ) -> InterviewState:
+        """Persist a user-supplied question in the regular mock pipeline.
+
+        Custom wording stays untouched. The deterministic question contract,
+        candidate-grounded framework, and fictional teaching example are added
+        locally so the request remains fast and cannot fail on a slow LLM.
+        """
+        runtime = await self._get_runtime(session_id)
+        normalized_text = " ".join(question_text.split()).strip()
+        normalized_competency = " ".join(competency.split()).strip()
+        if len(normalized_text) < 2:
+            raise MockInterviewStateError("自定义问题至少需要 2 个字符")
+        async with self._lock_for(session_id):
+            state = runtime.state
+            mock_session = state.mock_session
+            if mock_session.status in {
+                MockSessionStatus.EVALUATING,
+                MockSessionStatus.COMPLETED,
+            }:
+                raise MockInterviewStateError("本轮已结束，请新建练习会话后添加问题")
+
+            questions = state.mock_interview.questions
+            comparison = normalized_text.casefold()
+            existing_index = next(
+                (
+                    index
+                    for index, item in enumerate(questions)
+                    if " ".join(item.question.split()).strip().casefold() == comparison
+                ),
+                None,
+            )
+            if existing_index is None:
+                selected_competency = normalized_competency or next(
+                    (
+                        item
+                        for item in state.job.competencies
+                        if item.casefold() in comparison
+                    ),
+                    "自定义问题",
+                )
+                agent = runtime.get_agent("mock_interview_agent")
+                requirements = (
+                    agent.question_requirements(normalized_text)  # type: ignore[union-attr]
+                    if agent is not None and hasattr(agent, "question_requirements")
+                    else []
+                )
+                framework = (
+                    agent.deterministic_framework(  # type: ignore[union-attr]
+                        state, selected_competency
+                    )
+                    if agent is not None and hasattr(agent, "deterministic_framework")
+                    else "建议按：直接结论 → 真实案例 → 个人行动 → 可验证结果 → 复盘来组织。"
+                )
+                example = (
+                    agent.teaching_example(  # type: ignore[union-attr]
+                        selected_competency, normalized_text
+                    )
+                    if agent is not None and hasattr(agent, "teaching_example")
+                    else ""
+                )
+                motivation_question = any(
+                    word in f"{selected_competency} {normalized_text}".casefold()
+                    for word in ("动机", "为什么", "求职", "why", "motivation")
+                )
+                custom_question = InterviewQuestion(
+                    question=normalized_text,
+                    competency=selected_competency,
+                    rationale="用户认为面试中可能出现的问题",
+                    strong_signals=requirements,
+                    follow_ups=[
+                        (
+                            "请用一段具体经历说明这个选择与长期目标的关系，"
+                            "并说明你会如何验证双方匹配。"
+                            if motivation_question
+                            else "请针对刚才尚未展开的部分，补充一个具体事实、"
+                            "你的判断依据或可验证结果。"
+                        )
+                    ],
+                    answer_framework=framework,
+                    question_requirements=requirements,
+                    example_answer=example,
+                    source="custom",
+                )
+                if practice_now:
+                    insertion_index = (
+                        mock_session.current_question_index + 1
+                        if mock_session.status == MockSessionStatus.ACTIVE and questions
+                        else 0
+                    )
+                    questions.insert(insertion_index, custom_question)
+                    target_index = insertion_index
+                else:
+                    questions.append(custom_question)
+                    target_index = len(questions) - 1
+            else:
+                target_index = existing_index
+
+            if practice_now:
+                if mock_session.status == MockSessionStatus.IDLE:
+                    state.mock_session = MockInterviewSession(
+                        status=MockSessionStatus.ACTIVE,
+                        started_at=datetime.now(timezone.utc),
+                        current_question_index=target_index,
+                    )
+                    mock_session = state.mock_session
+                else:
+                    mock_session.pending_follow_up = ""
+                    mock_session.pending_parent_question_id = None
+                    mock_session.current_question_index = target_index
+                state.next_action = "Answer the current custom mock interview question"
+            else:
+                state.next_action = "Review the custom question in the mock interview pool"
+            await self._persist(session_id, state)
+            return state
+
     async def submit_mock_answer(
         self,
         session_id: str,
@@ -3745,7 +3867,11 @@ class InterviewService:
         mock_agent = runtime.get_agent("mock_interview_agent")
         if mock_agent is not None and hasattr(mock_agent, "enrich_question"):
             for question in runtime.state.mock_interview.questions:
-                mock_agent.enrich_question(question)  # type: ignore[union-attr]
+                # User-supplied wording is itself part of the practice contract.
+                # It already receives requirements/framework/example at insert
+                # time and must not be rewritten by legacy-question migration.
+                if question.source != "custom":
+                    mock_agent.enrich_question(question)  # type: ignore[union-attr]
         # In-process refill tasks do not survive a service restart.
         runtime.state.mock_session.refill_in_flight = False
         if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:

@@ -28,6 +28,10 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     assert 'id="mock-example"' in html
     assert "这道题问了什么，你实际回答了什么" in script
     assert "基于你本次回答的重组示范" in script
+    assert 'id="custom-question-form"' in html
+    assert 'id="custom-question-text"' in html
+    assert "/questions`" in script
+    assert "自定义问题已加入，开始练习" in script
 
 
 def test_accessible_interaction_states_are_styled():

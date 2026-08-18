@@ -324,6 +324,13 @@ textarea { resize: vertical; line-height: 1.55; }
 .question-copy small { display: block; margin-bottom: 12px; color: var(--green); font-size: 10px; }
 .question-copy strong { display: block; font-size: 24px; line-height: 1.35; }
 .question-copy p { max-width: 600px; margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.custom-question-panel { margin: 2px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8faf8; }
+.custom-question-panel > summary { padding: 11px 13px; color: var(--green); cursor: pointer; font-size: 11px; font-weight: 750; }
+.custom-question-panel[open] > summary { border-bottom: 1px solid var(--line); }
+.custom-question-panel form { padding: 2px 13px 13px; }
+.custom-question-panel label { margin-top: 12px; }
+.custom-question-panel textarea, .custom-question-panel input { margin-top: 6px; background: #fff; }
+.custom-question-note { margin: 10px 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .completion-state { min-height: 0; margin: 8px 0 4px; padding: 20px; background: linear-gradient(145deg, #f3faf6, #fbfdfb); border: 1px solid #c9ddd2; border-radius: 14px; }
 .completion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .question-panel #answer-form { display: none; }
@@ -585,6 +592,8 @@ dialog form { padding: 26px; }
   .question-audio-controls, .mock-voice-row { align-items: stretch; flex-direction: column; }
   .question-audio-controls .btn, .mock-voice-row .btn { width: 100%; }
   .question-copy { font-size: 20px; }
+  .custom-question-panel form { padding-inline: 11px; }
+  .custom-question-panel .btn { width: 100%; min-height: 42px; }
   .completion-state { padding: 16px; }
   .completion-actions .btn { flex: 1 1 150px; }
   .mock-actions { bottom: 6px; margin-inline: -3px; }
