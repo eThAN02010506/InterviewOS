@@ -201,7 +201,12 @@ def _answer_type(question: str) -> str:
         r"\b(?:why do you|motivat|why this|why are you)\b", folded
     ):
         return "motivation"
-    if re.search(r"如何|怎么|流程|方法|设计|步骤|策略", question) or re.search(
+    if re.search(
+        r"如何|怎么|流程|方法|设计|步骤|策略|"
+        r"(?:哪些|什么)(?:证据|指标|标准|原则|机制|依据)|"
+        r"用(?:哪些|什么)(?:证据|指标|标准|原则|机制|依据)",
+        question,
+    ) or re.search(
         r"\b(?:how do you|how did you|approach|process|method|design)\b", folded
     ):
         return "methodology"
@@ -365,7 +370,17 @@ def question_requirements(question: str) -> list[str]:
     asks_metrics = bool(
         re.search(r"指标|数据|口径|衡量|量化|qps|p\d{2}|cpu|metric|measure", folded)
     )
-    asks_method = question_type in {"methodology", "situational"} or bool(
+    # A narrow request such as “考虑了哪些指标” asks for metric detail, not a
+    # new end-to-end case.  It is still a methodology-style question for analysis,
+    # but its scoring contract must not silently grow into STAR requirements.
+    metric_detail_follow_up = asks_metrics and bool(
+        re.search(r"(?:哪些|什么)?指标|指标(?:有|是|包括)", question)
+    ) and not bool(
+        re.search(r"如何|怎么|制定|流程|步骤|方案|策略|机制|证据|how|approach|process", folded)
+    )
+    asks_method = (
+        question_type in {"methodology", "situational"} and not metric_detail_follow_up
+    ) or bool(
         re.search(r"如何|怎么|制定|方法|过程|步骤|方案|策略|how|approach|process", folded)
     )
     if asks_tradeoff:
@@ -374,12 +389,12 @@ def question_requirements(question: str) -> list[str]:
         requirements.append("说明指标、口径与决策关系")
     if asks_method or (question_type == "behavioral_example" and asks_tradeoff):
         requirements.append("说明方法或制定过程")
-    if question_type in {"methodology", "situational"}:
+    if question_type in {"methodology", "situational"} and not metric_detail_follow_up:
         requirements.append("说明执行动作")
     asks_result = question_type == "behavioral_example" or bool(
         re.search(r"结果|效果|成果|成效|影响|收益|验证|result|impact|outcome|verify", folded)
     )
-    if question_type in {"methodology", "situational"}:
+    if question_type in {"methodology", "situational"} and not metric_detail_follow_up:
         asks_result = True
     if asks_result:
         requirements.append("给出结果与验证方式")

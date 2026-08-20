@@ -150,7 +150,25 @@ class MockInterviewAgent(Agent):
         requirements remain authoritative so pre-answer coaching cannot drift
         away from the post-answer scoring contract.
         """
-        fallback = deterministic_question_understanding(question, competency=competency)
+        explicit_requirements = [
+            item.text
+            for item in state.job_review.requirements
+            if item.origin.value == "explicit"
+        ]
+        if not explicit_requirements and state.job.raw_description.strip():
+            explicit_requirements = list(state.job.responsibilities)
+        confirmed_claims = [
+            (str(claim.id), claim.statement)
+            for claim in state.resume_review.claims
+            if claim.status.value in {"confirmed", "modified"}
+        ]
+        fallback = deterministic_question_understanding(
+            question,
+            competency=competency,
+            job_title=state.job.title,
+            explicit_job_requirements=explicit_requirements,
+            confirmed_claims=confirmed_claims,
+        )
         if self.llm_client is None:
             return fallback
         prompt = CUSTOM_QUESTION_ANALYSIS_PROMPT.format(
@@ -160,14 +178,21 @@ class MockInterviewAgent(Agent):
             job_requirement=(
                 state.job.model_dump_json() + "\n" + state.job_review.model_dump_json()
             )[:5000],
+            candidate_facts=(
+                "\n".join(
+                    f"{index}. {statement}"
+                    for index, (_, statement) in enumerate(confirmed_claims, start=1)
+                )
+                or "（没有已确认的候选人事实；candidate_story_options 必须为空）"
+            )[:5000],
         )
         try:
             draft = await asyncio.wait_for(
                 self.think_structured(
                     prompt,
                     CustomQuestionAnalysisDraft,
-                    context="只解释题目本身，不推断候选人经历。",
-                    max_tokens=900,
+                    context="只使用编号且已确认的候选人事实；不得推断或补写候选人经历。",
+                    max_tokens=1200,
                 ),
                 timeout=30,
             )
@@ -180,6 +205,7 @@ class MockInterviewAgent(Agent):
             **draft.model_dump(),
             original_question=question,
             explicit_competency=competency,
+            confirmed_claims=confirmed_claims,
         )
 
     @staticmethod

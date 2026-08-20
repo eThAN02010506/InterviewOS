@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 
 from interview_os.core.spoken_answer import question_answer_type, question_requirements
-from interview_os.core.state import QuestionUnderstanding
+from interview_os.core.state import (
+    CandidateStorySuggestion,
+    QuestionAnswerLevel,
+    QuestionProbeNode,
+    QuestionUnderstanding,
+)
 
 _TYPE_LABELS = {
     "behavioral_example": "行为经历题",
@@ -47,11 +52,18 @@ def _normalize_type(question: str) -> str:
 
 
 def deterministic_question_understanding(
-    question: str, *, competency: str = ""
+    question: str,
+    *,
+    competency: str = "",
+    job_title: str = "",
+    explicit_job_requirements: list[str] | None = None,
+    confirmed_claims: list[tuple[str, str]] | None = None,
 ) -> QuestionUnderstanding:
     """Create useful interpretation even when the local model is unavailable."""
     answer_type = _normalize_type(question)
     inferred_competency = _infer_competency(question, competency)
+    explicit_job_requirements = explicit_job_requirements or []
+    confirmed_claims = confirmed_claims or []
     requirements = question_requirements(question)
     boundaries = requirements or ["直接回应问题核心", "给出判断依据或真实证据"]
 
@@ -125,6 +137,11 @@ def deterministic_question_understanding(
             "你最不确定的前提是什么？",
             "什么证据会让你改变观点？",
         ]
+    role_relevance, role_relevance_source = _role_relevance(
+        inferred_competency,
+        job_title=job_title,
+        explicit_job_requirements=explicit_job_requirements,
+    )
     return QuestionUnderstanding(
         answer_type=answer_type,
         answer_type_label=_TYPE_LABELS[answer_type],
@@ -135,8 +152,163 @@ def deterministic_question_understanding(
         transfer_principle=transfer,
         related_questions=_clean_questions(variants, original=question),
         likely_follow_ups=follow_ups,
+        role_relevance=role_relevance,
+        role_relevance_source=role_relevance_source,
+        secondary_competencies=_secondary_competencies(answer_type, inferred_competency),
+        decision_criteria=_decision_criteria(answer_type, inferred_competency),
+        answer_levels=_answer_levels(answer_type, inferred_competency),
+        candidate_story_options=_candidate_story_options(
+            question, inferred_competency, confirmed_claims
+        ),
+        story_selection_guidance=_story_selection_guidance(answer_type),
+        probe_tree=_probe_tree(answer_type, inferred_competency, follow_ups),
         analysis_source="rules",
     )
+
+
+def _role_relevance(
+    competency: str, *, job_title: str, explicit_job_requirements: list[str]
+) -> tuple[str, str]:
+    explicit = [item.strip() for item in explicit_job_requirements if item.strip()][:2]
+    if explicit:
+        role = job_title.strip() or "目标岗位"
+        return (
+            (
+                f"{role}的明确 JD 包含“{'；'.join(explicit)}”。这道题用于验证候选人是否真正具备"
+                f"支撑这些职责的{competency}，而不只是熟悉相关概念。"
+            ),
+            "explicit_jd",
+        )
+    if job_title.strip():
+        return (
+            (
+                f"当前缺少可直接绑定的明确 JD 条款；仅根据“{job_title.strip()}”岗位名称推测，"
+                f"面试官可能借此观察{competency}。该关联需要结合完整职责后重新确认。"
+            ),
+            "title_inference",
+        )
+    return (
+        f"当前没有岗位职责可用于绑定；以下按通用面试逻辑分析{competency}，不代表目标岗位的明确要求。",
+        "generic",
+    )
+
+
+def _secondary_competencies(answer_type: str, primary: str) -> list[str]:
+    mapping = {
+        "motivation": ["自我认知", "风险判断"],
+        "behavioral_example": ["结果意识", "复盘能力"],
+        "methodology": ["决策质量", "数据与结果验证"],
+        "technical": ["权衡判断", "风险控制"],
+        "case_analysis": ["问题拆解", "商业判断"],
+        "situational": ["风险管理", "利益相关者管理"],
+        "general": ["逻辑表达", "证据意识"],
+    }
+    return [item for item in mapping.get(answer_type, mapping["general"]) if item != primary]
+
+
+def _decision_criteria(answer_type: str, competency: str) -> list[str]:
+    criteria = [
+        f"是否直接证明{competency}，而不是回答相邻但不同的能力",
+        "关键判断是否有清晰依据，并能说明本人承担的责任",
+        "结论是否有可核验事实、结果或验证方法支撑",
+    ]
+    if answer_type in {"methodology", "technical", "case_analysis", "situational"}:
+        criteria.insert(2, "是否说明前提、备选方案、决策门槛和风险边界")
+    if answer_type == "motivation":
+        criteria[1] = "动机是否来自具体岗位任务与真实经历，而不是泛化热情"
+    return criteria[:4]
+
+
+def _answer_levels(answer_type: str, competency: str) -> list[QuestionAnswerLevel]:
+    evidence = "真实案例" if answer_type == "behavioral_example" else "具体依据"
+    return [
+        QuestionAnswerLevel(
+            level="strong",
+            description=f"直接回应{competency}，用{evidence}解释个人判断、行动、取舍和验证结果。",
+            observable_signals=["边界全部覆盖", "个人贡献清晰", "结果可核验", "能说明限制与复盘"],
+        ),
+        QuestionAnswerLevel(
+            level="acceptable",
+            description="核心问题回答正确且有行动依据，但量化结果、取舍或岗位连接仍有一项不完整。",
+            observable_signals=["核心结论明确", "至少一项具体证据", "没有明显事实矛盾"],
+        ),
+        QuestionAnswerLevel(
+            level="risk",
+            description="使用通用口号、团队成果或假设替代个人事实，且无法经追问验证关键判断。",
+            observable_signals=["答非所问", "个人责任模糊", "目标冒充结果", "追问后证据仍不一致"],
+        ),
+    ]
+
+
+def _story_selection_guidance(answer_type: str) -> list[str]:
+    first = (
+        "优先选择已经结束、本人做过关键决定且结果可核验的经历"
+        if answer_type == "behavioral_example"
+        else "优先选择能证明方法确实落地，而不只是知道概念的经历"
+    )
+    return [first, "优先匹配题目要求，而不是机械选择规模最大的项目", "无法确认的简历事实不要用于作答"]
+
+
+def _candidate_story_options(
+    question: str, competency: str, confirmed_claims: list[tuple[str, str]]
+) -> list[CandidateStorySuggestion]:
+    query = f"{question} {competency}".casefold()
+    domain_terms = (
+        "战略", "团队", "管理", "招聘", "人才", "数据", "指标", "业务", "项目", "产品",
+        "技术", "架构", "系统", "客户", "市场", "协作", "跨部门", "成本", "增长", "风险",
+    )
+    ranked: list[tuple[int, str, str]] = []
+    for claim_id, statement in confirmed_claims:
+        folded = statement.casefold()
+        score = sum(1 for term in domain_terms if term in query and term in folded)
+        if score:
+            ranked.append((score, claim_id, statement))
+    ranked.sort(key=lambda item: (-item[0], item[2]))
+    return [
+        CandidateStorySuggestion(
+            claim_id=claim_id,
+            claim=statement[:500],
+            fit_reason=f"该已确认事实与题目中的{competency}存在直接主题重合",
+            adaptation_focus="只使用已确认事实；补充本人决定、执行动作和可验证结果，不得扩写简历未确认内容。",
+        )
+        for _, claim_id, statement in ranked[:2]
+    ]
+
+
+def _probe_tree(
+    answer_type: str, competency: str, follow_ups: list[str]
+) -> list[QuestionProbeNode]:
+    foundation = (
+        f"请先用一句话说明你处理{competency}问题时最核心的判断原则。"
+        if answer_type != "behavioral_example"
+        else f"请先明确这次{competency}经历中的目标、约束和你本人负责的部分。"
+    )
+    return [
+        QuestionProbeNode(
+            stage="foundation",
+            question=foundation,
+            purpose="确认候选人先直接回答核心，而不是从宽泛背景开始",
+            entry_condition="回答尚未形成明确结论时",
+        ),
+        QuestionProbeNode(
+            stage="evidence",
+            question=follow_ups[0],
+            purpose="把抽象主张落到个人事实或判断依据",
+            entry_condition="结论清楚但缺少本人证据时",
+        ),
+        QuestionProbeNode(
+            stage="tradeoff",
+            question="你还考虑过哪些方案？当时用什么标准排除它们？",
+            purpose="检验决策质量，而不只检验是否做过",
+            entry_condition="已有行动和结果，但取舍过程不清楚时",
+        ),
+        QuestionProbeNode(
+            stage="pressure",
+            question="如果关键假设相反、资源减半或结果没有达到目标，你会怎样调整？",
+            purpose="检验方法边界、风险意识和迁移能力",
+            entry_condition="基础证据充分后再进入压力验证",
+        ),
+    ]
 
 
 def _clean_questions(items: list[str], *, original: str) -> list[str]:
@@ -185,6 +357,12 @@ def merge_model_understanding(
     likely_follow_ups: list[str],
     original_question: str,
     explicit_competency: str = "",
+    secondary_competencies: list[str] | None = None,
+    decision_criteria: list[str] | None = None,
+    answer_levels: list[dict[str, object]] | None = None,
+    candidate_story_options: list[dict[str, object]] | None = None,
+    probe_tree: list[dict[str, object]] | None = None,
+    confirmed_claims: list[tuple[str, str]] | None = None,
 ) -> QuestionUnderstanding:
     """Validate model semantics while preserving the deterministic contract."""
     # The answer taxonomy is shared with coverage scoring. A model label is
@@ -195,11 +373,14 @@ def merge_model_understanding(
     variants = _clean_questions(
         [*model_variants[:2], *fallback.related_questions], original=original_question
     )
+    selected_competency = (
+        explicit_competency.strip() or competency.strip() or fallback.competency
+    )[:100]
     return QuestionUnderstanding(
         answer_type=allowed_type,
         answer_type_label=_TYPE_LABELS[allowed_type],
         assessment_goal=(assessment_goal.strip() or fallback.assessment_goal)[:300],
-        competency=(explicit_competency.strip() or competency.strip() or fallback.competency)[:100],
+        competency=selected_competency,
         # Scoring and pre-answer guidance must share the deterministic contract.
         answer_boundary=fallback.answer_boundary,
         common_mistakes=_clean_list_items(common_mistakes, limit=4)
@@ -210,5 +391,97 @@ def merge_model_understanding(
         related_questions=variants or fallback.related_questions,
         likely_follow_ups=_clean_list_items(likely_follow_ups, limit=4)
         or fallback.likely_follow_ups,
+        # Role relevance must quote the deterministic JD boundary. Model prose
+        # could otherwise turn an inferred responsibility into an explicit one.
+        role_relevance=fallback.role_relevance,
+        role_relevance_source=fallback.role_relevance_source,
+        secondary_competencies=[
+            item
+            for item in _clean_list_items(secondary_competencies or [], limit=3)
+            if item != selected_competency
+        ]
+        or fallback.secondary_competencies,
+        decision_criteria=_clean_list_items(decision_criteria or [], limit=4)
+        or fallback.decision_criteria,
+        answer_levels=_merge_answer_levels(answer_levels or [], fallback.answer_levels),
+        candidate_story_options=_merge_story_options(
+            candidate_story_options or [],
+            confirmed_claims or [],
+            fallback.candidate_story_options,
+        ),
+        story_selection_guidance=fallback.story_selection_guidance,
+        probe_tree=_merge_probe_tree(probe_tree or [], fallback.probe_tree),
         analysis_source="model",
     )
+
+
+def _merge_answer_levels(
+    model_items: list[dict[str, object]], fallback: list[QuestionAnswerLevel]
+) -> list[QuestionAnswerLevel]:
+    by_level: dict[str, QuestionAnswerLevel] = {}
+    for item in model_items:
+        level = str(item.get("level", "")).strip().casefold()
+        description = str(item.get("description", "")).strip()
+        raw_signals = item.get("observable_signals", [])
+        if level not in {"strong", "acceptable", "risk"} or not description:
+            continue
+        signals = _clean_list_items(
+            [str(signal) for signal in raw_signals] if isinstance(raw_signals, list) else [],
+            limit=4,
+        )
+        by_level[level] = QuestionAnswerLevel(
+            level=level,
+            description=description[:400],
+            observable_signals=signals,
+        )
+    fallback_by_level = {item.level: item for item in fallback}
+    return [
+        by_level.get(level) or fallback_by_level[level]
+        for level in ("strong", "acceptable", "risk")
+    ]
+
+
+def _merge_story_options(
+    model_items: list[dict[str, object]],
+    confirmed_claims: list[tuple[str, str]],
+    fallback: list[CandidateStorySuggestion],
+) -> list[CandidateStorySuggestion]:
+    output: list[CandidateStorySuggestion] = []
+    for item in model_items:
+        claim_number = item.get("claim_number")
+        if not isinstance(claim_number, int) or not 1 <= claim_number <= len(confirmed_claims):
+            continue
+        claim_id, statement = confirmed_claims[claim_number - 1]
+        if any(existing.claim_id == claim_id for existing in output):
+            continue
+        output.append(
+            CandidateStorySuggestion(
+                claim_id=claim_id,
+                claim=statement[:500],
+                fit_reason=str(item.get("fit_reason", "")).strip()[:300]
+                or "模型从已确认简历事实中选择了该经历",
+                adaptation_focus=str(item.get("adaptation_focus", "")).strip()[:300]
+                or "围绕本题边界组织，不补充未经确认的事实。",
+            )
+        )
+    return output[:2] or fallback
+
+
+def _merge_probe_tree(
+    model_items: list[dict[str, object]], fallback: list[QuestionProbeNode]
+) -> list[QuestionProbeNode]:
+    allowed = ("foundation", "evidence", "tradeoff", "pressure")
+    by_stage: dict[str, QuestionProbeNode] = {}
+    for item in model_items:
+        stage = str(item.get("stage", "")).strip().casefold()
+        question = str(item.get("question", "")).strip()
+        if stage not in allowed or len(question) < 4:
+            continue
+        by_stage[stage] = QuestionProbeNode(
+            stage=stage,
+            question=re.sub(r"^\s*(?:\d{1,2}[.、)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", "", question)[:300],
+            purpose=str(item.get("purpose", "")).strip()[:300],
+            entry_condition=str(item.get("entry_condition", "")).strip()[:300],
+        )
+    fallback_by_stage = {item.stage: item for item in fallback}
+    return [by_stage.get(stage) or fallback_by_stage[stage] for stage in allowed]

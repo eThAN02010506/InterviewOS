@@ -285,6 +285,26 @@ class InterviewStrategy(BaseModel):
     likely_questions: list[str] = Field(default_factory=list)
 
 
+class QuestionAnswerLevel(BaseModel):
+    level: str = "acceptable"  # strong | acceptable | risk
+    description: str = ""
+    observable_signals: list[str] = Field(default_factory=list)
+
+
+class CandidateStorySuggestion(BaseModel):
+    claim_id: str = ""
+    claim: str = ""
+    fit_reason: str = ""
+    adaptation_focus: str = ""
+
+
+class QuestionProbeNode(BaseModel):
+    stage: str = "foundation"  # foundation | evidence | tradeoff | pressure
+    question: str = ""
+    purpose: str = ""
+    entry_condition: str = ""
+
+
 class QuestionUnderstanding(BaseModel):
     """Persisted interpretation of what an interview question is testing.
 
@@ -302,6 +322,14 @@ class QuestionUnderstanding(BaseModel):
     transfer_principle: str = "先识别不变的考察目标，再替换最匹配的真实证据。"
     related_questions: list[str] = Field(default_factory=list)
     likely_follow_ups: list[str] = Field(default_factory=list)
+    role_relevance: str = ""
+    role_relevance_source: str = "generic"  # explicit_jd | title_inference | generic
+    secondary_competencies: list[str] = Field(default_factory=list)
+    decision_criteria: list[str] = Field(default_factory=list)
+    answer_levels: list[QuestionAnswerLevel] = Field(default_factory=list)
+    candidate_story_options: list[CandidateStorySuggestion] = Field(default_factory=list)
+    story_selection_guidance: list[str] = Field(default_factory=list)
+    probe_tree: list[QuestionProbeNode] = Field(default_factory=list)
     analysis_source: str = "rules"  # rules | model
 
 

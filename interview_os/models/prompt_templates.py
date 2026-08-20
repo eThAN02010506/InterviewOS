@@ -166,6 +166,7 @@ CUSTOM_QUESTION_ANALYSIS_PROMPT = (
     "用户指定关注点：{competency}\n"
     "目标岗位：{job_title}\n"
     "已知岗位要求：{job_requirement}\n\n"
+    "可用于选材的已确认候选人事实（编号是唯一引用边界）：\n{candidate_facts}\n\n"
     "输出严格 JSON：answer_type 使用 behavioral_example、methodology、situational、"
     "motivation、technical、case_analysis 或 general 之一；answer_type_label 用简短中文；"
     "assessment_goal 说明面试官真正想验证的判断；competency 是一个具体能力；"
@@ -173,7 +174,12 @@ CUSTOM_QUESTION_ANALYSIS_PROMPT = (
     "common_mistakes 列出 2-4 个针对本题的常见误区；transfer_principle 说明如何复用同一"
     "真实经历回答同类问题但调整重点；related_questions 给出 3 个考察目标相同但角度明显"
     "不同的真实面试问法；likely_follow_ups 给出 2-4 个用于验证回答真实性或深度的追问。"
-    "变体不得只是替换同义词，不得假定候选人具有题目未给出的经历。"
+    "继续输出深度解析字段：secondary_competencies 给 1-3 个次能力；"
+    "decision_criteria 给 3-4 条面试官决策标准；"
+    "candidate_story_options 只能从上方已确认事实中选 0-2 条，使用 claim_number、"
+    "fit_reason、adaptation_focus，禁止引用未提供的经历。变体不得只是替换同义词，"
+    "不得假定候选人具有题目未给出的经历。回答质量分界和递进题树由系统规则生成，JSON 中"
+    "不要输出这两部分。"
 )
 
 ANSWER_COACH_PROMPT = (

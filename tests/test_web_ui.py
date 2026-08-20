@@ -36,6 +36,10 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     assert 'id="mock-question-understanding-body"' in html
     assert "这道题真正想验证什么" in script
     assert "data-related-question" in script
+    assert "展开深度解析" in script
+    assert "回答质量分界" in script
+    assert "从已确认经历中选材" in script
+    assert "由浅入深的追问题树" in script
 
 
 def test_accessible_interaction_states_are_styled():

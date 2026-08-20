@@ -21,9 +21,14 @@ from interview_os.core.state import (
     InterviewQuestion,
     InterviewState,
     JobDescription,
+    JobDescriptionReview,
+    JobRequirement,
     LiveInterviewRecord,
     QuestionSuggestion,
     QuestionSuggestionType,
+    RequirementOrigin,
+    ResumeClaim,
+    ResumeClaimStatus,
     TranscriptSegment,
     TranscriptSpeaker,
 )
@@ -36,6 +41,28 @@ class MockLLM:
 
     async def embed(self, text):
         return [0.1, 0.2, 0.3]
+
+
+class DeepQuestionLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"answer_type":"methodology","answer_type_label":"方法题",'
+            '"assessment_goal":"验证资源配置的决策质量",'
+            '"competency":"战略优先级","answer_boundary":[], '
+            '"common_mistakes":["只按声音大小分资源"],'
+            '"transfer_principle":"复用方法",'
+            '"related_questions":["资源减半时如何排序？"],'
+            '"likely_follow_ups":["你使用了什么指标？"],'
+            '"role_relevance":"明确 JD 要求跨部门确定研发投入，因此需要验证资源配置决策。",'
+            '"secondary_competencies":["数据分析","影响力"],'
+            '"decision_criteria":["指标是否可比较","机制是否透明"],'
+            '"candidate_story_options":[{"claim_number":1,'
+            '"fit_reason":"该事实包含跨部门资源决策",'
+            '"adaptation_focus":"强调个人制定的排序标准"}]}'
+        )
+
+    async def embed(self, text):
+        return []
 
 
 class InvalidLLM:
@@ -703,6 +730,55 @@ def test_mock_quality_contract_preserves_motivation_question_type():
     assert "岗位最吸引你的具体要素" in question.question
     assert "具体且已经发生的案例" not in question.question
     assert question.question_requirements == ["说明动机与匹配关系"]
+
+
+@pytest.mark.asyncio
+async def test_custom_question_deep_analysis_maps_only_confirmed_story_claims():
+    claim = ResumeClaim(
+        category="achievement",
+        statement="推动产品与研发统一资源排序机制并完成核心版本上线",
+        status=ResumeClaimStatus.CONFIRMED,
+    )
+    state = InterviewState(
+        job=JobDescription(
+            title="产品负责人",
+            raw_description="负责跨部门产品战略和研发资源配置",
+        ),
+        job_review=JobDescriptionReview(
+            requirements=[
+                JobRequirement(
+                    text="负责跨部门确定研发投入优先级",
+                    origin=RequirementOrigin.EXPLICIT,
+                )
+            ]
+        ),
+    )
+    state.resume_review.claims = [claim]
+    agent = MockInterviewAgent(llm_client=DeepQuestionLLM())
+
+    analysis = await agent.analyze_custom_question(
+        state,
+        "当团队争夺资源时，你会用哪些指标和机制确定优先级？",
+        competency="战略优先级",
+    )
+
+    assert analysis.analysis_source == "model"
+    assert analysis.answer_type == "methodology"
+    assert analysis.role_relevance_source == "explicit_jd"
+    assert "明确 JD" in analysis.role_relevance
+    assert analysis.candidate_story_options[0].claim_id == str(claim.id)
+    assert analysis.candidate_story_options[0].claim == claim.statement
+    assert [item.level for item in analysis.answer_levels] == [
+        "strong",
+        "acceptable",
+        "risk",
+    ]
+    assert [item.stage for item in analysis.probe_tree] == [
+        "foundation",
+        "evidence",
+        "tradeoff",
+        "pressure",
+    ]
 
 
 def test_mock_motivation_support_answers_the_actual_question():

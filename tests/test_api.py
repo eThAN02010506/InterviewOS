@@ -1636,6 +1636,9 @@ def test_custom_mock_question_api_adds_and_activates_question(tmp_path):
     understanding = payload["current_question"]["understanding"]
     assert understanding["answer_type"] == "behavioral_example"
     assert len(understanding["related_questions"]) == 3
+    assert len(understanding["answer_levels"]) == 3
+    assert len(understanding["probe_tree"]) == 4
+    assert understanding["role_relevance_source"] == "generic"
 
 
 def test_custom_mock_question_api_validates_length(tmp_path):

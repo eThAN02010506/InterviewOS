@@ -2427,8 +2427,21 @@ class InterviewService:
                 competency=normalized_competency,
             )
         else:
+            explicit_requirements = [
+                item.text
+                for item in state_snapshot.job_review.requirements
+                if item.origin.value == "explicit"
+            ]
             understanding = deterministic_question_understanding(
-                normalized_text, competency=normalized_competency
+                normalized_text,
+                competency=normalized_competency,
+                job_title=state_snapshot.job.title,
+                explicit_job_requirements=explicit_requirements,
+                confirmed_claims=[
+                    (str(claim.id), claim.statement)
+                    for claim in state_snapshot.resume_review.claims
+                    if claim.status.value in {"confirmed", "modified"}
+                ],
             )
 
         async with self._lock_for(session_id):
@@ -3876,13 +3889,46 @@ class InterviewService:
                 # User-supplied wording is itself part of the practice contract.
                 # It already receives requirements/framework/example at insert
                 # time and must not be rewritten by legacy-question migration.
-                if question.source == "custom" and question.understanding is None:
-                    question.understanding = deterministic_question_understanding(
+                if question.source == "custom":
+                    explicit_requirements = [
+                        item.text
+                        for item in runtime.state.job_review.requirements
+                        if item.origin.value == "explicit"
+                    ]
+                    deep_fallback = deterministic_question_understanding(
                         question.question,
                         competency=(
                             "" if question.competency == "自定义问题" else question.competency
                         ),
+                        job_title=runtime.state.job.title,
+                        explicit_job_requirements=explicit_requirements,
+                        confirmed_claims=[
+                            (str(claim.id), claim.statement)
+                            for claim in runtime.state.resume_review.claims
+                            if claim.status.value in {"confirmed", "modified"}
+                        ],
                     )
+                    if question.understanding is None:
+                        question.understanding = deep_fallback
+                    elif not question.understanding.decision_criteria:
+                        # Preserve the older model-enhanced shallow analysis and
+                        # backfill only the newly introduced deep layer.
+                        question.understanding.role_relevance = deep_fallback.role_relevance
+                        question.understanding.role_relevance_source = (
+                            deep_fallback.role_relevance_source
+                        )
+                        question.understanding.secondary_competencies = (
+                            deep_fallback.secondary_competencies
+                        )
+                        question.understanding.decision_criteria = deep_fallback.decision_criteria
+                        question.understanding.answer_levels = deep_fallback.answer_levels
+                        question.understanding.candidate_story_options = (
+                            deep_fallback.candidate_story_options
+                        )
+                        question.understanding.story_selection_guidance = (
+                            deep_fallback.story_selection_guidance
+                        )
+                        question.understanding.probe_tree = deep_fallback.probe_tree
                 elif question.source != "custom":
                     mock_agent.enrich_question(question)  # type: ignore[union-attr]
         # In-process refill tasks do not survive a service restart.

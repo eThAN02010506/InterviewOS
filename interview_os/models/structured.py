@@ -38,6 +38,12 @@ class EvaluationNarrativeDraft(BaseModel):
     competency_reviews: list[CompetencyNarrativeDraft] = Field(default_factory=list)
 
 
+class CandidateStoryOptionDraft(BaseModel):
+    claim_number: int
+    fit_reason: str
+    adaptation_focus: str
+
+
 class CustomQuestionAnalysisDraft(BaseModel):
     """Bounded semantic interpretation returned by the local model."""
 
@@ -50,6 +56,9 @@ class CustomQuestionAnalysisDraft(BaseModel):
     transfer_principle: str
     related_questions: list[str]
     likely_follow_ups: list[str]
+    secondary_competencies: list[str] = Field(default_factory=list)
+    decision_criteria: list[str] = Field(default_factory=list)
+    candidate_story_options: list[CandidateStoryOptionDraft] = Field(default_factory=list)
 
 
 

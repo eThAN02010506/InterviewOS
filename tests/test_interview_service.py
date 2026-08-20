@@ -1489,6 +1489,9 @@ async def test_custom_mock_question_starts_practice_with_full_support(tmp_path):
     assert question.understanding is not None
     assert question.understanding.answer_type == "motivation"
     assert len(question.understanding.related_questions) == 3
+    assert question.understanding.role_relevance_source == "title_inference"
+    assert len(question.understanding.answer_levels) == 3
+    assert len(question.understanding.probe_tree) == 4
     assert question.follow_ups == question.understanding.likely_follow_ups[:3]
 
     persisted = await storage.get_session_state(session_id, owner_id="local")
@@ -1501,6 +1504,7 @@ async def test_custom_mock_question_starts_practice_with_full_support(tmp_path):
     assert restored_question is not None
     assert restored_question.question == original
     assert restored_question.understanding is not None
+    assert restored_question.understanding.decision_criteria
     await storage.close()
 
 

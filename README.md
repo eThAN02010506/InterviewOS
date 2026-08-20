@@ -254,6 +254,15 @@ After candidate preparation, run an interactive mock interview:
    within a bounded call; deterministic rules remain the scoring contract and
    the complete fallback when the model is slow or invalid. Related phrasings are
    suggestions only and enter the pool only when the user explicitly chooses one.
+   An expandable deep-analysis layer explains why the role would ask the question
+   (labelled as explicit-JD evidence, title-only inference, or generic interview
+   logic), separates primary from secondary competencies, shows interviewer
+   decision criteria and strong/acceptable/risk answer boundaries, and builds a
+   four-stage foundation → evidence → trade-off → pressure probe tree. Story
+   recommendations can reference only numbered `confirmed` or `modified` resume
+   claims; invalid references are discarded, and without a confirmed match the UI
+   gives selection rules instead of inventing a candidate story. Probe-tree
+   questions also enter practice only after the user clicks one.
 2. `POST /api/mock-interviews/{session_id}/start`
 3. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,
