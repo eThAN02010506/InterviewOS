@@ -223,11 +223,6 @@ def apply_specific_feedback(
         priorities.append(
             f"本题要求「{item.requirement}」：{observed}；重答时{item.suggestion}"
         )
-    if not priorities:
-        priorities.extend(
-            f"已覆盖「{item.requirement}」：{item.evidence[:90]}"
-            for item in covered_items[:2]
-        )
     if len(priorities) < 3:
         weakest_first = sorted(evaluation.dimension_feedback, key=lambda item: item.score)
         priorities.extend(
@@ -235,4 +230,6 @@ def apply_specific_feedback(
             for item in weakest_first
             if item.suggestion not in " ".join(priorities)
         )
+    if not priorities:
+        priorities.append("本题要求均已覆盖；保持事实准确，并继续压缩次要背景。")
     evaluation.feedback = list(dict.fromkeys([*preserved, *priorities]))[:5]

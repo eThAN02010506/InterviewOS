@@ -32,6 +32,17 @@ def test_title_only_jd_separates_inferred_requirements():
     assert review.requirements[0].origin.value == "inferred"
 
 
+def test_full_jd_preserves_meaningful_leading_experience_number():
+    review = review_job_description(
+        "岗位职责：\n1. 负责产品路线图\n任职要求：\n- 7年以上企业软件产品经验",
+        [],
+    )
+
+    texts = [item.text for item in review.requirements]
+    assert "负责产品路线图" in texts
+    assert "7年以上企业软件产品经验" in texts
+
+
 def test_entity_resolution_requires_acceptance_before_renaming():
     state = InterviewState()
     state.company.name = "芯世界"

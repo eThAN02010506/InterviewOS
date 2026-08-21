@@ -64,6 +64,11 @@ class InterviewStrategyAgent(Agent):
                 "Strategy agent returned no usable strategy; built a generic preparation plan"
             )
             state.strategy = self._generic_strategy(state)
+        if state.job.raw_description.strip() and not state.job_review.is_title_only:
+            # Apply the source boundary to both model output and deterministic
+            # fallback. A model parse failure must not reopen the hallucination
+            # path for full-JD preparation cards.
+            self._ground_full_jd_strategy(state)
         return self.make_response(state.strategy.model_dump_json(indent=2))
 
     @staticmethod
@@ -132,3 +137,103 @@ class InterviewStrategyAgent(Agent):
             setattr(state.strategy, field, [value for value in values if grounded(value)])
         if not grounded(state.strategy.summary):
             state.strategy.summary = "请围绕简历中的真实经历和可核验结果准备回答。"
+
+    @staticmethod
+    def _ground_full_jd_strategy(state: InterviewState) -> None:
+        """Replace free-form fit claims with source-bounded preparation text.
+
+        A model can turn adjacent facts into unsupported conclusions (for
+        example, confusing a three-person team with three years of management).
+        The preparation card therefore quotes candidate material and explicit
+        JD requirements, while leaving the final fit judgment to verification.
+        """
+
+        explicit = [
+            item.text.strip()
+            for item in state.job_review.requirements
+            if item.origin.value == "explicit"
+            and item.text.strip()
+            and not item.text.rstrip("：:")
+            in {"岗位职责", "任职要求", "团队背景"}
+            and item.text.strip() != state.job.title.strip()
+        ]
+        facts = state.confirmed_resume_facts()
+        fact_label = "已确认简历事实"
+        if not facts and not state.resume_review.claims:
+            facts = [
+                re.sub(
+                    r"^\s*(?:(?:[•·*\-—]+)|(?:[（(]?\d{1,2}[、.．)）]\s*))\s*",
+                    "",
+                    line,
+                ).strip()
+                for line in state.candidate.raw_resume_text.splitlines()
+                if len(line.strip()) >= 10
+            ]
+            fact_label = "候选人简历自述（待确认）"
+        facts = list(dict.fromkeys(item for item in facts if item))[:12]
+
+        selected = InterviewStrategyAgent._select_relevant_facts(explicit, facts, limit=3)
+        state.strategy.summary = (
+            f"目标岗位“{state.job.title or '未命名岗位'}”的准备必须以明确 JD 和候选人事实为边界。"
+            + (
+                f"{fact_label}中可优先核对：{' ；'.join(selected)}。"
+                if selected
+                else "当前没有可直接引用的已确认简历事实。"
+            )
+            + "这些材料是备题线索，不代表系统已判定候选人完全匹配。"
+        )
+        state.strategy.answer_framework = [
+            *[f"可选材料（{fact_label}）：{item}" for item in selected],
+            "按“背景与目标 → 本人决策 → 行动与取舍 → 已核验结果 → 复盘”组织。",
+            "数字、团队规模、个人归属和验证方式只使用简历原文或用户确认过的事实。",
+        ]
+        state.strategy.topics_to_emphasize = explicit[:5]
+        state.strategy.topics_to_avoid = [
+            "不要把团队成果改写成个人成果",
+            "不要补充简历未提供或尚未确认的数字、经历和能力",
+        ]
+        state.strategy.likely_questions = [
+            f"请讲一个能够验证这项明确要求的已发生案例：“{requirement}”。"
+            "请说明本人职责、关键取舍和可核验结果。"
+            for requirement in explicit[:5]
+        ]
+        candidate_material = "\n".join(facts).casefold()
+        gaps = []
+        for requirement in explicit:
+            terms = InterviewStrategyAgent._domain_terms(requirement)
+            if terms and not any(term.casefold() in candidate_material for term in terms):
+                gaps.append(
+                    f"明确 JD 要求“{requirement}”，但当前简历材料尚未提供直接案例；"
+                    "请准备真实经历，若没有则明确说明相邻经验。"
+                )
+            if len(gaps) >= 3:
+                break
+        state.strategy.key_risks = gaps
+
+    @staticmethod
+    def _domain_terms(text: str) -> list[str]:
+        vocabulary = (
+            "B2B", "SaaS", "产品", "战略", "路线图", "商业化", "团队", "管理",
+            "销售", "客户成功", "研发", "留存", "续费", "数据", "指标", "增长", "订阅",
+            "利益相关者", "新行业", "需求验证", "用户研究",
+        )
+        return [term for term in vocabulary if term.casefold() in text.casefold()]
+
+    @staticmethod
+    def _select_relevant_facts(
+        requirements: list[str], facts: list[str], *, limit: int
+    ) -> list[str]:
+        requirement_terms = {
+            term.casefold()
+            for requirement in requirements
+            for term in InterviewStrategyAgent._domain_terms(requirement)
+        }
+        ranked = sorted(
+            facts,
+            key=lambda fact: (
+                -sum(term in fact.casefold() for term in requirement_terms),
+                -int(bool(re.search(r"\d", fact))),
+                facts.index(fact),
+            ),
+        )
+        return ranked[:limit]

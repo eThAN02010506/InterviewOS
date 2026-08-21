@@ -26,14 +26,25 @@ _METRIC_PATTERN = re.compile(
 )
 _NAMED_METRIC_PATTERN = re.compile(
     r"(?:p\d{2}|qps|rps|tps|cpu|内存|连接池|命中率|错误率|超时率|通过率|转化率|"
-    r"接受率|满意度|积压|吞吐|延迟|周期|成本|不一致率|完整率|安全余量)",
+    r"接受率|满意度|留存率|续费率|使用频率|积压|吞吐|延迟|周期|成本|"
+    r"不一致率|完整率|安全余量)",
     re.IGNORECASE,
 )
 _FOCUS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("容量规划", ("容量", "qps", "吞吐", "扩容", "资源水位", "安全余量")),
     ("稳定性", ("稳定性", "故障", "错误率", "延迟", "可观测", "恢复", "降级")),
-    ("技术权衡", ("权衡", "取舍", "备选", "方案", "选择", "决策", "约束")),
-    ("指标", ("p95", "p99", "qps", "cpu", "指标", "错误率", "转化率", "吞吐")),
+    ("技术权衡", ("权衡", "取舍", "备选", "方案", "选择", "决策", "决定", "约束")),
+    (
+        "指标",
+        (
+            "p95", "p99", "qps", "cpu", "指标", "数据", "crm", "错误率",
+            "转化率", "留存率", "续费率", "使用频率", "吞吐",
+        ),
+    ),
+    (
+        "产品与客户结果",
+        ("产品", "客户", "留存", "续费", "路线图", "商业化", "增长", "订阅"),
+    ),
     ("团队管理", ("团队", "辅导", "管理", "一对一", "晋升", "培养")),
     ("招聘", ("招聘", "人才", "候选人", "岗位画像", "寻访", "面试")),
     ("跨团队协作", ("跨团队", "跨部门", "协作", "利益相关者", "业务团队")),
@@ -214,6 +225,12 @@ def _answer_type(question: str) -> str:
 
 
 def _explicit_context(question: str) -> str:
+    chinese_company = re.search(
+        r"在\s*([一-鿿A-Za-z0-9&.· -]{2,30}?)(?:负责|担任|工作|期间|时)",
+        question,
+    )
+    if chinese_company:
+        return chinese_company.group(1).strip()
     chinese = re.search(r"在\s*([A-Za-z][A-Za-z0-9&. -]{1,40}?)\s*(?:期间|公司)", question)
     if chinese:
         return chinese.group(1).strip()
@@ -249,6 +266,7 @@ def _context_evidence(sentences: list[str], *, behavioral: bool) -> str:
             if re.search(
                 r"(?:当时|那次|背景是|场景是|去年|前年|大促|双十一|618|活动前|事故中|"
                 r"在.{0,36}(?:公司|企业|组织|部门|团队|项目|业务)|"
+                r"在.{0,20}(?:软件|科技|集团|银行|大学)(?:[，,]|时|期间)|"
                 r"在(?!每个|不同|各个).{2,36}(?:期间|阶段)|"
                 r"\b(?:during|at the time|in (?:that|a|the) (?:project|team|company))\b)",
                 sentence,
@@ -578,7 +596,8 @@ def _coverage(
             ),
         )
         decision = _excerpt(
-            sentences, ("最终我决定", "我决定", "我选择", "因此我选择", "最终选择")
+            sentences,
+            ("最终我决定", "我决定", "我选择", "因此我选择", "最终选择", "决定先"),
         )
         if not decision:
             decision = next(
@@ -721,18 +740,27 @@ def analyze_spoken_answer(
 
 
 def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAnalysis) -> None:
-    """Apply downward-only evidence caps and preserve the model's original scores."""
+    """Align model scores with deterministic evidence caps and strong anchors."""
     statuses = {item.requirement: item.status for item in analysis.question_coverage}
     notes: list[str] = []
     analysis.pre_calibration_scores = {
         field: round(float(getattr(evaluation, field)), 4) for field in _SCORE_FIELDS
     }
+    upper_bounds: dict[str, float] = {}
 
     def cap(field: str, maximum: float, reason: str) -> None:
+        upper_bounds[field] = min(maximum, upper_bounds.get(field, 1.0))
         current = float(getattr(evaluation, field))
         if current > maximum:
             setattr(evaluation, field, maximum)
             notes.append(f"{field} {current:.2f}→{maximum:.2f}：{reason}")
+
+    def floor(field: str, minimum: float, reason: str) -> None:
+        minimum = min(minimum, upper_bounds.get(field, 1.0))
+        current = float(getattr(evaluation, field))
+        if current < minimum:
+            setattr(evaluation, field, minimum)
+            notes.append(f"{field} {current:.2f}→{minimum:.2f}：{reason}")
 
     relevance = statuses.get("直接回应题目核心")
     if relevance == "missing":
@@ -769,5 +797,31 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
         cap("impact", 0.35, "没有实际结果或验证方式")
     elif statuses.get("给出结果与验证方式") == "partial":
         cap("impact", 0.55, "结果缺少可核验指标")
+
+    # The model contributes semantic nuance, but it may not assign a failing
+    # score when the deterministic contract found strong, quoted evidence.
+    # Floors apply only to unambiguous covered requirements and never override
+    # the downward caps above for missing evidence.
+    if relevance == "covered":
+        floor("content", 0.65, "回答已直接覆盖题目核心")
+        if statuses.get("提供一个真实案例") == "covered":
+            floor("content", 0.72, "题目核心与具体案例均有证据")
+    depth_requirements = (
+        "明确个人职责与关键决策",
+        "说明备选方案、权衡标准与最终选择",
+        "说明指标、口径与决策关系",
+        "说明方法或制定过程",
+    )
+    covered_depth = sum(statuses.get(item) == "covered" for item in depth_requirements)
+    if covered_depth >= 2:
+        floor("technical_depth", 0.70, "至少两项决策深度要求已有证据")
+    elif covered_depth == 1:
+        floor("technical_depth", 0.58, "至少一项决策深度要求已有证据")
+    if len(analysis.semantic_steps) >= 3:
+        floor("structure", 0.70, "回答已呈现三个以上可识别的语义步骤")
+    elif len(analysis.semantic_steps) >= 2:
+        floor("structure", 0.60, "回答已呈现多个有序语义步骤")
+    if statuses.get("给出结果与验证方式") == "covered":
+        floor("impact", 0.72, "已提供可核验的实际结果")
     analysis.calibration_notes = notes
     evaluation.spoken_analysis = analysis

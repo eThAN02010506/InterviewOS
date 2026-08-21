@@ -24,6 +24,7 @@ from interview_os.core.state import (
     JobDescriptionReview,
     JobRequirement,
     LiveInterviewRecord,
+    MockAnswerRecord,
     QuestionSuggestion,
     QuestionSuggestionType,
     RequirementOrigin,
@@ -73,7 +74,7 @@ class InvalidLLM:
 class EvaluationNarrativeLLM:
     async def chat(self, messages, **kwargs):
         return (
-            '{"summary":"现有回答显示候选人能够拆解招聘目标，但结果证据仍需核验。",'
+            '{"summary":"C1 现有回答显示候选人能够拆解招聘目标，但结果证据仍需核验。",'
             '"competency_reviews":['
             '{"competency_id":"C1","evidence_numbers":[1,2],'
             '"assessment":"两条证据分别说明了画像拆解和漏斗复盘；当前优势是方法清楚，缺口是结果尚未核验。",'
@@ -92,6 +93,16 @@ class ContradictorySingleEvidenceNarrativeLLM:
             '{"competency_id":"C1","evidence_numbers":[1],'
             '"assessment":"回答说明了性能改进，但当前回答尚未提供证据。",'
             '"next_probe":"请再讲一个不同案例。"}]}'
+        )
+
+
+class FollowUpAsSecondCaseNarrativeLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":"候选人已通过两次案例证明数据决策能力。",'
+            '"competency_reviews":[{"competency_id":"C1","evidence_numbers":[1,2],'
+            '"assessment":"第二个案例显示资源减半时仍能调整方案。",'
+            '"next_probe":"请再讲一个不同产品线的真实案例。"}]}'
         )
 
 
@@ -351,6 +362,7 @@ async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
                     competency="招聘战略",
                     score=0.59,
                     confidence=0.6,
+                    gaps=["需要更多独立回答交叉验证"],
                 )
             ],
             overall_score=0.59,
@@ -363,6 +375,7 @@ async def test_feedback_agent_keeps_hiring_voice_out_of_candidate_report():
     assert "仅用于面试准备" in state.feedback.overall
     assert all("候选人" not in item for item in state.feedback.action_plan)
     assert all(item.startswith("准备并练习：") for item in state.feedback.action_plan)
+    assert any("不同业务场景" in item for item in state.feedback.action_plan)
     assert "不能给出录用或不录用建议" in state.feedback.recommendation_reasoning
 
 
@@ -441,6 +454,7 @@ async def test_evaluation_agent_adds_model_narrative_without_delegating_scores_o
     results = {item.competency: item for item in state.evaluation.competencies}
     assert state.evaluation.narrative_source == "model"
     assert "候选人能够拆解招聘目标" in state.evaluation.summary
+    assert "C1" not in state.evaluation.summary
     assert results["招聘战略"].score == pytest.approx(0.65)
     assert results["招聘战略"].gaps == ["缺少已核验结果", "缺少具体时间线"]
     assert len(results["招聘战略"].narrative_evidence_ids) == 2
@@ -469,7 +483,12 @@ async def test_evaluation_narrative_does_not_deny_existing_single_evidence():
     agent = EvaluationAgent(llm_client=ContradictorySingleEvidenceNarrativeLLM())
     state = InterviewState()
     state.evidence = [
-        Evidence(competency="系统性能", signal="最终 P95 降到 180ms。", confidence=0.7)
+        Evidence(
+            competency="系统性能",
+            signal="最终 P95 降到 180ms。",
+            confidence=0.7,
+            notes="缺少复盘",
+        )
     ]
 
     await agent.execute(state)
@@ -478,6 +497,49 @@ async def test_evaluation_narrative_does_not_deny_existing_single_evidence():
     assert state.evaluation.narrative_source == "model"
     assert "尚未提供证据" not in result.assessment
     assert "仍需要第二个独立案例交叉验证" in result.assessment
+
+
+@pytest.mark.asyncio
+async def test_evaluation_rejects_follow_up_described_as_independent_second_case():
+    agent = EvaluationAgent(llm_client=FollowUpAsSecondCaseNarrativeLLM())
+    state = InterviewState()
+    question_id = InterviewQuestion(question="如何改善续费？", competency="数据决策").id
+    main = MockAnswerRecord(
+        question_id=question_id,
+        question="如何改善续费？",
+        competency="数据决策",
+        answer="我分析流失客户并上线风险看板。",
+        evaluation=AnswerEvaluation(
+            content=0.8, technical_depth=0.8, structure=0.8, impact=0.8
+        ),
+    )
+    follow_up = MockAnswerRecord(
+        question_id=question_id,
+        question="资源减半时如何调整？",
+        competency="数据决策",
+        answer="我先缩小试点范围。",
+        evaluation=AnswerEvaluation(
+            content=0.7, technical_depth=0.7, structure=0.7, impact=0.7
+        ),
+        is_follow_up=True,
+    )
+    state.mock_session.responses = [main, follow_up]
+    state.evidence = [
+        Evidence(
+            competency="数据决策",
+            signal=record.answer,
+            confidence=0.75,
+            source_record_id=record.id,
+        )
+        for record in (main, follow_up)
+    ]
+
+    await agent.execute(state)
+
+    assert state.evaluation.narrative_source == "deterministic"
+    assert "两次案例" not in state.evaluation.summary
+    assert "需要更多独立回答交叉验证" in state.evaluation.competencies[0].gaps
+    assert state.evaluation.competencies[0].confidence == pytest.approx(0.55)
 
 
 @pytest.mark.asyncio
@@ -693,6 +755,63 @@ async def test_strategy_prompt_contains_recency_instruction_and_employer_block()
     assert "ZUORA" in llm.last_prompt
     assert "Zuora is a subscription platform" in llm.last_prompt
     assert "不得据此推断候选人的职责、技能、业绩" in llm.last_prompt
+
+
+@pytest.mark.asyncio
+async def test_full_jd_strategy_does_not_turn_adjacent_numbers_into_fit_claims():
+    agent = InterviewStrategyAgent(llm_client=InventedMetricsLLM())
+    state = InterviewState(
+        job=JobDescription(
+            title="高级产品负责人",
+            raw_description=(
+                "岗位职责：负责B2B SaaS产品战略和路线图\n"
+                "任职要求：7年以上产品经验，3年以上团队管理经验\n"
+                "团队背景：产品团队5人，重点提升续费率"
+            ),
+        ),
+        job_review=JobDescriptionReview(
+            is_title_only=False,
+            requirements=[
+                JobRequirement(
+                    text="7年以上产品经验，3年以上团队管理经验",
+                    origin=RequirementOrigin.EXPLICIT,
+                ),
+                JobRequirement(
+                    text="产品团队5人，重点提升续费率",
+                    origin=RequirementOrigin.EXPLICIT,
+                ),
+            ],
+        ),
+    )
+    state.candidate.raw_resume_text = (
+        "带领3名产品经理，建立月度复盘机制。\n"
+        "六个月内试点客户续费率从78%提升到86%。"
+    )
+
+    await agent.execute(state)
+
+    rendered = state.strategy.model_dump_json()
+    assert "不代表系统已判定候选人完全匹配" in rendered
+    assert "管理经验不足" not in rendered
+    assert "能带领5人" not in rendered
+    assert "快速学习" not in rendered
+    assert "候选人简历自述（待确认）" in rendered
+
+
+def test_mock_framework_quotes_resume_without_inventing_actions_or_constraints():
+    state = InterviewState()
+    state.candidate.raw_resume_text = (
+        "主导产品、销售、客户成功和研发共同调整路线图。\n"
+        "六个月内试点客户续费率从78%提升到86%。"
+    )
+
+    framework = MockInterviewAgent.deterministic_framework(state, "产品战略与续费增长")
+
+    assert "续费率从78%提升到86%" in framework
+    assert "候选人简历自述（使用前确认）" in framework
+    assert "资源有限" not in framework
+    assert "安排测试" not in framework
+    assert "客户访谈确认" not in framework
 
 
 @pytest.mark.asyncio

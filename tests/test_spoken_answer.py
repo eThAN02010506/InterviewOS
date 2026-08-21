@@ -305,6 +305,38 @@ def test_capacity_answer_extracts_actions_and_observed_result_not_forecast():
     assert "0.2%" in analysis.cleaned_transcript
 
 
+def test_product_retention_answer_is_relevant_and_receives_evidence_floors():
+    question = (
+        "在北辰软件负责企业订阅计费产品时，面对续费率下降，你是如何定位问题并制定"
+        "解决方案的？请说明业务场景、主要决策、关键行动、续费率结果和数据验证。"
+    )
+    answer = (
+        "在北辰软件负责企业订阅计费产品时，我看到续费率连续下降。我本人负责定位原因"
+        "和推动路线图调整。先把CRM中的120家流失客户按套餐、使用频率和流失原因分组，再结合客户"
+        "成功团队的访谈记录。我比较了全面重做套餐与先建设预警看板两种方向，考虑影响范围"
+        "和上线成本后，决定先上线用量预警与续费风险看板。之后每月按同一CRM口径验证，六个月内"
+        "试点客户续费率从78%提升到86%。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+    evaluation = AnswerEvaluation(
+        content=0.25,
+        technical_depth=0.35,
+        structure=0.3,
+        impact=0.35,
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+
+    assert coverage["直接回应题目核心"].status == "covered"
+    assert coverage["明确具体公司/业务场景"].status == "covered"
+    assert coverage["给出结果与验证方式"].status == "covered"
+    assert evaluation.content >= 0.72
+    assert evaluation.technical_depth >= 0.70
+    assert evaluation.structure >= 0.70
+    assert evaluation.impact >= 0.72
+
+
 def test_grounded_feedback_does_not_request_evidence_already_covered():
     question = "你在做容量权衡时考虑了哪些指标，最终结果如何？"
     answer = (
@@ -326,3 +358,4 @@ def test_grounded_feedback_does_not_request_evidence_already_covered():
     assert evaluation.observed_signals
     assert not any("补充你亲自做出的关键决定" in item for item in evaluation.feedback)
     assert not any("补充已核验的结果" in item for item in evaluation.feedback)
+    assert not any(item.startswith("已覆盖「") for item in evaluation.feedback)

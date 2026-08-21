@@ -45,7 +45,13 @@ def review_job_description(raw_text: str, inferred: list[str]) -> JobDescription
         else [name for name in section_markers if name not in present]
     )
     lines = [
-        re.sub(r"^[\s•·*\-—\d.、)）]+", "", line).strip()
+        # Remove bullets and enumerators such as "1." or "(2)", but preserve
+        # meaningful leading numbers in requirements like "7年以上".
+        re.sub(
+            r"^\s*(?:(?:[•·*\-—]+)|(?:[（(]?\d{1,2}[、.．)）]\s*))\s*",
+            "",
+            line,
+        ).strip()
         for line in text.splitlines()
         if line.strip()
     ]

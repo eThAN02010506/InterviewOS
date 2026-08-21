@@ -314,10 +314,14 @@ function hydrateSessionForms() {
     'enterprise-jd': s.job?.raw_description || s.job?.title,
     'candidate-company': s.company?.name,
     'enterprise-company': s.company?.name,
+    'candidate-company-context': '',
+    'enterprise-company-context': '',
     'interviewer-name': s.interviewer?.name,
     'interviewer-position': s.interviewer?.position,
   };
-  Object.entries(values).forEach(([id, value]) => { if ($(id) && value) $(id).value = value; });
+  // Session switches are a hard candidate boundary. Empty fields must clear
+  // the previous candidate's form values instead of silently retaining them.
+  Object.entries(values).forEach(([id, value]) => { if ($(id)) $(id).value = value ?? ''; });
 }
 
 function renderState() {
@@ -692,7 +696,8 @@ function renderMock() {
   const details=node.innerHTML;
   const previous=[...(session?.attempt_history||[])].reverse().find(item=>item.question_id===last.question_id&&item.question===last.question);
   const headline=(e.feedback||[])[0]||'已完成本题证据检查，可以查看具体依据或立即重答。';
-  node.innerHTML=`<div class="coach-summary"><small>本题最优先改进</small><strong>${esc(headline)}</strong><div class="claim-actions">${completed?'':`<button type="button" data-quick-retry="${esc(last.id)}">按建议重答</button>`}${last.audio_file?`<button type="button" data-delete-mock-audio="${esc(last.id)}">删除本次录音</button>`:''}</div></div>${renderQuestionAlignment(e)}${renderRetryComparison(last,previous)}<details class="coach-details"><summary>查看完整分析、评分和校准依据</summary>${details}</details>`;
+  const hasCoverageGap=(e.spoken_analysis?.question_coverage||[]).some(item=>item.status==='missing'||item.status==='partial');
+  node.innerHTML=`<div class="coach-summary"><small>${hasCoverageGap?'本题最优先改进':'本题最值得继续打磨'}</small><strong>${esc(headline)}</strong><div class="claim-actions">${completed?'':`<button type="button" data-quick-retry="${esc(last.id)}">按建议重答</button>`}${last.audio_file?`<button type="button" data-delete-mock-audio="${esc(last.id)}">删除本次录音</button>`:''}</div></div>${renderQuestionAlignment(e)}${renderRetryComparison(last,previous)}<details class="coach-details"><summary>查看完整分析、评分和校准依据</summary>${details}</details>`;
 }
 
 async function ensureSession() { if (state.sessionId) return true; $('session-dialog').showModal(); toast('请先创建一个会话'); return false; }

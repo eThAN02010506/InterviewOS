@@ -34,6 +34,7 @@ from interview_os.core.state import (
     BOUNDARY_MIN_SCORE,
     COVERAGE_GUIDANCE_MAX_ITEMS,
     CROSS_VALIDATION_EVIDENCE_COUNT,
+    EVIDENCE_SIGNAL_CHAR_LIMIT,
     LIVE_RECENT_SEGMENT_WINDOW,
     LIVE_SUMMARY_CHAR_LIMIT,
     MIN_ANSWER_BOUNDARY_SEGMENTS,
@@ -1053,7 +1054,7 @@ class InterviewService:
             )
             placeholder = Evidence(
                 competency=clean_competency,
-                signal=answer_text[:200],
+                signal=answer_text[:EVIDENCE_SIGNAL_CHAR_LIMIT],
                 confidence=0.0,
                 source=EvidenceSource.LIVE_INTERVIEW,
                 source_record_id=record.id,
@@ -1204,7 +1205,7 @@ class InterviewService:
         )
         if placeholder is not None:
             placeholder.competency = record.competency
-            placeholder.signal = record.answer[:200]
+            placeholder.signal = record.answer[:EVIDENCE_SIGNAL_CHAR_LIMIT]
             placeholder.confidence = evaluation.overall_score()
             # The signal has just been replaced by model output. Never carry a
             # human classification from the previous signal across that change.
@@ -1214,7 +1215,7 @@ class InterviewService:
         state.evidence.append(
             Evidence(
                 competency=record.competency,
-                signal=record.answer[:200],
+                signal=record.answer[:EVIDENCE_SIGNAL_CHAR_LIMIT],
                 confidence=evaluation.overall_score(),
                 source=EvidenceSource.LIVE_INTERVIEW,
                 source_record_id=record.id,
@@ -2696,7 +2697,7 @@ class InterviewService:
             runtime.state.evidence.append(
                 Evidence(
                     competency=record.competency or "Answer Quality",
-                    signal=answer[:200],
+                    signal=answer[:EVIDENCE_SIGNAL_CHAR_LIMIT],
                     confidence=evaluation.overall_score(),
                     source=EvidenceSource.MOCK_INTERVIEW,
                     source_record_id=record.id,

@@ -275,8 +275,10 @@ After candidate preparation, run an interactive mock interview:
 2. `POST /api/mock-interviews/{session_id}/start`
 3. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,
-   what structure to follow, and which signals to emphasize, generated per
-   question by the model).
+   what structure to follow, and which signals to emphasize). Frameworks quote
+   only confirmed/modified resume claims; when no review exists they clearly
+   label exact resume lines as unverified self-report. A free-form model answer
+   is never accepted as a candidate fact.
 4. `POST /api/mock-interviews/{session_id}/answers` with its `question_id` and
    answer. A retry also sends `retry: true` plus the exact `retry_response_id`,
    so retrying a follow-up replaces that follow-up rather than its parent answer.
@@ -340,6 +342,11 @@ feedback, and offers direct actions to open the report or create a separate prac
 session. Primary, secondary, disabled, focus, and sticky navigation states share one
 responsive hierarchy across desktop and mobile layouts.
 
+Switching or creating a session clears empty preparation fields instead of carrying
+the previous candidate's resume, JD, or company context across the candidate boundary.
+When every question requirement is covered, the compact coaching card says what is
+worth polishing rather than presenting a covered strength as the "top improvement".
+
 Candidates can answer by voice instead of typing. While recording, bounded
 cumulative audio snapshots are sent to `POST /api/live-interviews/{session_id}/
 audio/preview`; the provisional text appears in the answer box but is never
@@ -368,9 +375,11 @@ personal-decision, metric/trade-off, and result requirements, and distinguishes 
 forecast, baseline, target, and observed post-action result. A polished answer about
 another topic is capped even when it contains plausible metrics. Conversely, a
 concise follow-up that fully explains the requested metrics, statistical window,
-threshold, and triggered action is not forced into a new STAR story. A downward-only
-second pass caps model scores that exceed observable evidence and exposes every
-adjustment plus the pre-calibration score in the UI. Grounded strengths and coaching
+threshold, and triggered action is not forced into a new STAR story. A two-sided
+second pass caps scores when evidence is missing and raises implausibly low model
+scores only when the shared contract has direct quoted evidence; evidence caps always
+take precedence over floors. It exposes every adjustment plus the pre-calibration
+score in the UI. Grounded strengths and coaching
 are regenerated from the same evidence excerpts, so the UI cannot ask for an option,
 decision, or result it already recognized. Input modality is explicit:
 typed answers are not penalized for conversational transition words, while ASR/live
@@ -418,8 +427,10 @@ with explicit placeholders only where scenario, ownership, action, result, valid
 or reflection is absent. This prevents model-written names, meetings, tools, dates,
 percentages, headcount, money, and outcomes from becoming candidate claims. Any legacy
 model draft carrying unsupported numbers is discarded.
-If no LLM is configured, or the optional per-question framework pass is incomplete,
-every question receives a deterministic candidate-aware answer framework.
+Every question receives a deterministic, source-bounded candidate-aware framework;
+the LLM may still generate and interpret questions, but cannot add candidate actions,
+constraints, metrics, or results to that framework. Persisted answer evidence keeps
+up to 1,200 characters so result-bearing tails are not lost in the final report.
 
 When evidence is available, `POST /api/evaluations/{session_id}` runs the final
 evaluation and feedback workflow. Candidate UI presents strengths, improvements,

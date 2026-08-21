@@ -17,6 +17,7 @@ from interview_os.core.spoken_answer import (
     grounded_missing_signals,
 )
 from interview_os.core.state import (
+    EVIDENCE_SIGNAL_CHAR_LIMIT,
     AnswerEvaluation,
     AnswerEvaluationDraft,
     AnswerReviewStatus,
@@ -111,7 +112,7 @@ class CoachAgent(Agent):
             # Model-generated observed_signals remain coaching hints. Persist the
             # candidate's own words as the auditable evidence signal instead of
             # allowing an untrusted model to introduce a new achievement claim.
-            signal=coach_input.answer[:200],
+            signal=coach_input.answer[:EVIDENCE_SIGNAL_CHAR_LIMIT],
             confidence=evaluation.overall_score(),
             source=coach_input.evidence_source,
             # Only a human review may classify an answer as positive/negative.

@@ -36,6 +36,7 @@ MOCK_REFILL_BATCH = 2  # 每次补题生成的问题数
 # 覆盖引导
 COVERAGE_GUIDANCE_MAX_ITEMS = 8
 WEAK_SIGNAL_THRESHOLD = 0.65  # 证据最强置信度不高于此值判为信号偏弱
+EVIDENCE_SIGNAL_CHAR_LIMIT = 1200  # 保留完整单题证据，避免报告截断关键结果
 
 # 行动卡
 ACTION_CARD_SOURCE_REFS_MAX = 8

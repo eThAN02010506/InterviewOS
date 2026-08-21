@@ -60,7 +60,10 @@ class EvaluationAgent(Agent):
         frame = []
         evidence_ids: dict[str, dict[int, UUID]] = {}
         competency_names: dict[str, str] = {}
+        independent_case_counts: dict[str, int] = {}
         evidence_by_competency: dict[str, list[Evidence]] = {}
+        mock_records = {record.id: record for record in state.mock_session.responses}
+        live_record_ids = {record.id for record in state.live_interview_records}
         for item in state.evidence:
             evidence_by_competency.setdefault(item.competency or "综合能力", []).append(item)
         for competency_index, result in enumerate(report.competencies, start=1):
@@ -69,17 +72,38 @@ class EvaluationAgent(Agent):
             items = evidence_by_competency.get(result.competency, [])
             numbered = {}
             evidence_rows = []
+            independent_case_keys: set[str] = set()
             for number, item in enumerate(items, start=1):
                 numbered[number] = item.id
+                mock_record = (
+                    mock_records.get(item.source_record_id)
+                    if item.source_record_id is not None
+                    else None
+                )
+                if mock_record is not None:
+                    case_key = f"mock:{mock_record.question_id}"
+                    answer_kind = (
+                        "follow_up_same_case" if mock_record.is_follow_up else "main_answer"
+                    )
+                elif item.source_record_id in live_record_ids:
+                    case_key = f"live:{item.source_record_id}"
+                    answer_kind = "live_answer"
+                else:
+                    case_key = f"evidence:{item.id}"
+                    answer_kind = "other_evidence"
+                independent_case_keys.add(case_key)
                 evidence_rows.append(
                     {
                         "number": number,
                         "candidate_evidence": item.signal[:500],
                         "confidence": round(item.confidence, 4),
                         "polarity": item.polarity.value,
+                        "answer_kind": answer_kind,
+                        "case_key": case_key,
                     }
                 )
             evidence_ids[competency_id] = numbered
+            independent_case_counts[competency_id] = len(independent_case_keys)
             frame.append(
                 {
                     "competency_id": competency_id,
@@ -99,7 +123,11 @@ class EvaluationAgent(Agent):
                 max_tokens=1800,
             )
             if not self._apply_model_narrative(
-                report, draft, evidence_ids, competency_names
+                report,
+                draft,
+                evidence_ids,
+                competency_names,
+                independent_case_counts,
             ):
                 raise ValueError("narrative competency or evidence references did not match")
         except Exception as exc:  # noqa: BLE001 - optional narrative must not block report
@@ -111,15 +139,21 @@ class EvaluationAgent(Agent):
     def _normalize_assessment_for_locked_gaps(assessment: str, gaps: list[str]) -> str:
         """Prevent a model narrative from contradicting the locked evidence frame."""
         independent_gap = "需要更多独立回答交叉验证"
-        if gaps == [independent_gap]:
-            replacement = "仍需要第二个独立案例交叉验证"
-            for contradiction in (
-                "当前回答尚未提供证据",
-                "当前没有提供证据",
-                "缺少任何证据",
-                "没有证据",
-            ):
-                assessment = assessment.replace(contradiction, replacement)
+        replacement = (
+            "现有回答已形成证据，仍需要第二个独立案例交叉验证"
+            if independent_gap in gaps
+            else "现有回答已形成证据，但该结论仍需补充验证"
+        )
+        # A validated narrative must cite at least one evidence number, so any
+        # blanket statement that the answer supplied no evidence is false even
+        # when additional locked gaps are present.
+        for contradiction in (
+            "当前回答尚未提供证据",
+            "当前没有提供证据",
+            "缺少任何证据",
+            "没有证据",
+        ):
+            assessment = assessment.replace(contradiction, replacement)
         return assessment
 
     @staticmethod
@@ -128,6 +162,7 @@ class EvaluationAgent(Agent):
         draft: EvaluationNarrativeDraft,
         evidence_ids: dict[str, dict[int, UUID]],
         competency_names: dict[str, str],
+        independent_case_counts: dict[str, int],
     ) -> bool:
         """Atomically apply a complete narrative whose references all resolve."""
         reviews = {item.competency_id: item for item in draft.competency_reviews}
@@ -139,6 +174,14 @@ class EvaluationAgent(Agent):
         ):
             return False
         resolved: dict[str, tuple[str, str, list[UUID]]] = {}
+        asserted_multiple_cases = re.compile(
+            r"(?:两次|两个|第二个|2个).{0,3}(?:案例|经历).{0,8}(?:显示|证明|体现|提升|说明)|"
+            r"(?:通过|已有|展示了).{0,5}(?:两次|两个|2个)(?:案例|经历)"
+        )
+        if sum(independent_case_counts.values()) < 2 and asserted_multiple_cases.search(
+            draft.summary
+        ):
+            return False
         for competency_id in expected:
             review = reviews[competency_id]
             allowed = evidence_ids.get(competency_id, {})
@@ -148,6 +191,10 @@ class EvaluationAgent(Agent):
                 or not review.next_probe.strip()
                 or not numbers
                 or any(number not in allowed for number in numbers)
+                or (
+                    independent_case_counts.get(competency_id, 0) < 2
+                    and asserted_multiple_cases.search(review.assessment)
+                )
             ):
                 return False
             resolved[competency_names[competency_id]] = (
@@ -162,7 +209,7 @@ class EvaluationAgent(Agent):
             )
             result.next_probe = next_probe
             result.narrative_evidence_ids = refs
-        report.summary = draft.summary.strip()[:1000]
+        report.summary = re.sub(r"\bC\d+\s*", "", draft.summary.strip())[:1000]
         report.narrative_source = "model"
         return True
 
@@ -221,6 +268,8 @@ class EvaluationAgent(Agent):
     @staticmethod
     def _fallback_report(state: InterviewState) -> EvaluationReport:
         grouped: dict[str, list] = {}
+        mock_records = {record.id: record for record in state.mock_session.responses}
+        live_record_ids = {record.id for record in state.live_interview_records}
         for evidence in state.evidence:
             grouped.setdefault(evidence.competency or "综合能力", []).append(evidence)
         competencies = []
@@ -236,6 +285,20 @@ class EvaluationAgent(Agent):
                 for item in evidence_items
             ]
             score = sum(directional_scores) / len(directional_scores)
+            independent_case_keys: set[str] = set()
+            for item in evidence_items:
+                mock_record = (
+                    mock_records.get(item.source_record_id)
+                    if item.source_record_id is not None
+                    else None
+                )
+                if mock_record is not None:
+                    independent_case_keys.add(f"mock:{mock_record.question_id}")
+                elif item.source_record_id in live_record_ids:
+                    independent_case_keys.add(f"live:{item.source_record_id}")
+                else:
+                    independent_case_keys.add(f"evidence:{item.id}")
+            independent_case_count = len(independent_case_keys)
             recorded_gaps = list(
                 dict.fromkeys(
                     gap.strip()
@@ -244,13 +307,13 @@ class EvaluationAgent(Agent):
                     if gap.strip()
                 )
             )
-            if len(evidence_items) < 2:
+            if independent_case_count < 2:
                 recorded_gaps.append("需要更多独立回答交叉验证")
             competencies.append(
                 CompetencyEvaluation(
                     competency=competency,
                     score=score,
-                    confidence=min(0.85, 0.45 + 0.1 * len(evidence_items)),
+                    confidence=min(0.85, 0.45 + 0.1 * independent_case_count),
                     supporting_evidence=[item.signal for item in evidence_items if item.signal],
                     gaps=list(dict.fromkeys(recorded_gaps)),
                 )

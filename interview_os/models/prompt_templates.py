@@ -212,6 +212,8 @@ EVALUATION_NARRATIVE_PROMPT = (
     "exactly these fields: competency_id, evidence_numbers, assessment, next_probe. "
     "Copy each short competency_id (C1, C2, etc.) exactly; competency_label is read-only context and "
     "must not be returned. evidence_numbers must contain only numbers listed under that same ID. "
+    "answer_kind=follow_up_same_case and an identical case_key mean a probe into the same story, "
+    "not a second or independent case; never describe them as two cases. "
     "assessment must explain what the cited evidence demonstrates, why "
     "the fixed score is reasonable, and where evidence remains insufficient. It may cite the supplied "
     "fixed score, but must describe a gap as '当前回答尚未提供证据', never as proof that the candidate "

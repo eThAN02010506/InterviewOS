@@ -60,10 +60,18 @@ class FeedbackAgent(Agent):
                 + [gap for item in competencies for gap in item.gaps]
             )
         )[:5]
-        report.improvements = gaps
+        candidate_gaps = [
+            (
+                "再准备一个不同业务场景的真实案例，并讲清数据来源、个人决策和已核验结果"
+                if gap == "需要更多独立回答交叉验证"
+                else gap
+            )
+            for gap in gaps
+        ]
+        report.improvements = candidate_gaps
         report.action_plan = (
-            [f"准备并练习：{gap}" for gap in gaps]
-            if gaps
+            [f"准备并练习：{gap}" for gap in candidate_gaps]
+            if candidate_gaps
             else ["准备并练习：可交叉验证的具体案例与真实结果"]
         )
         negative_notes = [

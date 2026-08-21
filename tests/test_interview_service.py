@@ -1009,9 +1009,9 @@ async def test_mock_interview_pool_includes_likely_and_competency(tmp_path):
     sources = {q.source for q in state.mock_interview.questions}
     assert "likely" in sources or "competency" in sources
     assert all(q.answer_framework for q in state.mock_interview.questions)
-    # The per-question LLM framework pass ran: pool questions carry the fake-LLM
-    # tailored text, not just the deterministic template.
-    assert any("2024" in q.answer_framework for q in state.mock_interview.questions)
+    # Every framework is source-bounded instead of accepting free-form model
+    # additions as candidate facts.
+    assert all("系统不会替你生成经历" in q.answer_framework for q in state.mock_interview.questions)
     assert len({q.question for q in state.mock_interview.questions}) == len(
         state.mock_interview.questions
     )
