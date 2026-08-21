@@ -263,6 +263,15 @@ After candidate preparation, run an interactive mock interview:
    claims; invalid references are discarded, and without a confirmed match the UI
    gives selection rules instead of inventing a candidate story. Probe-tree
    questions also enter practice only after the user clicks one.
+   Automatic follow-ups are selected from the latest answer's auditable coverage
+   gaps instead of always taking the first authored follow-up. The planner can
+   choose recovery, foundation, evidence, trade-off, or pressure branches,
+   records the reason and history in session state, never repeats a used branch,
+   and stops after four automatic probes. A candidate who says they do not know
+   is asked whether direct experience is absent or the experience is difficult
+   to organize; the recovery path explicitly prohibits fabrication. Salary,
+   candidate-question, relocation, visa, and career-gap topics receive dedicated
+   question-understanding strategies rather than generic STAR coaching.
 2. `POST /api/mock-interviews/{session_id}/start`
 3. Present the returned `current_question` (each question carries an
    `answer_framework` — a reference hint about which resume experience to tell,

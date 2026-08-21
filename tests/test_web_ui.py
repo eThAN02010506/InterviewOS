@@ -40,6 +40,9 @@ def test_candidate_next_action_and_mock_completion_have_ui_contracts():
     assert "回答质量分界" in script
     assert "从已确认经历中选材" in script
     assert "由浅入深的追问题树" in script
+    assert "恢复引导" in script
+    assert "压力迁移" in script
+    assert "追问原因：" in script
 
 
 def test_accessible_interaction_states_are_styled():

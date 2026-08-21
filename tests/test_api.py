@@ -545,9 +545,20 @@ def test_mock_interview_asks_followup_before_advancing(tmp_path):
             json={"question_id": question_id, "answer": "I made a trade-off."},
         ).json()
         assert first["mock_session"]["status"] == "active"
-        # Advancing offers the follow-up because the main answer left signals.
+        # Advancing chooses a branch from the answer's auditable coverage gaps.
         advanced = client.post(f"/api/mock-interviews/{session_id}/next").json()
-        assert advanced["current_question"]["question"] == "What evidence supports that trade-off?"
+        assert advanced["mock_session"]["pending_follow_up"]
+        assert advanced["mock_session"]["pending_follow_up_stage"] in {
+            "foundation",
+            "evidence",
+            "tradeoff",
+            "pressure",
+        }
+        assert advanced["mock_session"]["pending_follow_up_rationale"]
+        assert (
+            advanced["current_question"]["question"]
+            == advanced["mock_session"]["pending_follow_up"]
+        )
         follow_id = advanced["current_question"]["id"]
         second = client.post(
             f"/api/mock-interviews/{session_id}/answers",
@@ -556,7 +567,10 @@ def test_mock_interview_asks_followup_before_advancing(tmp_path):
         finished = client.post(f"/api/mock-interviews/{session_id}/finish").json()
     assert second["mock_session"]["status"] == "active"
     assert finished["mock_session"]["status"] == "completed"
+    assert finished["mock_session"]["pending_follow_up"] == ""
+    assert finished["mock_session"]["pending_follow_up_stage"] == ""
     assert second["mock_session"]["responses"][1]["is_follow_up"] is True
+    assert second["mock_session"]["responses"][1]["follow_up_stage"]
 
 
 def test_interviewer_transcript_import_generates_hiring_report(tmp_path):

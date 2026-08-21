@@ -485,7 +485,9 @@ async def test_autopilot_generates_final_report_after_last_answer(tmp_path):
     state = await service.submit_mock_answer(session_id, question.id, "I compared trade-offs")
     assert state.mock_session.status.value == "active"
     state = await service.advance_mock_interview(session_id)
-    assert state.mock_session.pending_follow_up == "How does it scale?"
+    assert state.mock_session.pending_follow_up
+    assert state.mock_session.pending_follow_up_stage == "foundation"
+    assert state.mock_session.pending_follow_up_rationale
     follow_question = service.current_mock_question(state)
     state = await service.submit_mock_answer(
         session_id, follow_question.id, "At ten times traffic, p95 stayed below 100 ms"
@@ -1199,7 +1201,7 @@ async def test_advance_can_skip_unanswered_question(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_follow_up_answer_clears_pending_and_advances(tmp_path):
+async def test_follow_up_answer_can_deepen_then_user_can_skip_and_advance(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'followup-clear.db'}")
     await storage.init_db()
     service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
@@ -1220,7 +1222,13 @@ async def test_follow_up_answer_clears_pending_and_advances(tmp_path):
     # Answer follow-up -> pending cleared, so the UI shows actions.
     state = await service.submit_mock_answer(session_id, follow.id, "Follow-up answer")
     assert not state.mock_session.pending_follow_up
-    # Next advance moves on (does NOT re-offer the follow-up).
+    # The next advance uses the follow-up answer to choose a deeper branch.
+    state = await service.advance_mock_interview(session_id)
+    assert state.mock_session.pending_follow_up
+    assert state.mock_session.pending_follow_up_stage == "pressure"
+    assert len(state.mock_session.follow_up_history[str(question.id)]) == 2
+    # The existing control contract remains: another advance skips a pending
+    # probe and moves to the next main question.
     state = await service.advance_mock_interview(session_id)
     assert not state.mock_session.pending_follow_up
     assert state.mock_session.current_question_index >= 1

@@ -497,6 +497,7 @@ class MockAnswerRecord(BaseModel):
     evaluation: AnswerEvaluation
     answer_modality: str = "typed"
     is_follow_up: bool = False
+    follow_up_stage: str = ""  # recovery | foundation | evidence | tradeoff | pressure
     audio_file: str = ""
     speech_delivery: SpeechDeliveryFeedback = Field(default_factory=SpeechDeliveryFeedback)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -516,6 +517,9 @@ class MockInterviewSession(BaseModel):
     attempt_history: list[MockAnswerRecord] = Field(default_factory=list)
     pending_follow_up: str = ""
     pending_parent_question_id: UUID | None = None
+    pending_follow_up_stage: str = ""
+    pending_follow_up_rationale: str = ""
+    follow_up_history: dict[str, list[str]] = Field(default_factory=dict)
     refill_in_flight: bool = False
     started_at: datetime | None = None
     completed_at: datetime | None = None

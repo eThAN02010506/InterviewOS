@@ -280,7 +280,9 @@ class MockInterviewAgent(Agent):
         )
 
     @classmethod
-    def enrich_question(cls, question: InterviewQuestion) -> None:
+    def enrich_question(
+        cls, question: InterviewQuestion, state: InterviewState | None = None
+    ) -> None:
         text = question.question.strip()
         folded = text.casefold()
         behavioral = cls._is_behavioral_question(text)
@@ -312,6 +314,31 @@ class MockInterviewAgent(Agent):
         # accepting arbitrary model labels here would make pre-answer guidance
         # disagree with post-answer feedback.
         question.question_requirements = cls.question_requirements(question.question)
+        if question.understanding is None:
+            explicit_requirements = []
+            confirmed_claims: list[tuple[str, str]] = []
+            job_title = ""
+            if state is not None:
+                explicit_requirements = [
+                    item.text
+                    for item in state.job_review.requirements
+                    if item.origin.value == "explicit"
+                ]
+                if not explicit_requirements and state.job.raw_description.strip():
+                    explicit_requirements = list(state.job.responsibilities)
+                confirmed_claims = [
+                    (str(claim.id), claim.statement)
+                    for claim in state.resume_review.claims
+                    if claim.status.value in {"confirmed", "modified"}
+                ]
+                job_title = state.job.title
+            question.understanding = deterministic_question_understanding(
+                question.question,
+                competency=question.competency,
+                job_title=job_title,
+                explicit_job_requirements=explicit_requirements,
+                confirmed_claims=confirmed_claims,
+            )
         example = question.example_answer or cls.teaching_example(question.competency, text)
         analysis = analyze_spoken_answer(question.question, example)
         if any(item.status == "missing" for item in analysis.question_coverage):
@@ -411,7 +438,7 @@ class MockInterviewAgent(Agent):
         for q in state.mock_interview.questions:
             if not q.answer_framework:
                 q.answer_framework = self.deterministic_framework(state, q.competency)
-            self.enrich_question(q)
+            self.enrich_question(q, state)
 
     @classmethod
     def deterministic_refill_question(
@@ -493,7 +520,7 @@ class MockInterviewAgent(Agent):
                 if not q.answer_framework:
                     q.answer_framework = self.deterministic_framework(state, q.competency)
         for q in questions:
-            self.enrich_question(q)
+            self.enrich_question(q, state)
         return questions
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
@@ -532,6 +559,6 @@ class MockInterviewAgent(Agent):
             )
         self._expand_pool(state)
         for question in state.mock_interview.questions:
-            self.enrich_question(question)
+            self.enrich_question(question, state)
         await self._generate_frameworks(state)
         return self.make_response(state.mock_interview.model_dump_json(indent=2))

@@ -1,3 +1,5 @@
+import pytest
+
 from interview_os.core.question_understanding import (
     deterministic_question_understanding,
     merge_model_understanding,
@@ -156,3 +158,22 @@ def test_model_story_selection_cannot_escape_confirmed_claim_numbers():
     assert len(merged.candidate_story_options) == 1
     assert merged.candidate_story_options[0].claim_id == "safe-claim"
     assert merged.candidate_story_options[0].fit_reason == "直接相关"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_type", "expected_boundary"),
+    [
+        ("面试官问我期望薪资怎么办？", "compensation", "薪酬口径"),
+        ("最后我应该反问面试官什么？", "candidate_question", "面试官"),
+        ("如果岗位需要搬迁，我应该怎么回答？", "constraint", "客观条件"),
+        ("我的职业 gap 会怎么被追问？", "constraint", "客观条件"),
+    ],
+)
+def test_unexpected_interview_topics_switch_to_specific_strategy(
+    question: str, expected_type: str, expected_boundary: str
+):
+    understanding = deterministic_question_understanding(question)
+
+    assert understanding.answer_type == expected_type
+    assert any(expected_boundary in item for item in understanding.answer_boundary)
+    assert len(understanding.likely_follow_ups) >= 2

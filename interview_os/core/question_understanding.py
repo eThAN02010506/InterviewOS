@@ -19,6 +19,9 @@ _TYPE_LABELS = {
     "motivation": "动机匹配题",
     "technical": "专业判断题",
     "case_analysis": "案例分析题",
+    "compensation": "薪酬沟通题",
+    "candidate_question": "候选人反问",
+    "constraint": "现实条件题",
     "general": "综合问题",
 }
 
@@ -40,8 +43,20 @@ def _infer_competency(question: str, explicit: str = "") -> str:
 
 
 def _normalize_type(question: str) -> str:
-    answer_type = question_answer_type(question)
     folded = question.casefold()
+    if any(term in folded for term in ("期望薪资", "薪资要求", "薪酬", "salary", "compensation")):
+        return "compensation"
+    if any(
+        term in folded
+        for term in ("反问面试官", "问面试官", "有什么想问", "questions for me")
+    ):
+        return "candidate_question"
+    if any(
+        term in folded
+        for term in ("搬迁", "签证", "到岗时间", "空档", "gap", "relocation", "visa")
+    ):
+        return "constraint"
+    answer_type = question_answer_type(question)
     if answer_type == "methodology" and any(
         term in folded for term in ("架构", "技术", "算法", "系统", "代码", "性能")
     ):
@@ -67,7 +82,28 @@ def deterministic_question_understanding(
     requirements = question_requirements(question)
     boundaries = requirements or ["直接回应问题核心", "给出判断依据或真实证据"]
 
-    if answer_type == "motivation":
+    if answer_type == "compensation":
+        goal = "确认候选人的薪酬预期、依据和可协商边界，并判断是否与岗位预算匹配"
+        boundaries = ["说明薪酬口径与预期范围", "说明期望的现实依据", "保留结合职责和整体包协商的空间"]
+        mistakes = ["在了解岗位前只报一个刚性数字", "混淆税前税后、月薪年薪或现金与总包", "虚构当前薪资或其他 offer"]
+        variants = ["你目前如何评估这个岗位的合理薪酬范围？", "除薪资外，哪些整体回报因素会影响你的决定？", "如果预算低于预期，你会如何评估？"]
+        transfer = "保持薪酬口径和真实底线一致，根据面试阶段调整信息精度，不虚构竞争性 offer。"
+        follow_ups = ["这个范围指税前年薪还是整体包？", "你的依据是岗位职责、市场数据还是当前总包？", "哪些条件会改变你的可接受范围？"]
+    elif answer_type == "candidate_question":
+        goal = "确认候选人能否根据面试官身份和当前对话，提出有利于双向判断的反问"
+        boundaries = ["匹配面试官可回答的范围", "利用已有对话避免重复", "优先问成功标准、真实挑战和决策方式"]
+        mistakes = ["向 HR 追问无法回答的技术细节", "询问官网已有的基本信息", "只为展示自己而设计过长问题"]
+        variants = ["如果对方是用人经理，你最想确认哪个成功标准？", "如果对方是技术面试官，你会如何追问团队的真实挑战？", "前面哪句回答值得你继续深挖？"]
+        transfer = "反问的核心是获得决策信息；随 HR、用人经理、专业面试官或创始人切换问题层级。"
+        follow_ups = ["这个问题为什么适合由当前面试官回答？", "如果对方给出模糊回答，你会怎样追问？", "对方的哪种回答会成为你的风险信号？"]
+    elif answer_type == "constraint":
+        goal = "核对到岗、搬迁、签证或空档等现实条件，并判断时间线与岗位是否可行"
+        boundaries = ["直接说明已确认的客观条件", "区分确定事实与待确认项", "给出可执行时间线或协商条件"]
+        mistakes = ["为了显得配合而承诺不可行时间", "隐瞒签证或搬迁限制", "对空档过度辩解而不说明事实"]
+        variants = ["你最早什么时候可以到岗？", "搬迁或远程安排中还有哪些条件待确认？", "请简要说明这段职业空档的事实和当前状态。"]
+        transfer = "保持客观事实、时间线和底线前后一致，不因问法改变真实约束。"
+        follow_ups = ["哪一项是已经确定的，哪一项还要与相关方确认？", "如果时间线无法满足，你的可行替代方案是什么？", "这个条件最晚什么时候能确认？"]
+    elif answer_type == "motivation":
         goal = "验证选择动机是否具体、稳定，并与目标岗位和个人长期方向真正匹配"
         mistakes = ["只讲离开现公司的负面原因", "只表达热情，没有岗位匹配证据", "把宏大愿景当成个人选择依据"]
         variants = [
@@ -201,6 +237,9 @@ def _secondary_competencies(answer_type: str, primary: str) -> list[str]:
         "technical": ["权衡判断", "风险控制"],
         "case_analysis": ["问题拆解", "商业判断"],
         "situational": ["风险管理", "利益相关者管理"],
+        "compensation": ["市场判断", "协商沟通"],
+        "candidate_question": ["双向判断", "沟通深度"],
+        "constraint": ["诚信度", "可执行性"],
         "general": ["逻辑表达", "证据意识"],
     }
     return [item for item in mapping.get(answer_type, mapping["general"]) if item != primary]
@@ -283,6 +322,16 @@ def _probe_tree(
         if answer_type != "behavioral_example"
         else f"请先明确这次{competency}经历中的目标、约束和你本人负责的部分。"
     )
+    if answer_type == "behavioral_example":
+        evidence_question = follow_ups[0]
+    elif answer_type == "compensation":
+        evidence_question = "你给出这个薪酬范围的具体口径和现实依据是什么？"
+    elif answer_type == "candidate_question":
+        evidence_question = "前面的对话中，哪一条具体信息使你决定追问这个问题？"
+    elif answer_type == "constraint":
+        evidence_question = "哪些客观条件已经确认，哪些还需要核对？"
+    else:
+        evidence_question = f"哪一项事实或数据最直接支持你的{competency}判断？你如何验证？"
     return [
         QuestionProbeNode(
             stage="foundation",
@@ -292,7 +341,7 @@ def _probe_tree(
         ),
         QuestionProbeNode(
             stage="evidence",
-            question=follow_ups[0],
+            question=evidence_question,
             purpose="把抽象主张落到个人事实或判断依据",
             entry_condition="结论清楚但缺少本人证据时",
         ),

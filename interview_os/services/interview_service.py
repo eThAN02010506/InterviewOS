@@ -20,6 +20,7 @@ from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
 from interview_os.core.factory import create_runtime
+from interview_os.core.follow_up_planner import plan_follow_up
 from interview_os.core.message import Message
 from interview_os.core.question_understanding import deterministic_question_understanding
 from interview_os.core.request_context import current_owner
@@ -2521,6 +2522,8 @@ class InterviewService:
                 else:
                     mock_session.pending_follow_up = ""
                     mock_session.pending_parent_question_id = None
+                    mock_session.pending_follow_up_stage = ""
+                    mock_session.pending_follow_up_rationale = ""
                     mock_session.current_question_index = target_index
                 state.next_action = "Answer the current custom mock interview question"
             else:
@@ -2593,6 +2596,11 @@ class InterviewService:
                 if retry_target is not None
                 else mock_session.pending_follow_up or question.question
             )
+            follow_up_stage = (
+                retry_target.follow_up_stage
+                if retry_target is not None
+                else mock_session.pending_follow_up_stage
+            )
 
             prior = retry_target or next(
                 (
@@ -2631,6 +2639,7 @@ class InterviewService:
                 ),
                 answer_modality="asr" if staged_audio is not None else "typed",
                 is_follow_up=is_follow_up,
+                follow_up_stage=follow_up_stage if is_follow_up else "",
                 audio_file=staged_audio.name if staged_audio is not None else "",
                 speech_delivery=(
                     self._mock_speech_feedback[(current_owner(), session_id, recording_id)][1]
@@ -2677,6 +2686,12 @@ class InterviewService:
                 if prior is not None and not prior.is_follow_up:
                     mock_session.pending_follow_up = ""
                     mock_session.pending_parent_question_id = None
+                    mock_session.pending_follow_up_stage = ""
+                    mock_session.pending_follow_up_rationale = ""
+                    # Dependent probes belonged to the replaced main answer.
+                    # Re-plan from the new evidence instead of suppressing a
+                    # branch merely because the old attempt already saw it.
+                    mock_session.follow_up_history.pop(str(question.id), None)
             mock_session.responses.append(record)
             runtime.state.evidence.append(
                 Evidence(
@@ -2693,11 +2708,12 @@ class InterviewService:
                 runtime.state, "Mock answer evidence changed; regenerate evaluation"
             )
             if is_follow_up:
-                # The follow-up was answered: the question is complete. Clear the
-                # pending flag so the UI shows the actions and a later /next
-                # advances instead of re-offering the same follow-up.
+                # Clear only the pending offer.  A later /next asks the planner
+                # whether this answer warrants a deeper, unused branch.
                 mock_session.pending_follow_up = ""
                 mock_session.pending_parent_question_id = None
+                mock_session.pending_follow_up_stage = ""
+                mock_session.pending_follow_up_rationale = ""
             runtime.state.next_action = "回答已评价：请选择 重新来 / 下一题 / 结束面试"
             await self._persist(session_id, runtime.state)
         return runtime.state
@@ -2719,6 +2735,8 @@ class InterviewService:
                 # A follow-up is pending; advancing skips it and moves on.
                 mock_session.pending_follow_up = ""
                 mock_session.pending_parent_question_id = None
+                mock_session.pending_follow_up_stage = ""
+                mock_session.pending_follow_up_rationale = ""
                 mock_session.current_question_index += 1
             else:
                 last_response = next(
@@ -2729,23 +2747,30 @@ class InterviewService:
                     ),
                     None,
                 )
-                last_follow_up = last_response is not None and last_response.is_follow_up
-                last_main = (
-                    last_response
-                    if last_response is not None and not last_response.is_follow_up
+                history_key = str(question.id)
+                decision = (
+                    plan_follow_up(
+                        question,
+                        last_response,
+                        offered_questions=mock_session.follow_up_history.get(history_key, []),
+                    )
+                    if last_response is not None
                     else None
                 )
-                if (
-                    not last_follow_up
-                    and last_main is not None
-                    and last_main.evaluation.missing_signals
-                    and question.follow_ups
-                ):
-                    # First advance after a main answer offers the follow-up
-                    # (the user can skip it by advancing again).
-                    mock_session.pending_follow_up = question.follow_ups[0]
+                if decision is not None:
+                    # Each /next makes one inspectable decision from the latest
+                    # answer. The user remains in control and can skip the offer
+                    # by advancing again.
+                    mock_session.pending_follow_up = decision.question
                     mock_session.pending_parent_question_id = question.id
-                    runtime.state.next_action = "Answer the evidence-seeking follow-up question"
+                    mock_session.pending_follow_up_stage = decision.stage
+                    mock_session.pending_follow_up_rationale = decision.rationale
+                    mock_session.follow_up_history.setdefault(history_key, []).append(
+                        decision.question
+                    )
+                    runtime.state.next_action = (
+                        f"Answer the {decision.stage} follow-up question: {decision.rationale}"
+                    )
                     await self._persist(session_id, runtime.state)
                     return runtime.state
                 mock_session.current_question_index += 1
@@ -2776,6 +2801,8 @@ class InterviewService:
             # Clear any follow-up state so the previous question renders cleanly.
             mock_session.pending_follow_up = ""
             mock_session.pending_parent_question_id = None
+            mock_session.pending_follow_up_stage = ""
+            mock_session.pending_follow_up_rationale = ""
             mock_session.current_question_index -= 1
             runtime.state.next_action = "Answer the current mock interview question"
             await self._persist(session_id, runtime.state)
@@ -2792,6 +2819,10 @@ class InterviewService:
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
             should_evaluate = bool(mock_session.responses)
+            mock_session.pending_follow_up = ""
+            mock_session.pending_parent_question_id = None
+            mock_session.pending_follow_up_stage = ""
+            mock_session.pending_follow_up_rationale = ""
             if should_evaluate:
                 mock_session.status = MockSessionStatus.EVALUATING
                 runtime.state.next_action = "Generate evidence-based evaluation"
@@ -3113,7 +3144,8 @@ class InterviewService:
             return question.model_copy(
                 update={
                     "question": session.pending_follow_up,
-                    "rationale": "根据上一回答中缺失的证据进行追问",
+                    "rationale": session.pending_follow_up_rationale
+                    or "根据上一回答选择下一个验证分支",
                 }
             )
         return question
@@ -3930,7 +3962,9 @@ class InterviewService:
                         )
                         question.understanding.probe_tree = deep_fallback.probe_tree
                 elif question.source != "custom":
-                    mock_agent.enrich_question(question)  # type: ignore[union-attr]
+                    mock_agent.enrich_question(  # type: ignore[union-attr]
+                        question, runtime.state
+                    )
         # In-process refill tasks do not survive a service restart.
         runtime.state.mock_session.refill_in_flight = False
         if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:
