@@ -314,8 +314,8 @@ function hydrateSessionForms() {
     'enterprise-jd': s.job?.raw_description || s.job?.title,
     'candidate-company': s.company?.name,
     'enterprise-company': s.company?.name,
-    'candidate-company-context': '',
-    'enterprise-company-context': '',
+    'candidate-company-context': s.company?.context,
+    'enterprise-context': s.company?.context,
     'interviewer-name': s.interviewer?.name,
     'interviewer-position': s.interviewer?.position,
   };

@@ -43,6 +43,12 @@ _COMPETENCY_TEMPLATES = (
     "请讲一次{competency}没有按原计划推进的真实经历：你如何识别问题、调整方案，并用什么证据判断调整有效？",
 )
 
+_FACTUAL_NUMBER_PATTERN = re.compile(
+    r"(?:\b(?:19|20)\d{2}\b)|"
+    r"(?:\d+(?:\.\d+)?\s*(?:万\s*)?(?:qps|rps|tps|%|倍|人|年|个月|ms|毫秒|秒))",
+    re.IGNORECASE,
+)
+
 
 class MockInterviewAgent(Agent):
     """Generates personalized interview questions.
@@ -144,6 +150,41 @@ class MockInterviewAgent(Agent):
     def question_requirements(question: str) -> list[str]:
         """Return explicit requirements the answer and feedback must share."""
         return derive_question_requirements(question)
+
+    @staticmethod
+    def _factual_numbers(text: str) -> set[str]:
+        return {
+            re.sub(r"\s+", "", match.group(0)).casefold()
+            for match in _FACTUAL_NUMBER_PATTERN.finditer(text)
+        }
+
+    @classmethod
+    def _ground_question_premises(
+        cls, state: InterviewState, questions: list[InterviewQuestion]
+    ) -> None:
+        """Remove numeric premises that the explicit JD did not establish.
+
+        Candidate metrics are excellent answer evidence, but are unsafe as
+        question premises: a model can combine an actual production peak with
+        a different load-test statement. Replacing such a question with a
+        competency template asks for the evidence without asserting it.
+        """
+        allowed = cls._factual_numbers(state.job.raw_description)
+        for index, question in enumerate(questions):
+            unsupported = cls._factual_numbers(question.question) - allowed
+            if not unsupported:
+                continue
+            competency = question.competency or "岗位核心能力"
+            question.question = _COMPETENCY_TEMPLATES[
+                index % len(_COMPETENCY_TEMPLATES)
+            ].format(competency=competency)
+            question.rationale = (
+                "模型问题含未由明确 JD 支持的数字前提，已改为不预设事实的能力问题"
+            )
+            question.strong_signals = ["具体情境", "个人行动", "关键取舍", "可验证结果"]
+            question.follow_ups = ["结果如何核验？", "你个人具体负责什么？"]
+            question.answer_framework = ""
+            question.source = "competency"
 
     async def analyze_custom_question(
         self,
@@ -494,6 +535,7 @@ class MockInterviewAgent(Agent):
                 for i, competency in enumerate(competencies[:count])
             ]
         else:
+            self._ground_question_premises(state, questions)
             for q in questions:
                 q.source = "refill"
                 if not q.answer_framework:
@@ -518,6 +560,7 @@ class MockInterviewAgent(Agent):
             )
         except (ValueError, TypeError, ValidationError) as exc:
             logger.warning("Failed to parse mock interview plan: %s", exc)
+        self._ground_question_premises(state, state.mock_interview.questions)
         if not state.mock_interview.questions:
             competencies = state.job.competencies or ["岗位核心能力"]
             state.mock_interview = MockInterviewPlan(

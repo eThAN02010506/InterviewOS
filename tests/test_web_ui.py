@@ -66,6 +66,16 @@ def test_role_theme_and_mobile_layout_contracts_are_present():
     assert "overflow-x: hidden" in styles
 
 
+def test_company_context_hydration_targets_both_real_form_fields():
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="candidate-company-context"' in html
+    assert 'id="enterprise-context"' in html
+    assert "'candidate-company-context': s.company?.context" in script
+    assert "'enterprise-context': s.company?.context" in script
+
+
 def test_mock_auto_speech_is_scoped_to_visible_mock_view():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 from pydantic import ValidationError
@@ -200,8 +201,16 @@ class InterviewStrategyAgent(Agent):
         candidate_material = "\n".join(facts).casefold()
         gaps = []
         for requirement in explicit:
-            terms = InterviewStrategyAgent._domain_terms(requirement)
-            if terms and not any(term.casefold() in candidate_material for term in terms):
+            concepts = InterviewStrategyAgent._domain_concepts(requirement)
+            supported = sum(
+                any(alias.casefold() in candidate_material for alias in aliases)
+                for aliases in concepts
+            )
+            # Requirements often combine several related nouns. Treat common
+            # aliases (for example “大促” for “重大活动”) as the same evidence
+            # concept, while still requiring support for at least half of a
+            # multi-part requirement before removing it from the risk list.
+            if concepts and supported < math.ceil(len(concepts) / 2):
                 gaps.append(
                     f"明确 JD 要求“{requirement}”，但当前简历材料尚未提供直接案例；"
                     "请准备真实经历，若没有则明确说明相邻经验。"
@@ -212,12 +221,36 @@ class InterviewStrategyAgent(Agent):
 
     @staticmethod
     def _domain_terms(text: str) -> list[str]:
-        vocabulary = (
-            "B2B", "SaaS", "产品", "战略", "路线图", "商业化", "团队", "管理",
-            "销售", "客户成功", "研发", "留存", "续费", "数据", "指标", "增长", "订阅",
-            "利益相关者", "新行业", "需求验证", "用户研究",
+        return [
+            alias
+            for aliases in InterviewStrategyAgent._domain_concepts(text)
+            for alias in aliases
+        ]
+
+    @staticmethod
+    def _domain_concepts(text: str) -> list[tuple[str, ...]]:
+        """Map JD wording to evidence aliases instead of literal substrings."""
+        groups = (
+            ("B2B", ("b2b", "企业客户", "企业级")),
+            ("SaaS", ("saas", "订阅", "续费")),
+            ("产品", ("产品", "路线图", "需求验证", "用户研究")),
+            ("战略", ("战略", "策略", "规划")),
+            ("商业化", ("商业化", "销售", "客户成功", "收入")),
+            ("团队管理", ("团队管理", "团队负责人", "带领", "领导", "辅导", "培养")),
+            ("跨部门", ("跨部门", "跨团队", "业务", "研发", "运维", "利益相关者", "协作")),
+            ("增长", ("增长", "大促", "重大活动", "峰值", "扩容")),
+            ("重大活动", ("重大活动", "大促", "活动峰值", "峰值流量")),
+            ("架构", ("架构", "平台", "分布式", "系统设计")),
+            ("容量规划", ("容量", "qps", "峰值", "扩容", "压测", "资源水位")),
+            ("稳定性", ("稳定性", "可用性", "slo", "故障", "错误率", "延迟")),
+            ("风险回滚", ("风险", "回滚", "演练", "降级", "故障恢复")),
+            ("运行指标", ("运行指标", "指标", "qps", "p99", "错误率", "延迟", "cpu")),
+            ("可观测", ("可观测", "监控", "告警", "链路追踪")),
+            ("成本", ("成本", "资源效率", "基础设施费用")),
+            ("招聘", ("招聘", "人才", "候选人", "寻访")),
         )
-        return [term for term in vocabulary if term.casefold() in text.casefold()]
+        folded = text.casefold()
+        return [aliases for _, aliases in groups if any(alias in folded for alias in aliases)]
 
     @staticmethod
     def _select_relevant_facts(

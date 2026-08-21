@@ -253,6 +253,10 @@ class FactCard(BaseModel):
 
 class CompanyInfo(BaseModel):
     name: str = ""
+    # User-supplied business context is first-party session input. Keep it
+    # separate from model-derived DNA and public search results so reloading a
+    # session never discards the assumptions used during preparation.
+    context: str = ""
     industry: str = ""
     stage: str = ""
     technology_stack: list[str] = Field(default_factory=list)

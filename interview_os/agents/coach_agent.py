@@ -199,7 +199,23 @@ class CoachAgent(Agent):
             "直接回应题目核心",
             "说明指标、口径与决策关系",
         }
-        if contract_complete:
+        direct_relevance = coverage.get("直接回应题目核心")
+        if direct_relevance and direct_relevance.status == "missing":
+            evaluation.improved_answer = (
+                "你的原回答（作为唯一事实来源）：\n"
+                + answer.strip()
+                + "\n\n这段回答不能直接重组成本题的示范答案：它没有回应题目的核心对象，"
+                "如果强行改写会虚构你未提供的经历。请保留它用于更匹配的技术问题，"
+                "并为本题另选一个真实案例。\n\n"
+                "可填写的真实案例框架：\n"
+                "· 各方与分歧：[说明真实参与方、各自诉求和冲突点]\n"
+                "· 你的责任：[说明你为何负责协调或决策]\n"
+                "· 决策机制：[说明如何澄清约束、比较方案并达成一致]\n"
+                "· 协作结果：[说明已经发生的协作变化、业务结果及验证方式]\n"
+                "· 复盘：[说明下次会保留或改变什么]\n"
+                f"本题需要完整回应：{requirement_names or '问题中的核心要求'}。"
+            )
+        elif contract_complete:
             organization = (
                 "建议保持“指标 → 统计口径 → 阈值 → 触发动作”的顺序，不必补讲一套新的 STAR 案例。"
                 if metric_follow_up

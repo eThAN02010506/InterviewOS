@@ -273,17 +273,20 @@ async def test_candidate_prep_workflow_persists_structured_results(tmp_path):
         resume_text="Python systems engineer",
         job_description="Platform engineer owning distributed systems",
         company_name="Example",
+        company_context="高速增长的电商基础设施团队，正在统一SLO和成本治理。",
         interviewer_name="Grace",
         interviewer_position="CTO",
     )
     assert state.workflow.status.value == "completed"
     assert state.workflow.completed_steps == 6
+    assert state.company.context == "高速增长的电商基础设施团队，正在统一SLO和成本治理。"
     assert state.strategy.summary == "Lead with impact"
     assert state.mock_interview.questions[0].competency == "System Design"
 
     restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
     restored_state = await restored.get_state(session_id)
     assert restored_state.strategy.summary == "Lead with impact"
+    assert restored_state.company.context == state.company.context
     assert restored_state.next_action == "Start mock interview"
     await storage.close()
 
@@ -753,7 +756,7 @@ async def test_mock_interview_answer_creates_scored_evidence(tmp_path):
     first_evaluation = state.mock_session.responses[0].evaluation
     # The broad model question is tightened into a behavioral evidence question.
     # Trade-off language alone still lacks a concrete situation and result.
-    assert first_evaluation.overall_score() == pytest.approx(0.4125)
+    assert first_evaluation.overall_score() == pytest.approx(0.4)
     assert first_evaluation.spoken_analysis.calibration_notes
     assert state.mock_session.responses[0].evaluation.spoken_analysis.pre_calibration_scores
     assert state.evidence[-1].competency == "System Design"
@@ -803,13 +806,13 @@ async def test_final_evaluation_aggregates_evidence_and_feedback(tmp_path):
     state = await service.finish_mock_interview(session_id)
     # The answer omitted the tightened question's case, personal-decision and
     # result requirements, so evidence calibration lowers the raw 0.75 average.
-    assert state.evaluation.overall_score == pytest.approx(0.4125)
+    assert state.evaluation.overall_score == pytest.approx(0.4)
     assert state.evaluation.recommendation.value == "insufficient_evidence"
     assert "Business impact" not in state.feedback.action_plan
     assert any("直接回应题目核心" in item for item in state.feedback.action_plan)
     assert any("明确具体公司/业务场景" in item for item in state.feedback.action_plan)
     assert "需要更多独立回答交叉验证" in state.evaluation.competencies[0].gaps
-    assert state.evaluated_competencies["System Design"] == pytest.approx(0.4125)
+    assert state.evaluated_competencies["System Design"] == pytest.approx(0.4)
     assert state.current_stage.value == "completed"
     await storage.close()
 

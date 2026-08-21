@@ -119,6 +119,34 @@ class EmptyPlanLLM:
         return '{"questions":[]}'
 
 
+class FusedNumericPremiseLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"questions":[{"question":"在星河电商期间，你如何完成11万QPS的峰值压测？",'
+            '"competency":"容量规划","rationale":"结合简历",'
+            '"strong_signals":[],"follow_ups":[]}]}'
+        )
+
+
+class ScoreOnlyNarrativeLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":": 0.6925, : 0.555",'
+            '"competency_reviews":[{"competency_id":"C1","evidence_numbers":[1],'
+            '"assessment":"回答提供了一项证据。","next_probe":"请补充第二个案例。"}]}'
+        )
+
+
+class RelevanceContradictingNarrativeLLM:
+    async def chat(self, messages, **kwargs):
+        return (
+            '{"summary":"现有回答需要继续核验跨部门协作能力。",'
+            '"competency_reviews":[{"competency_id":"C1","evidence_numbers":[1],'
+            '"assessment":"回答体现了候选人在跨部门协作中快速定位并解决问题。",'
+            '"next_probe":"请再说明各方诉求。"}]}'
+        )
+
+
 @pytest.mark.asyncio
 async def test_mock_agent_without_llm_backfills_every_answer_framework():
     state = InterviewState()
@@ -798,6 +826,42 @@ async def test_full_jd_strategy_does_not_turn_adjacent_numbers_into_fit_claims()
     assert "候选人简历自述（待确认）" in rendered
 
 
+@pytest.mark.asyncio
+async def test_full_jd_strategy_matches_platform_evidence_aliases_without_false_risks():
+    state = InterviewState(
+        job=JobDescription(
+            title="高级平台工程负责人",
+            raw_description=(
+                "负责核心交易平台架构、容量规划和稳定性。\n"
+                "在业务快速增长阶段保障重大活动稳定交付。\n"
+                "能够说明架构取舍、风险、回滚方案和实际运行指标。"
+            ),
+        ),
+        job_review=JobDescriptionReview(
+            is_title_only=False,
+            requirements=[
+                JobRequirement(
+                    text="在业务快速增长阶段保障重大活动稳定交付",
+                    origin=RequirementOrigin.EXPLICIT,
+                ),
+                JobRequirement(
+                    text="说明架构取舍、风险、回滚方案和实际运行指标",
+                    origin=RequirementOrigin.EXPLICIT,
+                ),
+            ],
+        ),
+    )
+    state.candidate.raw_resume_text = (
+        "负责交易链路容量和稳定性；大促前拆解容量模型并完成峰值压测。\n"
+        "活动实际峰值11万QPS，P99为240ms，错误率0.2%，设置回滚线并完成故障演练。"
+    )
+
+    await InterviewStrategyAgent(llm_client=InvalidLLM()).execute(state)
+
+    assert not any("重大活动" in risk for risk in state.strategy.key_risks)
+    assert not any("运行指标" in risk for risk in state.strategy.key_risks)
+
+
 def test_mock_framework_quotes_resume_without_inventing_actions_or_constraints():
     state = InterviewState()
     state.candidate.raw_resume_text = (
@@ -991,6 +1055,56 @@ async def test_mock_agent_degrades_when_model_returns_empty_valid_plan():
     state = InterviewState(job=JobDescription(competencies=["招聘策略"]))
     await agent.execute(state)
     assert state.mock_interview.questions[0].competency == "招聘策略"
+
+
+@pytest.mark.asyncio
+async def test_mock_agent_rewrites_numeric_premise_not_supported_by_explicit_jd():
+    state = InterviewState(
+        job=JobDescription(
+            title="高级平台工程负责人",
+            raw_description="负责交易平台容量规划、稳定性和成本治理。",
+            competencies=["容量规划"],
+        )
+    )
+    state.candidate.raw_resume_text = (
+        "完成1.3倍峰值压测；活动实际峰值11万QPS，P99为240ms。"
+    )
+
+    await MockInterviewAgent(llm_client=FusedNumericPremiseLLM()).execute(state)
+
+    question = state.mock_interview.questions[0]
+    assert "11万QPS的峰值压测" not in question.question
+    assert "不预设事实" in question.rationale
+
+
+@pytest.mark.asyncio
+async def test_evaluation_rejects_score_only_model_summary():
+    state = InterviewState()
+    state.evidence = [
+        Evidence(competency="容量规划", signal="完成容量压测。", confidence=0.7)
+    ]
+
+    await EvaluationAgent(llm_client=ScoreOnlyNarrativeLLM()).execute(state)
+
+    assert state.evaluation.narrative_source == "deterministic"
+    assert "已按已记录证据" in state.evaluation.summary
+
+
+@pytest.mark.asyncio
+async def test_evaluation_rejects_narrative_that_praises_locked_off_topic_answer():
+    state = InterviewState()
+    state.evidence = [
+        Evidence(
+            competency="跨部门协作",
+            signal="我定位连接池问题并回滚配置。",
+            confidence=0.3,
+            notes="直接回应题目核心：missing",
+        )
+    ]
+
+    await EvaluationAgent(llm_client=RelevanceContradictingNarrativeLLM()).execute(state)
+
+    assert state.evaluation.narrative_source == "deterministic"
 
 
 @pytest.mark.asyncio

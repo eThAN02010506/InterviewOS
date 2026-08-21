@@ -169,10 +169,12 @@ class EvaluationAgent(Agent):
         expected = set(competency_names)
         if (
             not draft.summary.strip()
+            or not re.search(r"[A-Za-z\u4e00-\u9fff]{4,}", draft.summary)
             or len(reviews) != len(draft.competency_reviews)
             or set(reviews) != expected
         ):
             return False
+        results_by_name = {item.competency: item for item in report.competencies}
         resolved: dict[str, tuple[str, str, list[UUID]]] = {}
         asserted_multiple_cases = re.compile(
             r"(?:两次|两个|第二个|2个).{0,3}(?:案例|经历).{0,8}(?:显示|证明|体现|提升|说明)|"
@@ -186,11 +188,22 @@ class EvaluationAgent(Agent):
             review = reviews[competency_id]
             allowed = evidence_ids.get(competency_id, {})
             numbers = list(dict.fromkeys(review.evidence_numbers))
+            locked_result = results_by_name[competency_names[competency_id]]
+            relevance_gap = any(
+                gap.startswith("直接回应题目核心") for gap in locked_result.gaps
+            )
+            admits_relevance_gap = bool(
+                re.search(
+                    r"未(?:直接)?回应|没有(?:直接)?回应|偏离|离题|未覆盖|尚未说明",
+                    review.assessment,
+                )
+            )
             if (
                 not review.assessment.strip()
                 or not review.next_probe.strip()
                 or not numbers
                 or any(number not in allowed for number in numbers)
+                or (relevance_gap and not admits_relevance_gap)
                 or (
                     independent_case_counts.get(competency_id, 0) < 2
                     and asserted_multiple_cases.search(review.assessment)

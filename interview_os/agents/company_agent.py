@@ -31,6 +31,7 @@ class CompanyAgent(Agent):
 
     async def execute(self, state: InterviewState, instruction: str = "") -> Message:
         company_name = state.company.name or instruction or "Unknown"
+        supplied_context = instruction.strip() or state.company.context
         existing_sources = list(state.company.public_sources)
         research_allowed = (
             not state.autopilot.enabled or state.autopilot.authorized_public_research
@@ -111,6 +112,7 @@ class CompanyAgent(Agent):
             )
             # Entity identity is authoritative user input; the model may only enrich it.
             parsed.name = company_name
+            parsed.context = supplied_context
             # Provenance belongs to the search tool, never to model-generated JSON.
             parsed.public_sources = existing_sources
             parsed.public_research_status = research_status
@@ -119,6 +121,7 @@ class CompanyAgent(Agent):
             logger.warning("Failed to parse company info: %s", exc)
             state.company.public_sources = existing_sources
             state.company.public_research_status = research_status
+            state.company.context = supplied_context
 
         content = (
             f"Company: {state.company.name}\n"

@@ -1923,6 +1923,7 @@ class InterviewService:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
             runtime.state.company.name = name
+            runtime.state.company.context = context.strip()
             message = await runtime.run("company_agent", context)
             self._sync_intelligence(runtime.state)
             await self._persist(session_id, runtime.state)
@@ -2211,6 +2212,7 @@ class InterviewService:
                 "candidate_prep",
                 steps,
                 company_name=company_name,
+                company_context=company_context,
                 interviewer=interviewer,
                 parallel_prefix=4 if interviewer else 3,
                 authorized_public_research=authorized_public_research,
@@ -2266,6 +2268,7 @@ class InterviewService:
                 "enterprise_design",
                 steps,
                 company_name=company_name,
+                company_context=company_context,
                 parallel_prefix=3,
                 authorized_public_research=authorized_public_research,
             )
@@ -3042,7 +3045,10 @@ class InterviewService:
             runtime.state.candidate.raw_resume_text = resume_text
             runtime.state.job = JobDescription()
             runtime.state.job_review = JobDescriptionReview()
-            runtime.state.company = CompanyInfo(name=company_name)
+            runtime.state.company = CompanyInfo(
+                name=company_name,
+                context=company_context.strip(),
+            )
             runtime.state.interviewer = InterviewerProfile(
                 name=interviewer_name,
                 position=interviewer_position,
@@ -3217,6 +3223,7 @@ class InterviewService:
         name: str,
         steps: list[tuple[str, str]],
         company_name: str | None = None,
+        company_context: str | None = None,
         interviewer: InterviewerProfile | None = None,
         parallel_prefix: int = 0,
         authorized_public_research: bool = False,
@@ -3248,6 +3255,8 @@ class InterviewService:
                     )
             if company_name is not None:
                 runtime.state.company.name = company_name
+            if company_context is not None:
+                runtime.state.company.context = company_context.strip()
             if interviewer is not None:
                 runtime.state.interviewer = interviewer
             # Record explicit public-research authorization so the past-employer

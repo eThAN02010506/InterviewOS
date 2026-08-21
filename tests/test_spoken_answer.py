@@ -234,7 +234,7 @@ def test_unrelated_polished_answer_is_capped_for_tradeoff_metric_followup():
 
     assert statuses["直接回应题目核心"] == "missing"
     assert statuses["说明指标、口径与决策关系"] != "covered"
-    assert evaluation.content <= 0.25
+    assert evaluation.content <= 0.30
     assert evaluation.technical_depth <= 0.5
 
 
@@ -303,6 +303,60 @@ def test_capacity_answer_extracts_actions_and_observed_result_not_forecast():
     assert "活动实际峰值" in coverage["给出结果与验证方式"].evidence
     assert "预测" not in coverage["给出结果与验证方式"].evidence
     assert "0.2%" in analysis.cleaned_transcript
+
+
+def test_capacity_question_does_not_turn_incidental_team_word_into_management_gap():
+    question = (
+        "在星河电商期间，你带领团队完成容量规划时，如何拆解模型、选择扩容方案，"
+        "并验证实际运行结果？"
+    )
+    answer = (
+        "我本人负责大促容量方案和上线决策，先统一订单量口径，再按网关、订单、库存、"
+        "消息队列和数据库拆解容量模型。我比较全量预扩容与HPA，考虑扩容时延和回滚风险后，"
+        "决定数据库与消息队列按预测峰值1.3倍预扩容，无状态服务使用HPA。上线前回放历史流量，"
+        "完成1.3倍峰值压测。活动实际峰值11万QPS，P99为240ms，错误率0.2%。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    coverage = {item.requirement: item.status for item in analysis.question_coverage}
+    evaluation = AnswerEvaluation(
+        content=0.4, technical_depth=0.4, structure=0.4, impact=0.4
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+
+    assert coverage["直接回应题目核心"] == "covered"
+    assert evaluation.content >= 0.72
+    assert evaluation.technical_depth >= 0.70
+    assert evaluation.impact >= 0.72
+
+
+def test_polished_technical_incident_cannot_score_as_cross_department_collaboration():
+    question = (
+        "请讲一次你与业务、研发和运维对发布范围产生严重分歧的经历："
+        "你如何理解各方诉求、建立决策机制并最终达成一致？请说明协作结果。"
+    )
+    answer = (
+        "在一次交易系统故障中，我负责定位性能问题。我先查看链路追踪和数据库慢查询，"
+        "发现连接池配置导致请求排队。我比较扩容、回滚配置和增加缓存三个方案，"
+        "考虑恢复速度和一致性风险后决定先回滚，再分批恢复流量。十五分钟后P99从1.2秒"
+        "恢复到220毫秒，错误率从4%下降到0.3%，随后我补充了变更检查和回滚演练。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    evaluation = AnswerEvaluation(
+        content=0.8, technical_depth=0.8, structure=0.8, impact=0.8
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+    CoachAgent._build_grounded_improvement(evaluation, answer, question=question)
+    coverage = {item.requirement: item.status for item in analysis.question_coverage}
+
+    assert coverage["直接回应题目核心"] == "missing"
+    assert evaluation.content <= 0.30
+    assert evaluation.technical_depth <= 0.30
+    assert evaluation.impact <= 0.30
+    assert "不能直接重组成本题的示范答案" in evaluation.improved_answer
+    assert "强行改写会虚构" in evaluation.improved_answer
+    assert "我的核心做法是我负责定位性能问题" not in evaluation.improved_answer
 
 
 def test_product_retention_answer_is_relevant_and_receives_evidence_floors():

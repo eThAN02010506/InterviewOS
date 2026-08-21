@@ -47,8 +47,45 @@ _FOCUS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("团队管理", ("团队", "辅导", "管理", "一对一", "晋升", "培养")),
     ("招聘", ("招聘", "人才", "候选人", "岗位画像", "寻访", "面试")),
-    ("跨团队协作", ("跨团队", "跨部门", "协作", "利益相关者", "业务团队")),
+    (
+        "跨团队协作",
+        (
+            "跨团队", "跨部门", "协作", "利益相关者", "业务团队",
+            "业务", "研发", "运维", "分歧", "诉求", "达成一致",
+        ),
+    ),
 )
+
+_SUPPORTING_FOCUS_GROUPS = {"技术权衡", "指标"}
+
+
+def _question_requests_focus_group(
+    label: str, terms: tuple[str, ...], question: str
+) -> bool:
+    folded = question.casefold()
+    if label == "团队管理":
+        # “带领团队完成容量规划” describes ownership of the technical work;
+        # it is not by itself a request for a people-management case.
+        return bool(
+            re.search(
+                r"团队(?:管理|建设|成长|绩效|分工|冲突)|"
+                r"(?:辅导|培养|晋升|一对一|授权|人员管理|领导力)",
+                folded,
+            )
+        )
+    if label == "跨团队协作":
+        if any(
+            marker in folded
+            for marker in (
+                "跨团队", "跨部门", "协作", "利益相关者", "业务团队",
+                "分歧", "诉求", "达成一致",
+            )
+        ):
+            return True
+        # “业务场景” is context, not collaboration. Multiple named functions
+        # are required before department nouns alone establish this focus.
+        return sum(marker in folded for marker in ("业务", "研发", "运维")) >= 2
+    return any(term.casefold() in folded for term in terms)
 
 # Rules are cross-domain and bilingual. Recruitment-specific concepts remain as
 # optional labels, while generic analysis/decision/action/result steps support
@@ -439,7 +476,6 @@ def _coverage(
 
     contract = question_requirements(question)
     question_type = _answer_type(question)
-    folded_question = question.casefold()
     context_name = _explicit_context(question)
     context_evidence = context_name if context_name.casefold() in answer.casefold() else ""
     if not context_evidence:
@@ -522,7 +558,7 @@ def _coverage(
         requested_groups = [
             (label, terms)
             for label, terms in _FOCUS_GROUPS
-            if any(term.casefold() in folded_question for term in terms)
+            if _question_requests_focus_group(label, terms, question)
             and (label != "技术权衡" or _asks_tradeoff_detail(question))
         ]
         matched_groups = [
@@ -530,16 +566,22 @@ def _coverage(
             for label, terms in requested_groups
             if any(term.casefold() in answer.casefold() for term in terms)
         ]
-        required_matches = len(requested_groups)
+        requested_labels = {label for label, _ in requested_groups}
+        matched_labels = {label for label, _ in matched_groups}
+        primary_labels = requested_labels - _SUPPORTING_FOCUS_GROUPS
+        if primary_labels and not (primary_labels & matched_labels):
+            relevance_status = "missing"
+        elif matched_labels >= requested_labels:
+            relevance_status = "covered"
+        elif matched_labels:
+            relevance_status = "partial"
+        else:
+            relevance_status = "missing"
         focus_terms = tuple(term for _, terms in matched_groups for term in terms)
         focus_evidence = _excerpt(sentences, focus_terms) if focus_terms else ""
         add(
             "直接回应题目核心",
-            "covered"
-            if len(matched_groups) >= required_matches
-            else "partial"
-            if matched_groups
-            else "missing",
+            relevance_status,
             focus_evidence,
             "先用一句话直接回答题目中的核心对象，再展开证据。",
         )
@@ -764,9 +806,9 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
 
     relevance = statuses.get("直接回应题目核心")
     if relevance == "missing":
-        cap("content", 0.25, "回答未直接回应题目的核心对象")
-        cap("technical_depth", 0.35, "专业内容与本题要求不相关")
-        cap("impact", 0.35, "结果属于另一主题，不能作为本题证据")
+        cap("content", 0.30, "回答未直接回应题目的核心对象")
+        cap("technical_depth", 0.30, "专业内容与本题要求不相关")
+        cap("impact", 0.30, "结果属于另一主题，不能作为本题证据")
     elif relevance == "partial":
         cap("content", 0.55, "只回应了题目的一部分核心要求")
 

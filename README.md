@@ -333,6 +333,21 @@ complete, realistic teaching example. The complete example is explicitly fiction
 uses no resume company/project/metric, and demonstrates evidence density rather than
 claiming to be the candidate's answer.
 
+Model-written questions also pass a premise check before entering the pool. A factual
+number (year, team size, percentage, latency, QPS, or multiplier) is allowed only when
+the explicit JD contains that same number and unit. If a model combines two true resume
+facts into a false premise—for example, treating an observed production peak as the load
+test target—the question is replaced with a neutral competency template. Candidate metrics
+remain usable as answer evidence; the interviewer simply does not assert them as fact.
+
+Direct relevance is evaluated against the primary object of the question. Supporting
+language about metrics or trade-offs cannot make a technically polished incident answer
+count as evidence for a cross-department collaboration question. A missing primary focus
+caps content, professional depth, and impact at 30%, while expression structure remains
+independently scorable. When this happens, the coach explicitly says the answer cannot be
+rewritten into an on-topic example without inventing experience and gives a blank factual
+case framework instead of producing a misleading first-person answer.
+
 The candidate UI keeps the next action explicit throughout this lifecycle. The home
 CTA routes to preparation, the active mock, or the growth report according to session
 state. During model work, forms expose an accessible busy state and retain the user's
@@ -453,7 +468,9 @@ Evidence-reference validation is atomic, and invalid
 output leaves the complete deterministic report intact. The UI labels whether the prose
 is model-generated or deterministic. A single recorded answer is never described as “no
 evidence”: the locked cross-validation gap is rendered as a request for a second independent
-case. `strong_hire`
+case. Score-only or content-free summaries are rejected, and a model assessment may not
+praise an off-topic answer as proof of the assigned competency unless it explicitly
+acknowledges the locked direct-relevance gap. `strong_hire`
 requires at least 0.85 score and 0.75 aggregate confidence, so a model cannot promote
 weak evidence by returning matching competency names with invented high scores.
 The answer-scoring model returns an untrusted `AnswerEvaluationDraft`; the service adds
@@ -473,6 +490,10 @@ final calibrated enum and score, so model prose cannot say `lean_no_hire` while 
 decision header correctly says `insufficient_evidence`.
 
 ## Web research
+
+The user-supplied company context is stored separately from model-derived company DNA and
+public sources. It survives service restarts and session switching, and the candidate and
+interviewer forms restore it only for the selected session.
 
 Company and interviewer analysis can enrich prompts with public search evidence.
 Configure one provider:
@@ -793,8 +814,11 @@ scoring wait, 4.509s final evaluation). A 2026-08-14 `evidence-v3` comparison ag
 configured 8001 model scored an unrelated but polished answer at 35, a directly relevant
 metric/threshold follow-up at 77.5, and a complete capacity-planning case at 80; the last
 case correctly bound the observed result to “实际峰值 / P99 / 错误率” rather than its sixfold
-forecast. The complete automated gate now covers 307 tests plus Ruff, mypy, JavaScript
-syntax, and diff checks.
+forecast. On 2026-08-21, a browser-driven complex platform-lead case scored a fully
+grounded capacity answer at 90/80/80/72 and a polished but off-topic technical incident
+against a collaboration question at 10/30/60/30; the final report retained the relevance
+gap and rejected contradictory model prose. The complete automated gate now covers 359
+tests plus Ruff, mypy, JavaScript syntax, and diff checks.
 
 The full audio loop (the interviewer's primary input path) was verified against the
 real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s
