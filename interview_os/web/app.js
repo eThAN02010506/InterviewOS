@@ -1,5 +1,21 @@
 import {createApiClient} from './modules/api.js';
 import {
+  renderBlueprint,
+  renderFacts,
+  renderJDReview,
+  renderReports,
+  renderResumeReview,
+  renderSources,
+  renderStrategy
+} from './modules/candidate-view.js';
+import {renderLiveView} from './modules/live-view.js';
+import {
+  renderQuestionAlignment,
+  renderQuestionDeepAnalysis,
+  renderRetryComparison,
+  renderSpokenAnswerAnalysis
+} from './modules/mock-view.js';
+import {
   candidateHomeAction,
   globalViews,
   localizedNextAction,
@@ -285,110 +301,16 @@ function renderState() {
 function renderAll() { renderState(); }
 
 function renderLive() {
-  const live = state.session?.live_interview;
-  if (!$('live-transcript')) return;
-  const statusLabels = {idle:'尚未开始',active:'监听中',paused:'已暂停',completed:'已结束'};
-  const status = live?.status || 'idle';
-  $('live-status-label').textContent = statusLabels[status] || status;
-  $('live-status-dot').className = status === 'active' ? 'active' : status;
-  $('live-consent-panel').classList.toggle('hidden', status !== 'idle' && status !== 'completed');
-  $('live-pause').textContent = status === 'paused' ? '恢复' : '暂停';
-  $('live-pause').disabled = !['active','paused'].includes(status);
-  $('live-finish').disabled = !['active','paused'].includes(status) || liveContinuousMode || liveContinuousQueue.length > 0 || liveContinuousUploading;
-  const microphoneUnavailable = !!microphoneAvailabilityMessage();
-  $('live-record').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
-  $('live-dialogue').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
-  $('live-continuous').disabled = status !== 'active' || !!liveRecorder || microphoneUnavailable;
-  $('live-stop-continuous').disabled = !liveContinuousMode;
-  $('live-plan').disabled = status !== 'active';
-  $('live-stream-plan').disabled = status !== 'active' || !!liveSuggestionStream;
-  if (liveContinuousMode || liveContinuousQueue.length || liveContinuousUploading) {
-    if (liveContinuousMode) {
-      updateLiveVadNote();
-    } else {
-      const uploading = liveContinuousUploading ? '，正在转写 1 段' : '';
-      $('live-recording-note').textContent = `连续监听已停止：队列 ${liveContinuousQueue.length} 段${uploading}。分段会先标记为“待确认”，请审阅说话人与文本后再归档证据。`;
-    }
-  }
-  const sessionRecording = $('live-session-recording');
-  if (sessionRecording) {
-    const audioFile = live?.audio_file;
-    const recordingStatus = $('session-recording-status');
-    const downloadBtn = $('session-audio-download');
-    const isError = recordingStatus?.classList.contains('error');
-    if (audioFile && state.sessionId) {
-      sessionRecording.hidden = false;
-      recordingStatus.textContent = '全场录音已保存';
-      recordingStatus.classList.remove('error');
-      downloadBtn.hidden = false;
-    } else if (sessionRecordingActive) {
-      sessionRecording.hidden = false;
-      recordingStatus.textContent = '全场录音中…';
-      recordingStatus.classList.remove('error');
-      downloadBtn.hidden = true;
-    } else if (isError) {
-      sessionRecording.hidden = false;
-      downloadBtn.hidden = true;
-    } else {
-      sessionRecording.hidden = true;
-    }
-  }
-  const segments = live?.segments || [];
-  const recordedSegmentIds = new Set((state.session?.live_interview_records || []).flatMap(record => record.transcript_segment_ids || []));
-  const recordBySegmentId = new Map((state.session?.live_interview_records || []).flatMap(record => (record.transcript_segment_ids || []).map(segmentId => [segmentId, record])));
-  const pendingCandidateSegments = segments.filter(segment => segment.speaker === 'candidate' && !recordedSegmentIds.has(segment.id));
-  const confirmedRecords = (state.session?.live_interview_records || []).filter(record => record.source === 'live_interview');
-  const boundarySuggestions = live?.answer_boundary_suggestions || [];
-  const confirmedCount = confirmedRecords.length;
-  const actionCard = live?.action_card;
-  if ($('live-action-card')) {
-    const refs = actionCard?.source_refs || [];
-    $('live-action-card').className = actionCard ? `action-card ${esc(actionCard.priority || 'medium')}` : 'action-card empty-state';
-    $('live-action-card').innerHTML = actionCard ? `<div class="action-top"><span>${esc(actionCard.action_type)}</span><b>${esc(actionCard.priority)}</b></div><h3>${esc(actionCard.title)}</h3><p>${esc(actionCard.detail)}</p><div class="action-evidence">${esc(actionCard.evidence_status || '尚无证据')}</div><div class="action-ctas"><button type="button" class="action-primary" data-live-action="primary">${esc(actionCard.primary_cta)}</button>${actionCard.secondary_cta?`<button type="button" class="action-secondary" data-live-action="secondary">${esc(actionCard.secondary_cta)}</button>`:''}</div>${refs.length?`<div class="action-refs">${refs.map(ref=>`<small>${esc(ref)}</small>`).join('')}</div>`:''}` : '开始实时会话后显示下一步动作。';
-  }
-  $('live-transcript').className = segments.length ? 'transcript-stream' : 'transcript-stream empty-state';
-  $('live-transcript').innerHTML = segments.length ? segments.map(segment => {
-    const isCandidate = segment.speaker === 'candidate';
-    const recorded = recordedSegmentIds.has(segment.id);
-    const record = recordBySegmentId.get(segment.id);
-    const evidenceAction = isCandidate ? (recorded ? `<small class="evidence-confirmed">已归档为证据</small><button class="btn compact" data-live-revoke="${esc(record?.id || '')}">撤销证据</button>` : `<button class="btn compact" data-live-confirm="${esc(segment.id)}">确认为证据</button>`) : '';
-    const editAction = recorded ? '' : `<button class="btn compact" data-live-edit="${esc(segment.id)}">修改</button>`;
-    return `<div class="transcript-segment ${esc(segment.speaker)}" data-segment-id="${esc(segment.id)}"><span>${segment.speaker==='candidate'?'候选人':segment.speaker==='interviewer'?'面试官':'待确认'} · ${esc(segment.source)}</span><p>${esc(segment.text)}</p><div class="transcript-actions">${editAction}${evidenceAction}</div></div>`;
-  }).join('') : '尚无转写片段。';
-  const suggestion = [...(live?.suggestions || [])].reverse().find(item => item.status === 'pending') || [...(live?.suggestions || [])].reverse()[0];
-  if (!liveSuggestionStream) {
-    $('live-suggestion').className = suggestion ? 'suggestion-card' : 'empty-state';
-    $('live-suggestion').innerHTML = suggestion ? `<div class="suggestion-meta"><span>${esc(suggestion.question_type)}</span><b>${esc(suggestion.competency)}</b><em>${Math.round((suggestion.confidence||0)*100)}%</em></div><h4>${esc(suggestion.final_question||suggestion.suggested_question)}</h4><p>${esc(suggestion.rationale)}</p>${suggestion.evidence_gap?`<div class="evidence-gap"><small>待补证据</small>${esc(suggestion.evidence_gap)}</div>`:''}${tags(suggestion.expected_signals||[])}${suggestion.status==='pending'?`<div class="suggestion-actions"><button class="btn primary compact" data-live-decision="adopted" data-suggestion-id="${esc(suggestion.id)}">采用</button><button class="btn compact" data-live-decision="edited" data-suggestion-id="${esc(suggestion.id)}">编辑后采用</button><button class="btn compact" data-live-decision="skipped" data-suggestion-id="${esc(suggestion.id)}">跳过</button></div>`:`<small>处理结果：${esc(suggestion.status)}</small>`}` : '录入候选人回答后，AI 会准备一个有证据目标的问题。';
-  }
-  const competencies = state.session?.job?.competencies || [];
-  if ($('live-review')) {
-    $('live-confirm-all').disabled = !pendingCandidateSegments.length;
-    $('live-confirm-merged').disabled = pendingCandidateSegments.length < 2;
-    const evidence = state.session?.evidence || [];
-    const coveredCompetencies = new Set(evidence.map(item => item.competency).filter(Boolean));
-    const readiness = evidence.length >= 3 && coveredCompetencies.size >= 2
-      ? '已满足招聘评价门槛'
-      : `招聘评价仍需 ${Math.max(0, 3 - evidence.length)} 条证据、${Math.max(0, 2 - coveredCompetencies.size)} 个胜任力覆盖`;
-    $('live-review').className = pendingCandidateSegments.length || confirmedRecords.length ? 'review-queue' : 'review-queue empty-state';
-    const rollingHtml = live?.rolling_summary || live?.duplicate_segments_dropped ? `<div class="review-subtitle">长面试上下文</div><div class="review-claim summary"><div><small>摘要至 #${esc(live.summarized_until_sequence||0)} · 去重 ${esc(live.duplicate_segments_dropped||0)} 段</small><span>${esc(live.last_duplicate_reason || (live.rolling_summary ? live.rolling_summary.slice(-180) : '最近 12 段以内暂不需要滚动摘要'))}</span></div></div>` : '';
-    const boundaryHtml = boundarySuggestions.length ? `<div class="review-subtitle">自动边界建议</div>${boundarySuggestions.map((item,index)=>`<div class="review-claim boundary"><div><small>${Math.round((item.confidence||0)*100)}% · ${esc(item.suggested_competency)}</small><span>${esc(item.reason)}（${(item.answer_segment_ids||[]).length} 段）</span><div class="boundary-factors">${(item.confidence_factors||[]).map(factor=>`<em>${esc(factor)}</em>`).join('')}</div></div><div class="claim-actions"><button type="button" data-live-boundary-index="${index}">按建议合并确认</button></div></div>`).join('')}` : '';
-    const pendingHtml = pendingCandidateSegments.map(segment => `<div class="review-claim"><div><small>候选人回答 #${esc(segment.sequence)}</small><span>${esc(segment.text.slice(0, 180))}${segment.text.length > 180 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-live-edit="${esc(segment.id)}">修改</button><button type="button" data-live-confirm="${esc(segment.id)}">确认证据</button></div></div>`).join('');
-    const scoringLabel = record => record.scoring_status === 'scored' ? '已评分' : record.scoring_status === 'failed' ? `评分失败${record.scoring_error ? '：' + record.scoring_error : ''}` : '评分中…';
-    const confirmedHtml = confirmedRecords.slice(-5).reverse().map(record => `<div class="review-claim confirmed"><div><small>已归档 · ${esc(record.competency)} · ${esc(scoringLabel(record))}</small><span>${esc(record.answer.slice(0, 160))}${record.answer.length > 160 ? '…' : ''}</span></div><div class="claim-actions"><button type="button" data-score-review="${esc(record.id)}">人工复核评分</button><button type="button" data-live-reevaluate="${esc(record.id)}">AI 重评</button><button type="button" data-live-revoke="${esc(record.id)}">撤销</button></div></div>`).join('');
-    $('live-review').innerHTML = `<div class="review-summary"><strong>${pendingCandidateSegments.length} 条待确认</strong><span>${confirmedCount} 条已归档 · ${esc(readiness)}</span></div>${rollingHtml}${boundaryHtml}${pendingHtml || '<p class="review-more">暂无待确认候选人回答。</p>'}${confirmedHtml ? `<div class="review-subtitle">最近归档证据</div>${confirmedHtml}` : ''}`;
-  }
-  $('live-competencies').className = competencies.length ? 'progress-list' : 'progress-list empty-state';
-  const guidance = live?.coverage_guidance || [];
-  const priorityLabels = {high:'高优先级',medium:'继续补证',low:'基本覆盖'};
-  const guidanceHtml = guidance.length ? `<div class="coverage-guidance">${guidance.map(item=>`<div class="coverage-card ${esc(item.priority)}"><small>${esc(priorityLabels[item.priority]||item.priority)} · ${esc(item.suggested_question_type)}</small><strong>${esc(item.competency)}</strong><span>${esc(item.evidence_count)} 条证据 · 最强信号 ${Math.round((item.strongest_confidence||0)*100)}%</span><p>${esc(item.reason)}</p><em>${esc(item.sample_question)}</em></div>`).join('')}</div>` : '';
-  $('live-competencies').innerHTML = competencies.length ? competencies.map(name => {const evidence=(state.session?.evidence||[]).filter(item=>item.competency===name).length;return `<div class="progress-item"><span>${esc(name)}</span><div class="progress-track"><i style="width:${Math.min(100,evidence*34)}%"></i></div><b>${evidence}</b></div>`;}).join('') + guidanceHtml : '先完成岗位分析或面试设计。';
-  if ($('live-question-usage')) {
-    const usage = live?.question_usage || [];
-    const usageLabels = {pending:'待问',suggested:'已建议',used:'已采用'};
-    const counts = usage.reduce((acc,item)=>{acc[item.status]=(acc[item.status]||0)+1;return acc;},{});
-    $('live-question-usage').className = usage.length ? 'usage-list' : 'usage-list empty-state';
-    $('live-question-usage').innerHTML = usage.length ? `<div class="review-summary"><strong>${counts.pending||0} 道待问</strong><span>${counts.suggested||0} 道已建议 · ${counts.used||0} 道已采用</span></div>${usage.slice(0,12).map(item=>`<div class="usage-item ${esc(item.status)}"><small>${esc(usageLabels[item.status]||item.status)} · ${esc(item.round_name||'未分轮')}</small><strong>${esc(item.question)}</strong><span>${esc(item.competency)} · 建议 ${esc(item.suggested_count||0)} 次${item.last_suggestion_status?` · 最近 ${esc(item.last_suggestion_status)}`:''}</span></div>`).join('')}` : '生成面试蓝图后显示问题使用情况。';
-  }
+  renderLiveView({
+    liveContinuousMode,
+    liveContinuousQueueLength: liveContinuousQueue.length,
+    liveContinuousUploading,
+    liveRecorderActive: !!liveRecorder,
+    liveSuggestionStreamActive: !!liveSuggestionStream,
+    microphoneAvailabilityMessage,
+    sessionRecordingActive,
+    updateLiveVadNote
+  });
 }
 
 function nearestLiveQuestionSegmentId(answerSegmentId) {
@@ -419,151 +341,12 @@ function strongestBoundarySuggestion() {
   return [...(state.session?.live_interview?.answer_boundary_suggestions || [])].sort((a,b)=>(b.confidence||0)-(a.confidence||0))[0];
 }
 
-function renderResumeReview() {
-  const review = state.session?.resume_review;
-  const targets = [$('candidate-resume-review'), $('enterprise-resume-review')];
-  targets.forEach(node => {
-    if (!review?.metadata?.filename) { node.innerHTML = ''; node.classList.remove('visible'); return; }
-    const claims = review.claims || [];
-    const unresolved = claims.filter(claim => claim.status === 'unverified');
-    const reviewed = claims.filter(claim => claim.status !== 'unverified');
-    const statusLabels = {
-      confirmed:'本人确认 · 未外部核验', modified:'已修订确认 · 未外部核验',
-      needs_documents:'待补充材料', disputed:'存在争议', ignored:'已忽略'
-    };
-    const pendingClaim = claim => `<div class="review-claim"><div><small>${esc(claim.category)} · 简历自述 · 待核验</small><span>${esc(claim.statement)}</span></div><div class="claim-actions"><button type="button" data-claim-action="confirmed" data-claim-id="${esc(claim.id)}">本人确认</button><button type="button" data-claim-action="modified" data-claim-id="${esc(claim.id)}">修改并确认</button><button type="button" data-claim-action="needs_documents" data-claim-id="${esc(claim.id)}">要求材料</button><button type="button" data-claim-action="ignored" data-claim-id="${esc(claim.id)}">忽略</button></div></div>`;
-    const reviewedClaim = claim => `<div class="review-claim reviewed"><div><small>${esc(claim.category)} · ${esc(statusLabels[claim.status] || claim.status)}</small><span>${esc(claim.statement)}</span>${claim.note ? `<em>${esc(claim.note)}</em>` : ''}</div><div class="claim-actions"><button type="button" data-claim-action="unverified" data-claim-id="${esc(claim.id)}">恢复待核验</button></div></div>`;
-    node.classList.add('visible');
-    const structuredHtml = (review.structured_by === 'llm' && review.structured?.length)
-      ? `<div class="review-subtitle">AI 结构化板块（${esc(review.structured_by)}）</div>${review.structured.map(s => `<div class="review-claim structured"><div><small>${esc(s.category)}${s.date_range ? ` · ${esc(s.date_range)}` : ''}</small><strong>${esc(s.institution)}${s.title ? ` — ${esc(s.title)}` : ''}</strong>${s.description ? `<span>${esc(s.description)}</span>` : ''}</div></div>`).join('')}` : '';
-    node.innerHTML = `<div class="review-summary"><strong>${esc(review.metadata.filename)}</strong><span>${review.metadata.character_count} 字 · ${review.issues.length} 项提示 · ${unresolved.length} 项待确认</span></div>
-      ${structuredHtml}
-      ${(review.issues || []).map(issue => `<div class="review-issue ${esc(issue.severity)}"><b>${esc(issue.severity === 'warning' ? '请检查' : '提示')}</b><span>${esc(issue.message)}</span></div>`).join('')}
-      ${unresolved.slice(0, 8).map(pendingClaim).join('')}
-      ${unresolved.length > 8 ? `<p class="review-more">继续处理后将自动显示剩余 ${unresolved.length - 8} 项。</p>` : ''}
-      ${reviewed.length ? `<div class="review-subtitle">已处理（不等于外部真实性验证）</div>${reviewed.map(reviewedClaim).join('')}` : ''}`;
-  });
-}
-
-function renderJDReview() {
-  const review=state.session?.job_review;
-  [$('candidate-jd-review'),$('enterprise-jd-review')].forEach(node=>{
-    if(!review?.requirements?.length && !review?.warnings?.length){node.innerHTML='';return;}
-    const requirements=review.requirements||[];
-    const explicit=requirements.filter(x=>x.origin==='explicit');
-    const inferred=requirements.map((item,index)=>({...item,index})).filter(x=>x.origin==='inferred');
-    const sources=review.public_sources||[];const researchLabel=review.public_research_status==='completed'?`已检索 ${sources.length} 个公开 JD 来源`:review.public_research_status==='no_reliable_sources'?'未找到可靠公开 JD':review.public_research_status==='not_configured'?'未配置公开搜索':review.public_research_status==='consent_required'?'需允许公开检索':'已完成结构检查';
-    const sourcesHtml=sources.length?`<div class="review-subtitle">公开 JD 候选来源</div>${sources.map(source=>`<div class="review-claim"><div><small>${esc(source.source_quality||'未评级')}</small><span>${esc(source.title||source.url)}</span></div><div class="claim-actions"><a href="${esc(safeUrl(source.url))}" target="_blank" rel="noreferrer">查看来源</a></div></div>`).join('')}`:'';
-    node.innerHTML=`<div class="review-summary"><strong>JD 完整度 ${Math.round((review.completeness_score||0)*100)}%</strong><span>${review.is_title_only?researchLabel:'已完成结构检查'}</span></div>${(review.warnings||[]).map(item=>`<p class="jd-warning">${esc(item)}</p>`).join('')}${review.missing_sections?.length?`<p class="jd-warning">请补充：${esc(review.missing_sections.join('、'))}</p>`:''}${sourcesHtml}${list('明确要求',explicit.map(x=>x.text))}${inferred.length?`<div class="review-subtitle">公开来源/AI 推测（需确认）</div>${inferred.map(item=>`<div class="review-claim"><div><small>推测要求 #${item.index+1}</small><span>${esc(item.text)}</span></div><div class="claim-actions"><button type="button" data-jd-action="confirm" data-jd-index="${item.index}">确认</button><button type="button" data-jd-action="edit" data-jd-index="${item.index}">编辑</button><button type="button" data-jd-action="delete" data-jd-index="${item.index}">删除</button></div></div>`).join('')}`:''}`;
-  });
-}
-
-function renderFacts(){
-  const node=$('fact-result'); const cards=state.session?.fact_cards||[];
-  if(!cards.length){node.className='fact-list empty-state';node.textContent='尚未形成事实卡。';return;}
-  const labels={verified:'已验证',inferred:'推测',conflict:'冲突',accepted:'已确认',rejected:'已排除'};
-  const categoryLabels={company:'公司',interviewer:'面试官',technology:'技术方向',public_opinion:'公开观点',past_employer:'过往雇主业务背景（不代表候选人经历）'};
-  const qualityLabels={official:'官方来源',high:'高可信来源',secondary:'二级来源',unrated:'未评级来源'};
-  const grouped=cards.reduce((acc,card)=>{const key=card.status==='conflict'||card.status==='rejected'?card.status:card.category;(acc[key] ||= []).push(card);return acc;},{});
-  const order=['conflict','company','interviewer','past_employer','technology','public_opinion','rejected'];
-  const groups=[...order.filter(key=>grouped[key]),...Object.keys(grouped).filter(key=>!order.includes(key))];
-  node.className='fact-list';node.innerHTML=groups.map(key=>`<section class="fact-group"><div class="fact-group-head"><strong>${esc(key==='conflict'?'冲突信息':key==='rejected'?'已排除信息':categoryLabels[key]||key)}</strong><span>${grouped[key].length} 条</span></div>${grouped[key].map(card=>`<article class="fact-card ${esc(card.status)}"><div><span>${esc(card.category)}</span><b>${esc(labels[card.status]||card.status)}</b></div><strong>${esc(card.subject)}</strong><p>${esc(card.claim)}</p><small>${esc(card.note||'')} · 置信度 ${Math.round((card.confidence||0)*100)}% · ${card.source_count||((card.source_urls||[]).length)} 个来源 · ${esc(qualityLabels[card.source_quality]||card.source_quality||'未评级来源')} · ${card.cache_hit?'含缓存':'实时/新鲜来源'} · 抓取 ${esc(formatDateTime(card.source_fetched_at))} · 生成 ${esc(formatDateTime(card.generated_at))}</small>${card.source_filter_reason?`<small>筛选：${esc(card.source_filter_reason)}</small>`:''}${(card.source_urls||[]).map((url,i)=>`<a href="${esc(safeUrl(url))}" target="_blank" rel="noreferrer">来源 ${i+1}</a>`).join('')}<div class="claim-actions fact-actions"><button type="button" data-fact-action="accept" data-fact-id="${esc(card.id)}">确认使用</button><button type="button" data-fact-action="reject" data-fact-id="${esc(card.id)}">排除</button><button type="button" data-fact-action="reset" data-fact-id="${esc(card.id)}">恢复待审</button></div></article>`).join('')}</section>`).join('');
-}
-
 function maybePromptEntityResolution(){
   const dialog=$('entity-dialog'); if(dialog.open)return;
   const item=(state.session?.entity_resolutions||[]).find(x=>x.status==='pending'); if(!item)return;
   dialog.dataset.resolutionId=item.id;$('entity-copy').textContent=`搜索结果显示“${item.proposed_name}”可能是“${item.input_name}”的正确实体。是否将“${item.input_name}”更正为“${item.proposed_name}”？`;
   $('entity-name').value=item.proposed_name||item.input_name||'';
   dialog.showModal();
-}
-
-function renderReports() {
-  const s = state.session;
-  const evidence = s?.evidence || [];
-  const evaluation = s?.evaluation;
-  const feedback = s?.feedback;
-  const score = evaluation?.finalized_at ? Math.round(evaluation.overall_score * 100) : (evidence.length ? Math.round(evidence.reduce((sum, item) => sum + item.confidence, 0) / evidence.length * 100) : null);
-  $('report-score').textContent = score ?? '—';
-  $('evaluation-score').textContent = score ?? '—';
-  const recommendationLabels = {strong_hire:'强烈建议录用',hire:'建议录用',lean_hire:'倾向录用',lean_no_hire:'倾向不录用',no_hire:'不建议录用',insufficient_evidence:'证据不足'};
-  $('recommendation-label').textContent = recommendationLabels[evaluation?.recommendation] || '待评估';
-  const competencyItems = evaluation?.competencies?.length ? evaluation.competencies : evidence;
-  const narrativeLabel=evaluation?.narrative_source==='model'?'AI 按证据框架生成 · 分数与缺口由规则锁定':'确定性证据聚合';
-  const narrativeHeader=evaluation?.summary?`<div class="evaluation-narrative"><small>${esc(narrativeLabel)}</small><p>${esc(evaluation.summary)}</p></div>`:'';
-  const evidenceHtml = narrativeHeader+competencyItems.map(item => `<div class="evidence-row"><div><strong>${esc(item.competency)}</strong><small>${esc((item.supporting_evidence || [item.signal]).filter(Boolean).join(' · '))}</small>${item.assessment?`<p class="competency-assessment">${esc(item.assessment)}${item.narrative_evidence_ids?.length?` <small>引用 ${item.narrative_evidence_ids.length} 条本能力证据</small>`:''}</p>`:''}${item.gaps?.length?`<em>缺口：${esc(item.gaps.join(' · '))}</em>`:''}${item.next_probe?`<p class="next-probe"><b>建议追问</b>${esc(item.next_probe)}</p>`:''}</div><b>${Math.round((item.score ?? item.confidence) * 100)}</b></div>`).join('');
-  $('candidate-evidence').className = evidence.length ? '' : 'empty-state';
-  $('candidate-evidence').innerHTML = evidenceHtml || '完成模拟面试后生成。';
-  $('evaluation-evidence').className = evidence.length ? '' : 'empty-state';
-  $('evaluation-evidence').innerHTML = evidenceHtml || '尚无面试证据。';
-  const responses = s?.mock_session?.responses || [];
-  const gaps = [...new Set(responses.flatMap(item => item.evaluation?.missing_signals || []))];
-  $('candidate-priorities').innerHTML = feedback?.overall ? `<p>${esc(feedback.overall)}</p>${list('优先改进', feedback.improvements)}${list('行动计划', feedback.action_plan)}` : (gaps.length ? list('需要补强', gaps) : '<div class="empty-state">尚无足够回答数据。</div>');
-  const missing = evaluation?.competencies?.flatMap(item => item.gaps || []) || s?.missing_signals || [];
-  $('evaluation-gaps').innerHTML = feedback?.recommendation_reasoning ? `<p>${esc(feedback.recommendation_reasoning)}</p>${list('面试官备注', feedback.interviewer_notes)}${list('仍缺信号', [...new Set(missing)])}` : (missing.length ? list('尚缺证据', missing) : '<div class="empty-state">当前没有标记的信号缺口。</div>');
-}
-
-function renderStrategy() {
-  const strategy = state.session?.strategy; const node = $('strategy-result');
-  if (!strategy?.summary && !strategy?.key_risks?.length) { node.className='empty-state'; node.textContent='完成分析后，这里会显示风险、回答框架和重点话题。'; return; }
-  node.className=''; node.innerHTML=`<p>${esc(strategy.summary)}</p>${list('关键风险',strategy.key_risks)}${list('回答框架',strategy.answer_framework)}${list('重点强调',strategy.topics_to_emphasize)}${list('可能问题',strategy.likely_questions)}`;
-}
-
-function renderSources() {
-  const s=state.session; const sources=[...(s?.company?.public_sources||[]),...(s?.interviewer?.public_expressions||[]),...(s?.past_employer_sources||[])]; const node=$('source-result');
-  if (!sources.length) {
-    const statuses=[s?.company?.public_research_status,s?.interviewer?.public_research_status,s?.past_employer_research_status];
-    node.className='source-list empty-state';
-    node.textContent=statuses.includes('no_reliable_sources')?'已检索，但没有找到可可靠归属于该公司或人物的公开资料。':statuses.includes('failed')?'公开检索失败，请检查搜索设置后重试。':'尚未检索。';
-    return;
-  }
-  const qualityLabels={official:'官方',high:'高可信',secondary:'二手来源',unrated:'未评级'};
-  node.className='source-list'; node.innerHTML=sources.map(x=>{const alias=x.identity_match==='corroborated_alias'?`名称近似匹配：输入“${x.input_identity}”，来源“${x.matched_identity}” · `:'';return `<a href="${esc(safeUrl(x.url))}" target="_blank" rel="noreferrer"><strong>${esc(x.title||x.url||'公开资料')}</strong><small>${esc(alias)}${esc(qualityLabels[x.source_quality]||'未评级')} · ${x.cache_hit?'缓存命中':'新请求'} · 抓取 ${esc(formatDateTime(x.fetched_at))} · ${esc(x.filter_reason||x.source_quality_reason||'待复核来源')}</small><small>${esc((x.snippet||x.text||'').slice(0,150))}</small></a>`}).join('');
-}
-
-function renderBlueprint() {
-  const blueprint=state.session?.blueprint; const node=$('blueprint-result');
-  if (!blueprint?.rounds?.length) { node.className='empty-state'; node.textContent='工作流完成后显示每轮目标、问题和强信号。'; return; }
-  node.className=''; node.innerHTML=blueprint.rounds.map((round,i)=>`<div class="round-card"><p class="eyebrow">ROUND ${i+1}</p><h4>${esc(round.name)}</h4><p>${esc(round.goal)}</p>${tags(round.evaluation_criteria)}${(round.questions||[]).map(q=>`<div class="question-item"><strong>${esc(q.question)}</strong><small>${esc(q.competency)}</small></div>`).join('')}</div>`).join('');
-}
-
-function renderSpokenAnswerAnalysis(evaluation) {
-  const analysis=evaluation?.spoken_analysis;
-  if(!analysis?.question_coverage?.length&&!analysis?.semantic_steps?.length)return '';
-  const typeLabels={behavioral_example:'\u884c\u4e3a\u6848\u4f8b',situational:'\u60c5\u666f\u63a8\u6f14',motivation:'\u52a8\u673a\u5339\u914d',methodology:'\u65b9\u6cd5\u8bba',general:'\u7efc\u5408\u56de\u7b54'};
-  const steps=(analysis.semantic_steps||[]).map((item,index)=>`<li><strong>${index+1}. ${esc(item.label)}</strong><span>${esc(item.evidence)}</span></li>`).join('');
-  const coverage=(analysis.question_coverage||[]).map(item=>`<div class="review-claim"><div><small>${esc({covered:'\u5df2\u8986\u76d6',partial:'\u90e8\u5206\u8986\u76d6',missing:'\u672a\u8986\u76d6'}[item.status]||item.status)}</small><span>${esc(item.requirement)}</span><small>${esc(item.evidence||item.suggestion)}</small></div></div>`).join('');
-  const cleaned=analysis.cleaned_transcript&&analysis.cleaned_transcript!==analysis.raw_transcript?`<div class="result-block"><h4>\u6e05\u6d17\u540e\u8bed\u4e49\u7a3f\uff08\u539f\u8f6c\u5199\u4ecd\u4fdd\u7559\uff09</h4><p>${esc(analysis.cleaned_transcript)}</p></div>`:'';
-  const calibrated=(analysis.calibration_notes||[]).length?list('\u8bc1\u636e\u4e00\u81f4\u6027\u6821\u51c6',analysis.calibration_notes):'';
-  return `<div class="result-block"><h4>\u56de\u7b54\u7c7b\u578b\uff1a${esc(typeLabels[analysis.answer_type]||analysis.answer_type||'\u7efc\u5408\u56de\u7b54')}</h4>${steps?`<ol class="semantic-steps">${steps}</ol>`:''}</div>${cleaned}${coverage?`<div class="result-block"><h4>\u95ee\u9898\u8981\u6c42\u8986\u76d6</h4>${coverage}</div>`:''}${calibrated}`;
-}
-
-function renderQuestionAlignment(evaluation) {
-  const coverage=evaluation?.spoken_analysis?.question_coverage||[];
-  if(!coverage.length)return '';
-  const labels={covered:'已回答',partial:'回答了一部分',missing:'没有回答'};
-  return `<section class="alignment-feedback"><div class="review-subtitle">这道题问了什么，你实际回答了什么</div>${coverage.map(item=>`<article class="alignment-row ${esc(item.status)}"><div><strong>${esc(item.requirement)}</strong><b>${esc(labels[item.status]||item.status)}</b></div><p>${item.evidence?`你的原话：“${esc(item.evidence)}”`:'你的回答中没有找到对应内容。'}</p>${item.status!=='covered'?`<small>下次这样补：${esc(item.suggestion)}</small>`:''}</article>`).join('')}</section>`;
-}
-
-function renderRetryComparison(current, previous) {
-  if(!current||!previous)return '';
-  const dimensions=[['证据','content'],['深度','technical_depth'],['结构','structure'],['结果','impact']];
-  const deltas=dimensions.map(([label,key])=>{const before=Math.round((previous.evaluation?.[key]||0)*100),after=Math.round((current.evaluation?.[key]||0)*100),delta=after-before;return `<div class="score"><span>${label}</span><strong>${delta>0?'+':''}${delta}</strong><small>${before} → ${after}</small></div>`}).join('');
-  const beforeCoverage=new Map((previous.evaluation?.spoken_analysis?.question_coverage||[]).map(item=>[item.requirement,item.status]));
-  const improved=(current.evaluation?.spoken_analysis?.question_coverage||[]).filter(item=>item.status==='covered'&&beforeCoverage.get(item.requirement)!=='covered').map(item=>item.requirement);
-  return `<div class="result-block retry-comparison"><h4>本次重答对比</h4><div class="score-grid">${deltas}</div>${improved.length?list('新补齐的要求',improved):'<small>本次尚未新增完整覆盖项，可继续针对首要缺口练习。</small>'}<div class="claim-actions">${previous.audio_file?`<button type="button" data-play-mock-audio="${esc(previous.id)}">播放上一版</button><button type="button" data-delete-mock-audio="${esc(previous.id)}">删除上一版录音</button>`:''}</div></div>`;
-}
-
-function renderQuestionDeepAnalysis(current, understanding) {
-  const sourceLabels={explicit_jd:'明确 JD',title_inference:'仅岗位名推测',generic:'通用题型'};
-  const levelLabels={strong:'优秀回答',acceptable:'合格回答',risk:'风险回答'};
-  const stageLabels={foundation:'基础澄清',evidence:'证据验证',tradeoff:'取舍深挖',pressure:'压力迁移'};
-  const levels=(understanding.answer_levels||[]).map(item=>`<article class="answer-level ${esc(item.level)}"><strong>${esc(levelLabels[item.level]||item.level)}</strong><p>${esc(item.description)}</p>${tags(item.observable_signals||[])}</article>`).join('');
-  const stories=(understanding.candidate_story_options||[]).map(item=>`<article class="story-option"><small>已确认简历事实</small><strong>${esc(item.claim)}</strong><p>${esc(item.fit_reason)}</p><em>作答重点：${esc(item.adaptation_focus)}</em></article>`).join('');
-  const storyGuidance=(understanding.story_selection_guidance||[]).length?`<div class="story-guidance"><small>${stories?'选材边界':'当前没有匹配的已确认经历，先按以下标准选材'}</small>${tags(understanding.story_selection_guidance)}</div>`:'';
-  const probes=(understanding.probe_tree||[]).map(item=>`<article class="probe-node ${esc(item.stage)}"><small>${esc(stageLabels[item.stage]||item.stage)}</small><button type="button" data-related-question="${esc(item.question)}" data-related-competency="${esc(understanding.competency||current.competency||'')}">${esc(item.question)}</button><p>${esc(item.purpose)}</p><em>何时追问：${esc(item.entry_condition)}</em></article>`).join('');
-  if(!understanding.role_relevance&&!levels&&!probes)return '';
-  return `<details class="deep-question-analysis"><summary>展开深度解析 · 岗位关联、决策标准、选材与压力题树</summary><div class="deep-analysis-body"><section><div class="deep-analysis-title"><h4>为什么这个岗位会问</h4><span>${esc(sourceLabels[understanding.role_relevance_source]||'分析依据待确认')}</span></div><p>${esc(understanding.role_relevance)}</p>${(understanding.secondary_competencies||[]).length?`<small>同时观察</small>${tags(understanding.secondary_competencies)}`:''}</section>${(understanding.decision_criteria||[]).length?`<section><h4>面试官如何形成判断</h4><ol>${understanding.decision_criteria.map(item=>`<li>${esc(item)}</li>`).join('')}</ol></section>`:''}${levels?`<section><h4>回答质量分界</h4><div class="answer-levels">${levels}</div></section>`:''}<section><h4>从已确认经历中选材</h4>${stories||storyGuidance?`${stories}${storyGuidance}`:'<p>暂无已确认且与本题匹配的简历事实。请先完成简历事实确认，系统不会替你虚构案例。</p>'}</section>${probes?`<section><h4>由浅入深的追问题树</h4><p class="deep-analysis-help">按回答暴露的缺口逐级追问；点击任一问题可切换练习，不会自动加入题池。</p><div class="probe-tree">${probes}</div></section>`:''}</div></details>`;
 }
 
 function renderMock() {

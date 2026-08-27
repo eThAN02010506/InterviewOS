@@ -95,10 +95,14 @@ API-compatible composition facade and owns runtime, locking, persistence, and wo
 coordination. Preparation, mock interview, evaluation, live interview, and media behavior
 now live in focused modules under `interview_os/services/`; their shared dependencies are
 declared by `service_mixin.py`, while public exceptions remain compatible through the
-facade. The dependency-free browser client now uses an ES-module entry point: shared
+facade. Live behavior is further separated into session/transcript, evidence/scoring, and
+question-planning modules so changes to one real-time concern do not require editing the
+entire Live workflow. The dependency-free browser client now uses an ES-module entry point: shared
 session/navigation state is in `web/modules/state.js`, the authenticated network boundary
 is in `web/modules/api.js`, reusable safe rendering helpers are in `web/modules/ui.js`, and
-`app.js` retains page orchestration and event wiring.
+candidate preparation/report rendering and the Live workspace renderer have dedicated view
+modules; mock answer analysis renderers are isolated from the mutable practice controller.
+`app.js` retains application orchestration, browser media state, and event wiring.
 
 The extraction preserved existing routes, persisted state shapes, UI element IDs, scoring
 rules, and recovery behavior. Static asset versioning also includes extracted modules so a

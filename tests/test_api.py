@@ -159,8 +159,10 @@ def test_session_resume_analysis_flow(tmp_path):
         assert "面试智能工作台" in home.text
         script = client.get("/static/app.js")
         assert script.status_code == 200
-        assert "本人确认 · 未外部核验" in script.text
-        assert "恢复待核验" in script.text
+        candidate_view = client.get("/static/modules/candidate-view.js")
+        assert candidate_view.status_code == 200
+        assert "本人确认 · 未外部核验" in candidate_view.text
+        assert "恢复待核验" in candidate_view.text
         assert "restoreAuthenticatedSession" in script.text
         assert "displayedQuestionText = justAnswered ? displayResponse.question" in script.text
         assert "mock-retry-main" in script.text

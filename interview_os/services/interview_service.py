@@ -54,7 +54,9 @@ from interview_os.services.intelligence_service import (
     review_job_description,
     sync_entity_resolutions,
 )
+from interview_os.services.live_evidence_service import LiveEvidenceServiceMixin
 from interview_os.services.live_interview_service import LiveInterviewServiceMixin
+from interview_os.services.live_planning_service import LivePlanningServiceMixin
 from interview_os.services.media_service import MediaServiceMixin
 from interview_os.services.mock_interview_service import MockInterviewServiceMixin
 from interview_os.services.preparation_service import PreparationServiceMixin
@@ -95,6 +97,8 @@ class InterviewService(
     MockInterviewServiceMixin,
     EvaluationServiceMixin,
     LiveInterviewServiceMixin,
+    LiveEvidenceServiceMixin,
+    LivePlanningServiceMixin,
     MediaServiceMixin,
 ):
     """Owns session-scoped runtimes and serializes mutations per session."""

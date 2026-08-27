@@ -14,6 +14,7 @@ from interview_os.core.state import (
     InterviewerProfile,
     InterviewState,
     SpeechDeliveryFeedback,
+    TranscriptSegment,
     TranscriptSpeaker,
 )
 from interview_os.database.storage import Storage
@@ -98,6 +99,46 @@ class InterviewServiceMixin:
         raise NotImplementedError
 
     async def run_evaluation(self, session_id: str) -> InterviewState:
+        raise NotImplementedError
+
+    @staticmethod
+    def assert_live_active(state: InterviewState) -> None:
+        raise NotImplementedError
+
+    async def confirm_live_answer(
+        self,
+        session_id: str,
+        answer_segment_id: UUID,
+        *,
+        question_segment_id: UUID | None = None,
+        question: str = "",
+        competency: str = "",
+    ) -> InterviewState:
+        raise NotImplementedError
+
+    @staticmethod
+    def _resolve_live_question_segment(
+        segments: list[TranscriptSegment],
+        answer_segment: TranscriptSegment,
+        question_segment_id: UUID | None,
+    ) -> TranscriptSegment | None:
+        raise NotImplementedError
+
+    def _refresh_live_answer_boundaries(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _refresh_live_rolling_summary(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    async def _maybe_plan_live_next_question(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    @staticmethod
+    def _live_target_competencies(state: InterviewState) -> list[str]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _infer_live_competency(state: InterviewState, question: str) -> str:
         raise NotImplementedError
 
     async def append_live_transcript(

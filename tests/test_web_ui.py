@@ -25,9 +25,15 @@ def test_web_entrypoint_uses_explicit_es_modules():
 
     assert '<script type="module" src="/static/app.js?v=STATIC_VERSION">' in html
     assert "from './modules/api.js'" in script
+    assert "from './modules/candidate-view.js'" in script
+    assert "from './modules/live-view.js'" in script
+    assert "from './modules/mock-view.js'" in script
     assert "from './modules/state.js'" in script
     assert "from './modules/ui.js'" in script
     assert (WEB_DIR / "modules" / "api.js").is_file()
+    assert (WEB_DIR / "modules" / "candidate-view.js").is_file()
+    assert (WEB_DIR / "modules" / "live-view.js").is_file()
+    assert (WEB_DIR / "modules" / "mock-view.js").is_file()
     assert (WEB_DIR / "modules" / "state.js").is_file()
     assert (WEB_DIR / "modules" / "ui.js").is_file()
 
@@ -115,7 +121,7 @@ def test_lan_microphone_requires_secure_context_with_actionable_message():
 
 
 def test_live_streaming_ui_serializes_preview_and_filters_short_vad_audio():
-    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    script = web_scripts()
 
     assert "VAD_MIN_SPEECH_MS" in script
     assert "liveVadVoicedMs>=VAD_MIN_SPEECH_MS" in script
@@ -129,7 +135,7 @@ def test_live_streaming_ui_serializes_preview_and_filters_short_vad_audio():
 
 
 def test_final_report_distinguishes_locked_scores_from_model_narrative():
-    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    script = web_scripts()
     styles = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
 
     assert "AI 按证据框架生成 · 分数与缺口由规则锁定" in script
