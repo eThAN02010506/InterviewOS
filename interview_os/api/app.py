@@ -117,7 +117,11 @@ def create_app(
     async def lifespan(application: FastAPI):
         await storage.init_db()
         application.state.interview_service = InterviewService(
-            storage, llm_client, active_search_provider, debug_events, asr_client,
+            storage,
+            llm_client,
+            active_search_provider,
+            debug_events,
+            asr_client,
             omni_client=omni_client,
             tts_client=tts_client,
             resume_llm_client=resume_llm_client,
@@ -276,13 +280,15 @@ def create_app(
         accept = request.headers.get("accept", "")
         if "application/json" in accept and "text/html" not in accept:
             return JSONResponse({"name": "InterviewOS", "version": "0.2.0", "status": "running"})
-        # Inject a version derived from the asset files' mtimes so browsers
-        # invalidate cached app.js/styles.css whenever the frontend changes,
+        # Inject a version derived from all entry and module mtimes so browsers
+        # invalidate the frontend whenever an extracted ES module changes,
         # without a manual version bump.
         version = 0
-        for asset in ("app.js", "styles.css"):
+        assets = [WEB_DIR / "app.js", WEB_DIR / "styles.css"]
+        assets.extend((WEB_DIR / "modules").glob("*.js"))
+        for asset in assets:
             try:
-                version = max(version, int(os.stat(WEB_DIR / asset).st_mtime_ns))
+                version = max(version, int(os.stat(asset).st_mtime_ns))
             except OSError:
                 continue
         html = (WEB_DIR / "index.html").read_text(encoding="utf-8")

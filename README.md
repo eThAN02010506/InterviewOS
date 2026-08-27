@@ -90,15 +90,19 @@ debug logs, screenshots, and exported data.
 The current codebase is a feature-complete local, single-process MVP rather than a
 multi-worker production service. The candidate and interviewer workflows are usable end
 to end, but productization work now takes priority over adding more Agent capabilities.
-The immediate engineering milestone is a behavior-preserving modular split:
+The behavior-preserving modular split is now complete. `InterviewService` remains the
+API-compatible composition facade and owns runtime, locking, persistence, and workflow
+coordination. Preparation, mock interview, evaluation, live interview, and media behavior
+now live in focused modules under `interview_os/services/`; their shared dependencies are
+declared by `service_mixin.py`, while public exceptions remain compatible through the
+facade. The dependency-free browser client now uses an ES-module entry point: shared
+session/navigation state is in `web/modules/state.js`, the authenticated network boundary
+is in `web/modules/api.js`, reusable safe rendering helpers are in `web/modules/ui.js`, and
+`app.js` retains page orchestration and event wiring.
 
-- keep `InterviewService` as the API-compatible composition facade while moving mock,
-  live, audio, preparation, and evaluation responsibilities into focused service modules;
-- keep the dependency-free web UI while moving shared state/API access, formatting, and
-  domain controllers out of the monolithic `app.js`;
-- preserve every existing route, persisted state shape, UI element ID, and failure-recovery
-  contract during the split;
-- require the complete automated gate and real service startup check after each extraction.
+The extraction preserved existing routes, persisted state shapes, UI element IDs, scoring
+rules, and recovery behavior. Static asset versioning also includes extracted modules so a
+module-only update invalidates the frontend entry asset.
 
 This modularization does not by itself make the app multi-process safe. Durable background
 jobs, database-level optimistic concurrency, formal migrations, automated browser E2E,

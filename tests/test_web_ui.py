@@ -6,6 +6,12 @@ from pathlib import Path
 WEB_DIR = Path(__file__).parents[1] / "interview_os" / "web"
 
 
+def web_scripts() -> str:
+    """Return the application and extracted ES modules as one static contract."""
+    paths = [WEB_DIR / "app.js", *(WEB_DIR / "modules").glob("*.js")]
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
 def test_web_document_has_unique_element_ids():
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     identifiers = re.findall(r'\bid="([^"]+)"', html)
@@ -13,9 +19,22 @@ def test_web_document_has_unique_element_ids():
     assert len(identifiers) == len(set(identifiers))
 
 
-def test_candidate_next_action_and_mock_completion_have_ui_contracts():
+def test_web_entrypoint_uses_explicit_es_modules():
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert '<script type="module" src="/static/app.js?v=STATIC_VERSION">' in html
+    assert "from './modules/api.js'" in script
+    assert "from './modules/state.js'" in script
+    assert "from './modules/ui.js'" in script
+    assert (WEB_DIR / "modules" / "api.js").is_file()
+    assert (WEB_DIR / "modules" / "state.js").is_file()
+    assert (WEB_DIR / "modules" / "ui.js").is_file()
+
+
+def test_candidate_next_action_and_mock_completion_have_ui_contracts():
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    script = web_scripts()
 
     assert 'id="candidate-next-action"' in html
     assert 'id="candidate-next-action" type="button" data-new-practice="true"' in html
@@ -55,7 +74,7 @@ def test_accessible_interaction_states_are_styled():
 
 
 def test_role_theme_and_mobile_layout_contracts_are_present():
-    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    script = web_scripts()
     styles = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
 
     assert "document.documentElement.dataset.role = role" in script
@@ -80,7 +99,9 @@ def test_mock_auto_speech_is_scoped_to_visible_mock_view():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 
     assert "state.view==='mock'&&document.visibilityState==='visible'" in script
-    assert "if (view !== 'mock') { cancelMockQuestionSpeech(); clearMockQuestionAudio(); }" in script
+    assert (
+        "if (view !== 'mock') { cancelMockQuestionSpeech(); clearMockQuestionAudio(); }" in script
+    )
     assert "if(e.target.checked&&state.view==='mock')" in script
 
 

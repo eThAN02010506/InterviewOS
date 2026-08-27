@@ -1,11 +1,33 @@
-const state = {
-  sessionId: localStorage.getItem('interviewos.session') || '',
-  role: localStorage.getItem('interviewos.role') || 'candidate',
-  token: localStorage.getItem('interviewos.token') || '',
-  session: null,
-  view: '',
-  settings: null
-};
+import {createApiClient} from './modules/api.js';
+import {
+  candidateHomeAction,
+  globalViews,
+  localizedNextAction,
+  navigation,
+  state,
+  viewMeta
+} from './modules/state.js';
+import {
+  $,
+  busy,
+  cssEscape,
+  esc,
+  formatDateTime,
+  list,
+  optional,
+  safeUrl,
+  tags,
+  toast
+} from './modules/ui.js';
+
+const api = createApiClient({
+  state,
+  onUnauthorized: () => {
+    clearAuthenticatedState();
+    showLogin();
+  }
+});
+
 let mockRetry = false;
 let mockRetryResponseId = '';
 let mockQuestionAudioUrl = '';
@@ -58,17 +80,6 @@ let liveVadTimer = null;
 let sessionRecorder = null;
 let sessionChunks = [];
 let sessionRecordingActive = false;
-const $ = id => document.getElementById(id);
-const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const cssEscape = value => globalThis.CSS?.escape ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, '\\$&');
-const optional = id => $(id).value.trim() || null;
-const safeUrl = value => { try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) ? url.href : '#'; } catch { return '#'; } };
-const formatDateTime = value => {
-  if (!value) return '未知时间';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString();
-};
-
 function microphoneAvailabilityMessage() {
   if (!window.isSecureContext) return '当前是非安全的局域网 HTTP 页面，浏览器会阻止麦克风。请改用 HTTPS 地址后重试；文字输入仍可使用。';
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return '当前浏览器不支持麦克风录制，请使用最新版 Chrome、Edge 或 Safari，或改用文字输入。';
@@ -105,27 +116,6 @@ document.addEventListener('click', event => {
   ensureMicrophoneAvailable();
 }, true);
 
-async function api(path, options = {}) {
-  const authHeaders = state.token ? {Authorization: `Bearer ${state.token}`} : {};
-  const headers = options.body instanceof FormData ? {...authHeaders, ...(options.headers || {})} : {'Content-Type':'application/json', ...authHeaders, ...(options.headers || {})};
-  const response = await fetch(path, { ...options, headers });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    // Login/register/logout 401s are expected (wrong password) and must not
-    // clear the stored token; every other 401 means the session expired.
-    const authEndpoint = /^\/api\/auth\/(login|register|logout)$/.test(path);
-    if (response.status === 401 && !authEndpoint) { clearAuthenticatedState(); showLogin(); }
-    throw new Error(data.detail || `请求失败 (${response.status})`);
-  }
-  return data;
-}
-
-function toast(message, error = false) {
-  const node = $('toast'); node.textContent = message; node.className = error ? 'show error' : 'show';
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => node.className = '', 3200);
-}
-
-function busy(form, active) { form.classList.toggle('loading', active); form.setAttribute('aria-busy', active ? 'true' : 'false'); }
 function showWorkflowStarting() {
   if (!state.session) return;
   state.session.strategy = {summary:'', key_risks:[], answer_framework:[], topics_to_emphasize:[], topics_to_avoid:[], likely_questions:[]};
@@ -136,62 +126,6 @@ function showWorkflowStarting() {
   state.session.autopilot = {...(state.session.autopilot || {}), enabled:true, status:'running', phase:'intelligence', pause_reason:''};
   renderState();
 }
-function tags(items = []) { return `<div class="tag-list">${items.map(v => `<span class="tag">${esc(v)}</span>`).join('')}</div>`; }
-function list(title, items = []) { return items.length ? `<div class="result-block"><h4>${esc(title)}</h4><ul>${items.map(v => `<li>${esc(v)}</li>`).join('')}</ul></div>` : ''; }
-
-const navigation = {
-  candidate: [
-    ['candidate-home', '总览'], ['candidate', '面试准备'], ['mock', '模拟面试'], ['candidate-report', '改进报告']
-  ],
-  interviewer: [
-    ['interviewer-home', '总览'], ['enterprise', '面试设计'], ['live', '实时辅助'], ['evaluation', '候选人评估']
-  ]
-};
-const globalViews = new Set(['settings', 'debug']);
-const viewMeta = {
-  'candidate-home':['CANDIDATE WORKSPACE','候选人工作台'],
-  candidate:['PERSONAL STRATEGY','面试准备'], mock:['PRACTICE & EVIDENCE','模拟面试'],
-  'candidate-report':['GROWTH & REVIEW','个人改进报告'],
-  'interviewer-home':['INTERVIEWER WORKSPACE','面试官工作台'],
-  enterprise:['INTERVIEW ARCHITECTURE','面试设计'], live:['LIVE INTERVIEW COPILOT','实时面试辅助'], evaluation:['EVIDENCE REVIEW','候选人评估'],
-  settings:['RUNTIME CONFIGURATION','模型与搜索'], debug:['LOCAL OBSERVABILITY','Debug Console']
-};
-
-const nextActionLabels = {
-  'Review resume checks, then continue the interview workflow':'先完成简历待确认项，再继续生成面试策略',
-  'Start mock interview':'开始模拟面试',
-  'Answer the current mock interview question':'回答当前模拟面试问题',
-  'Answer the next mock interview question':'回答下一道模拟面试问题',
-  'Answer the evidence-seeking follow-up question':'回答当前证据追问',
-  'Generate evidence-based evaluation':'生成基于证据的面试评价',
-  'Mock interview completed without answers':'本轮尚无回答，可返回重新练习',
-  'Listen to the interview and prepare the next question':'监听面试并准备下一道问题',
-  'Review the transcript before final evaluation':'在最终评价前审阅转写内容',
-  'Interviewer reviews the suggested next question':'审阅并决定是否采用建议问题',
-  'Review more live evidence or generate evaluation':'继续补充现场证据，或生成候选人评价',
-  'Review updated live evidence or generate evaluation':'审阅更新后的证据，或生成候选人评价',
-  'Review corrected live evidence before evaluation':'评价前审阅修正后的现场证据',
-  'Regenerate candidate-dependent interview artifacts':'重新生成与候选人相关的面试材料',
-  'Regenerate evaluation after human score review':'人工复核后重新生成最终评价',
-  'Generate evidence-based hiring evaluation':'生成基于证据的招聘评价',
-  'Review the final evaluation and feedback':'审阅最终评价与改进反馈',
-  'Evaluation was interrupted; retry ending the interview':'评价过程曾中断，请重新结束面试以继续',
-  'Answer the current custom mock interview question':'回答刚添加的自定义问题',
-  'Review the custom question in the mock interview pool':'在模拟面试题库中查看自定义问题'
-};
-
-function localizedNextAction(value) {
-  return nextActionLabels[value] || value || '创建一个会话，然后选择候选人准备或企业面试设计。';
-}
-
-function candidateHomeAction(session) {
-  if (!session) return {view:'', label:'创建第一个会话'};
-  if (session.mock_session?.status === 'completed') return {view:'candidate-report', label:'查看本轮改进报告'};
-  if (session.mock_session?.status === 'active') return {view:'mock', label:'继续模拟面试'};
-  if (session.strategy?.summary || session.mock_interview?.questions?.length) return {view:'mock', label:'开始模拟面试'};
-  return {view:'candidate', label:'补充资料并生成策略'};
-}
-
 function renderNavigation() {
   $('nav').innerHTML = navigation[state.role].map(([view, label], index) =>
     `<button class="nav-item${state.view === view ? ' active' : ''}" data-view="${view}"><span>0${index + 1}</span>${label}</button>`

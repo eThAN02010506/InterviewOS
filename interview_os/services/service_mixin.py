@@ -1,0 +1,131 @@
+"""Typed dependency contract shared by InterviewService domain mixins."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from interview_os.core.debug import DebugEventStore, DebugLevel
+from interview_os.core.message import Message
+from interview_os.core.runtime import AgentRuntime
+from interview_os.core.state import (
+    InterviewerProfile,
+    InterviewState,
+    SpeechDeliveryFeedback,
+    TranscriptSpeaker,
+)
+from interview_os.database.storage import Storage
+from interview_os.services.background import BackgroundTaskManager
+from interview_os.services.resume_service import ResumeProcessor
+from interview_os.tools.asr import ASRClient
+from interview_os.tools.tts import TTSClient
+from interview_os.tools.web_search import SearchProvider
+
+
+class InterviewServiceMixin:
+    """Declare facade-owned dependencies used by domain service modules.
+
+    The concrete ``InterviewService`` supplies these members. Keeping the
+    contract explicit lets type checking catch accidental cross-module calls
+    while the facade preserves the historical public API.
+    """
+
+    storage: Storage
+    llm_client: Any
+    search_provider: SearchProvider | None
+    debug_events: DebugEventStore | None
+    asr_client: ASRClient | None
+    omni_client: Any
+    tts_client: TTSClient | None
+    resume_llm_client: Any
+    live_audio_mode: str
+    _background: BackgroundTaskManager
+    _runtimes: dict[tuple[str, str], AgentRuntime]
+    _locks: dict[tuple[str, str], asyncio.Lock]
+    _recordings_dir: Path
+    _mock_speech_feedback: dict[tuple[str, str, UUID], tuple[str, SpeechDeliveryFeedback, float]]
+    resume_processor: ResumeProcessor
+
+    async def _get_runtime(self, session_id: str) -> AgentRuntime:
+        raise NotImplementedError
+
+    def _lock_for(self, session_id: str) -> asyncio.Lock:
+        raise NotImplementedError
+
+    async def _persist(self, session_id: str, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _record_debug(
+        self,
+        action: str,
+        session_id: str,
+        *,
+        level: DebugLevel = DebugLevel.INFO,
+        detail: str = "",
+        duration_ms: float | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    async def _run(self, session_id: str, agent_name: str, instruction: str) -> Message:
+        raise NotImplementedError
+
+    async def _execute_workflow(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        name: str,
+        steps: list[tuple[str, str]],
+        company_name: str | None = None,
+        company_context: str | None = None,
+        interviewer: InterviewerProfile | None = None,
+        parallel_prefix: int = 0,
+        authorized_public_research: bool = False,
+    ) -> InterviewState:
+        raise NotImplementedError
+
+    def _invalidate_final_reports(self, state: InterviewState, next_action: str) -> bool:
+        raise NotImplementedError
+
+    def _sync_intelligence(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _pending_mock_audio_path(self, session_id: str, recording_id: UUID) -> Path | None:
+        raise NotImplementedError
+
+    def current_mock_question(self, state: InterviewState) -> Any:
+        raise NotImplementedError
+
+    async def run_evaluation(self, session_id: str) -> InterviewState:
+        raise NotImplementedError
+
+    async def append_live_transcript(
+        self,
+        session_id: str,
+        *,
+        text: str,
+        speaker: TranscriptSpeaker,
+        source: str = "manual",
+    ) -> InterviewState:
+        raise NotImplementedError
+
+    def _refresh_live_coverage_guidance(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _refresh_live_question_usage(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _refresh_live_action_card(self, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    def _live_audio_context(self, state: InterviewState) -> str:
+        raise NotImplementedError
+
+    async def _inject_audio_direct_suggestion(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        suggestion_text: str,
+    ) -> None:
+        raise NotImplementedError
