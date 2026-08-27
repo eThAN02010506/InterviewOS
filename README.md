@@ -87,6 +87,24 @@ debug logs, screenshots, and exported data.
 
 ## Current Product Shape
 
+The current codebase is a feature-complete local, single-process MVP rather than a
+multi-worker production service. The candidate and interviewer workflows are usable end
+to end, but productization work now takes priority over adding more Agent capabilities.
+The immediate engineering milestone is a behavior-preserving modular split:
+
+- keep `InterviewService` as the API-compatible composition facade while moving mock,
+  live, audio, preparation, and evaluation responsibilities into focused service modules;
+- keep the dependency-free web UI while moving shared state/API access, formatting, and
+  domain controllers out of the monolithic `app.js`;
+- preserve every existing route, persisted state shape, UI element ID, and failure-recovery
+  contract during the split;
+- require the complete automated gate and real service startup check after each extraction.
+
+This modularization does not by itself make the app multi-process safe. Durable background
+jobs, database-level optimistic concurrency, formal migrations, automated browser E2E,
+security hardening, and long-duration stress tests remain separate production-readiness
+milestones.
+
 InterviewOS currently has two primary UI modes:
 
 - Candidate mode: resume upload, JD/company/interviewer analysis, preparation
