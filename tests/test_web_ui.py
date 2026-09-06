@@ -24,6 +24,7 @@ def test_web_entrypoint_uses_explicit_es_modules():
     script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 
     assert '<script type="module" src="/static/app.js?v=STATIC_VERSION">' in html
+    assert '<meta name="interview-os-api-base" content="">' in html
     assert "from './modules/api.js'" in script
     assert "from './modules/candidate-view.js'" in script
     assert "from './modules/live-view.js'" in script
@@ -31,11 +32,26 @@ def test_web_entrypoint_uses_explicit_es_modules():
     assert "from './modules/state.js'" in script
     assert "from './modules/ui.js'" in script
     assert (WEB_DIR / "modules" / "api.js").is_file()
+    assert (WEB_DIR / "modules" / "runtime.js").is_file()
     assert (WEB_DIR / "modules" / "candidate-view.js").is_file()
     assert (WEB_DIR / "modules" / "live-view.js").is_file()
     assert (WEB_DIR / "modules" / "mock-view.js").is_file()
     assert (WEB_DIR / "modules" / "state.js").is_file()
     assert (WEB_DIR / "modules" / "ui.js").is_file()
+
+
+def test_all_application_requests_cross_the_runtime_aware_api_boundary():
+    script = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    api_module = (WEB_DIR / "modules" / "api.js").read_text(encoding="utf-8")
+    runtime_module = (WEB_DIR / "modules" / "runtime.js").read_text(encoding="utf-8")
+
+    assert "fetch(" not in script
+    assert "fetch(resolveApiUrl(path, runtime)" in api_module
+    assert "X-InterviewOS-Bootstrap" in api_module
+    assert "__INTERVIEW_OS_RUNTIME__" in runtime_module
+    assert "api.raw" in api_module
+    assert "api.blob" in api_module
+    assert "api.text" in api_module
 
 
 def test_candidate_next_action_and_mock_completion_have_ui_contracts():

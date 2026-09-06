@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ from interview_os.core.debug import DebugEventStore
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
 from interview_os.models.omni_client import OmniAudioClient
+from interview_os.runtime import resolve_runtime_paths
 from interview_os.services.interview_service import (
     CandidateSessionStateError,
     EvaluationStateError,
@@ -69,11 +71,13 @@ def create_app(
     recordings_dir: Path | None = None,
     require_auth: bool | None = None,
 ) -> FastAPI:
-    storage = storage or Storage(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./interview_os.db"))
+    runtime_paths = resolve_runtime_paths()
+    uses_runtime_database = storage is None and not os.getenv("DATABASE_URL")
+    storage = storage or Storage(os.getenv("DATABASE_URL", runtime_paths.database_url))
     if require_auth is None:
         require_auth = os.getenv("INTERVIEW_OS_REQUIRE_AUTH", "1") != "0"
     use_persistent_runtime = settings_store is not None or (llm_client is None and configure_llm)
-    settings_store = settings_store or LocalSettingsStore()
+    settings_store = settings_store or LocalSettingsStore(runtime_paths.settings_path)
     saved_settings = settings_store.load()
     runtime_dir = settings_store.path.parent
     if llm_client is None and configure_llm:
@@ -115,6 +119,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        if uses_runtime_database:
+            runtime_paths.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         await storage.init_db()
         application.state.interview_service = InterviewService(
             storage,
@@ -125,7 +131,7 @@ def create_app(
             omni_client=omni_client,
             tts_client=tts_client,
             resume_llm_client=resume_llm_client,
-            recordings_dir=recordings_dir,
+            recordings_dir=recordings_dir or runtime_paths.recordings_dir,
         )
         removed_mock_audio = await application.state.interview_service.cleanup_orphaned_mock_audio()
         if removed_mock_audio:
@@ -179,9 +185,26 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
-    allowed_origins = os.getenv(
-        "CORS_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000"
-    ).split(",")
+    application.state.runtime_paths = runtime_paths
+    bootstrap_token = os.getenv("INTERVIEW_OS_BOOTSTRAP_TOKEN", "").strip()
+
+    if bootstrap_token:
+
+        @application.middleware("http")
+        async def require_desktop_bootstrap(request: Request, call_next):
+            """Keep an authenticated desktop sidecar private to its launcher."""
+
+            protected_path = request.url.path == "/health" or request.url.path.startswith("/api/")
+            if request.method != "OPTIONS" and protected_path:
+                supplied = request.headers.get("X-InterviewOS-Bootstrap", "")
+                if not hmac.compare_digest(supplied, bootstrap_token):
+                    return JSONResponse(status_code=403, content={"detail": "Invalid app bootstrap"})
+            return await call_next(request)
+
+    default_origins = "http://127.0.0.1:8000,http://localhost:8000"
+    if runtime_paths.mode == "desktop":
+        default_origins += ",tauri://localhost,http://tauri.localhost,https://tauri.localhost"
+    allowed_origins = os.getenv("CORS_ORIGINS", default_origins).split(",")
     application.add_middleware(
         CORSMiddleware,
         allow_origins=[origin.strip() for origin in allowed_origins if origin.strip()],

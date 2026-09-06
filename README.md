@@ -108,6 +108,40 @@ The extraction preserved existing routes, persisted state shapes, UI element IDs
 rules, and recovery behavior. Static asset versioning also includes extracted modules so a
 module-only update invalidates the frontend entry asset.
 
+### Browser and desktop runtime boundary
+
+The browser UI no longer assumes that the API shares its origin. Every JSON,
+streaming, upload, transcript export, and audio request crosses the single client
+in `interview_os/web/modules/api.js`. Its transport settings come from
+`interview_os/web/modules/runtime.js` with this precedence:
+
+1. `window.__INTERVIEW_OS_RUNTIME__`, injected in memory by a future desktop launcher;
+2. the `interview-os-api-base` meta tag, useful for a controlled static deployment;
+3. an empty base URL, which preserves the current same-origin browser behavior.
+
+The injected contract may contain `apiBaseUrl`, `bootstrapToken`, and
+`mode: "desktop"`. The token is sent only as `X-InterviewOS-Bootstrap`; it is not
+written to local storage. When the Python sidecar is launched with
+`INTERVIEW_OS_BOOTSTRAP_TOKEN`, `/health` and every `/api/*` route require the
+matching value. Desktop mode accepts the standard Tauri local origins and restricts
+a non-HTTP desktop page to a loopback API address. Normal browser launches remain
+unchanged and continue to use account bearer authentication.
+
+Writable locations are centralized in `interview_os/runtime.py`. Existing server
+launches deliberately retain `./interview_os.db`, `~/.interview_os/settings.json`,
+and `./data/recordings` so current data does not disappear after this refactor. A
+desktop launcher sets `INTERVIEW_OS_RUNTIME_MODE=desktop` (or
+`INTERVIEW_OS_DATA_DIR`) to consolidate data under the OS application directory:
+
+- macOS: `~/Library/Application Support/InterviewOS`
+- Windows: `%LOCALAPPDATA%\InterviewOS`
+- Linux: `$XDG_DATA_HOME/interview-os` or `~/.local/share/interview-os`
+
+`DATABASE_URL`, `INTERVIEW_OS_SETTINGS_PATH`, and
+`INTERVIEW_OS_RECORDINGS_DIR` remain explicit overrides. This is the platform-neutral
+boundary required before adding a Tauri shell and PyInstaller sidecar; no Tauri API
+is coupled to interview workflows or view modules.
+
 This modularization does not by itself make the app multi-process safe. Durable background
 jobs, database-level optimistic concurrency, formal migrations, automated browser E2E,
 security hardening, and long-duration stress tests remain separate production-readiness
