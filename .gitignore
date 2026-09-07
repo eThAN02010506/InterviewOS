@@ -10,3 +10,15 @@ data/
 .ruff_cache/
 .codex-restored-chats/
 .claude/
+.idea/
+/build/
+desktop/target/
+desktop/node_modules/
+desktop/gen/
+desktop/binaries/*
+!desktop/binaries/.gitkeep
+desktop/icons/android/
+desktop/icons/ios/
+desktop/icons/64x64.png
+desktop/icons/Square*.png
+desktop/icons/StoreLogo.png

@@ -202,6 +202,25 @@ def deterministic_question_understanding(
     )
 
 
+def reconcile_question_understanding(
+    existing: QuestionUnderstanding | None,
+    fallback: QuestionUnderstanding,
+) -> QuestionUnderstanding:
+    """Refresh persisted scoring contracts without losing useful model detail."""
+    if existing is None or existing.analysis_source != "model":
+        return fallback
+    return existing.model_copy(
+        update={
+            "answer_type": fallback.answer_type,
+            "answer_type_label": fallback.answer_type_label,
+            "answer_boundary": fallback.answer_boundary,
+            "transfer_principle": fallback.transfer_principle,
+            "role_relevance": fallback.role_relevance,
+            "role_relevance_source": fallback.role_relevance_source,
+        }
+    )
+
+
 def _role_relevance(
     competency: str, *, job_title: str, explicit_job_requirements: list[str]
 ) -> tuple[str, str]:

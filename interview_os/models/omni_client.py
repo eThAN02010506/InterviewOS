@@ -18,6 +18,13 @@ from typing import Any
 
 import httpx
 
+from interview_os.core.provider_config import (
+    normalize_provider_api_key,
+    normalize_provider_endpoint,
+    provider_api_key_from_env,
+    provider_endpoint_from_env,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_OMNI_BASE_URL = "http://192.168.1.97:8004/v1"
@@ -85,6 +92,19 @@ _PROBE_AUDIO_BASE64 = (
 )
 
 
+class _BorrowedAsyncTransport(httpx.AsyncBaseTransport):
+    """Delegate requests without letting a short-lived clone close its owner."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        return None
+
+
 class OmniAudioClient:
     """Calls an OpenAI-compatible multimodal chat endpoint with audio content."""
 
@@ -97,11 +117,22 @@ class OmniAudioClient:
         mode: str = "asr_text",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.base_url: str = base_url or os.getenv("OMNI_BASE_URL", DEFAULT_OMNI_BASE_URL).rstrip("/")
-        self.api_key: str = api_key or os.getenv("OMNI_API_KEY") or ""
+        self.base_url = provider_endpoint_from_env(
+            base_url,
+            env_name="OMNI_BASE_URL",
+            default=DEFAULT_OMNI_BASE_URL,
+            label="Live audio base_url",
+            logger=logger,
+        )
+        self.api_key = provider_api_key_from_env(
+            api_key,
+            env_name="OMNI_API_KEY",
+            logger=logger,
+        )
         self.model: str = model or os.getenv("OMNI_MODEL") or DEFAULT_OMNI_MODEL
         self.name: str = name
         self.mode: str = mode if mode in {"asr_text", "audio_direct"} else "asr_text"
+        self._injected_transport = transport
         self._client = httpx.AsyncClient(timeout=120.0, transport=transport)
         self._capability: dict[str, Any] = {}
 
@@ -114,13 +145,20 @@ class OmniAudioClient:
         name: str | None = None,
         mode: str | None = None,
     ) -> None:
-        if base_url is not None:
-            value = base_url.strip().rstrip("/")
-            if not value.startswith(("http://", "https://")):
-                raise ValueError("Omni base_url must use http:// or https://")
-            self.base_url = value
-        if api_key is not None and api_key.strip():
-            self.api_key = api_key.strip()
+        next_api_key = (
+            normalize_provider_api_key(api_key, label="Live audio API key")
+            if api_key is not None
+            else None
+        )
+        next_base_url = (
+            normalize_provider_endpoint(base_url, label="Live audio base_url")
+            if base_url is not None
+            else None
+        )
+        if next_base_url is not None:
+            self.base_url = next_base_url
+        if next_api_key is not None:
+            self.api_key = next_api_key
         if model is not None and model.strip():
             self.model = model.strip()
         if name is not None and name.strip():
@@ -342,7 +380,7 @@ class OmniAudioClient:
                 "ok": False,
                 "latency_ms": round((perf_counter() - started) * 1000, 1),
                 "sample": "",
-                "error": str(exc)[:200],
+                "error": f"Omni capability probe failed ({type(exc).__name__})",
             }
         return self._capability
 
@@ -365,6 +403,21 @@ class OmniAudioClient:
             "api_key": self.api_key,
             "model": self.model,
         }
+
+    def clone_for_probe(self) -> OmniAudioClient:
+        """Return an isolated transport with the same effective configuration."""
+
+        transport = (
+            _BorrowedAsyncTransport(self._injected_transport)
+            if self._injected_transport is not None
+            else None
+        )
+        return type(self)(**self.secret_snapshot(), transport=transport)
+
+    def publish_capability(self, capability: dict[str, Any]) -> None:
+        """Publish a probe result produced by an isolated client snapshot."""
+
+        self._capability = dict(capability)
 
     async def close(self) -> None:
         await self._client.aclose()

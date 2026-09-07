@@ -11,6 +11,11 @@ from typing import Any
 
 import httpx
 
+from interview_os.core.provider_config import (
+    normalize_provider_api_key,
+    normalize_provider_endpoint,
+)
+
 
 class ASRError(RuntimeError):
     """Raised when the configured transcription service cannot produce text."""
@@ -45,13 +50,20 @@ class ASRClient:
         transcription_path: str | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
-        if base_url is not None:
-            value = base_url.strip().rstrip("/")
-            if not value.startswith(("http://", "https://")):
-                raise ValueError("ASR base_url must use http:// or https://")
-            self.base_url = value
-        if api_key is not None and api_key.strip():
-            self.api_key = api_key.strip()
+        next_api_key = (
+            normalize_provider_api_key(api_key, label="ASR API key")
+            if api_key is not None
+            else None
+        )
+        next_base_url = (
+            normalize_provider_endpoint(base_url, label="ASR base_url")
+            if base_url is not None
+            else None
+        )
+        if next_base_url is not None:
+            self.base_url = next_base_url
+        if next_api_key is not None:
+            self.api_key = next_api_key
         elif not hasattr(self, "api_key"):
             self.api_key = ""
         if model is not None:
@@ -89,7 +101,7 @@ class ASRClient:
             )
             response.raise_for_status()
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-            raise ASRError(f"ASR request failed: {exc}") from exc
+            raise ASRError("ASR request failed") from exc
         try:
             payload: Any = response.json()
         except ValueError as exc:
@@ -113,7 +125,7 @@ class ASRClient:
                     return {"ok": True, "path": path, "status_code": response.status_code}
                 last_error = f"HTTP {response.status_code}"
             except httpx.HTTPError as exc:
-                last_error = str(exc)
+                last_error = f"ASR probe failed ({type(exc).__name__})"
         return {"ok": False, "error": last_error or "ASR service unavailable"}
 
     def status(self) -> dict[str, Any]:

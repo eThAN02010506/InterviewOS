@@ -13,6 +13,7 @@ from interview_os.core.message import Message
 from interview_os.core.question_understanding import (
     deterministic_question_understanding,
     merge_model_understanding,
+    reconcile_question_understanding,
 )
 from interview_os.core.spoken_answer import analyze_spoken_answer
 from interview_os.core.spoken_answer import (
@@ -246,7 +247,10 @@ class MockInterviewAgent(Agent):
                 timeout=30,
             )
         except (TimeoutError, ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Custom question semantic analysis fell back to rules: %s", exc)
+            logger.warning(
+                "Custom question semantic analysis fell back to rules (%s)",
+                type(exc).__name__,
+            )
             self.record_degradation("自定义问题语义解析失败，已使用确定性题型与题族分析")
             return fallback
         return merge_model_understanding(
@@ -363,31 +367,34 @@ class MockInterviewAgent(Agent):
         # accepting arbitrary model labels here would make pre-answer guidance
         # disagree with post-answer feedback.
         question.question_requirements = cls.question_requirements(question.question)
-        if question.understanding is None:
-            explicit_requirements = []
-            confirmed_claims: list[tuple[str, str]] = []
-            job_title = ""
-            if state is not None:
-                explicit_requirements = [
-                    item.text
-                    for item in state.job_review.requirements
-                    if item.origin.value == "explicit"
-                ]
-                if not explicit_requirements and state.job.raw_description.strip():
-                    explicit_requirements = list(state.job.responsibilities)
-                confirmed_claims = [
-                    (str(claim.id), claim.statement)
-                    for claim in state.resume_review.claims
-                    if claim.status.value in {"confirmed", "modified"}
-                ]
-                job_title = state.job.title
-            question.understanding = deterministic_question_understanding(
-                question.question,
-                competency=question.competency,
-                job_title=job_title,
-                explicit_job_requirements=explicit_requirements,
-                confirmed_claims=confirmed_claims,
-            )
+        explicit_requirements = []
+        confirmed_claims: list[tuple[str, str]] = []
+        job_title = ""
+        if state is not None:
+            explicit_requirements = [
+                item.text
+                for item in state.job_review.requirements
+                if item.origin.value == "explicit"
+            ]
+            if not explicit_requirements and state.job.raw_description.strip():
+                explicit_requirements = list(state.job.responsibilities)
+            confirmed_claims = [
+                (str(claim.id), claim.statement)
+                for claim in state.resume_review.claims
+                if claim.status.value in {"confirmed", "modified"}
+            ]
+            job_title = state.job.title
+        fallback = deterministic_question_understanding(
+            question.question,
+            competency=question.competency,
+            job_title=job_title,
+            explicit_job_requirements=explicit_requirements,
+            confirmed_claims=confirmed_claims,
+        )
+        question.understanding = reconcile_question_understanding(
+            question.understanding,
+            fallback,
+        )
         example = question.example_answer or cls.teaching_example(question.competency, text)
         analysis = analyze_spoken_answer(question.question, example)
         if any(item.status == "missing" for item in analysis.question_coverage):
@@ -510,7 +517,7 @@ class MockInterviewAgent(Agent):
             )
             questions = plan.questions[:count]
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse mock refill: %s", exc)
+            logger.warning("Failed to parse mock refill (%s)", type(exc).__name__)
             questions = []
         if not questions:
             # Deterministic fallback from competencies not yet covered.
@@ -559,7 +566,7 @@ class MockInterviewAgent(Agent):
                 prompt, MockInterviewPlan, context=state.summary()
             )
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse mock interview plan: %s", exc)
+            logger.warning("Failed to parse mock interview plan (%s)", type(exc).__name__)
         self._ground_question_premises(state, state.mock_interview.questions)
         if not state.mock_interview.questions:
             competencies = state.job.competencies or ["岗位核心能力"]

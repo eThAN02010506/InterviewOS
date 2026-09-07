@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import ResumeClaimUpdateRequest, WorkflowResponse
+from interview_os.api.upload_utils import read_upload_bounded
 from interview_os.services.interview_service import InterviewService
 from interview_os.services.resume_service import MAX_RESUME_BYTES, ResumeProcessingError
 
@@ -23,9 +24,14 @@ async def upload_resume(
     file: Annotated[UploadFile, File()],
     structure: Annotated[Literal["rules", "llm"], Form()] = "rules",
 ):
-    content = await file.read(MAX_RESUME_BYTES + 1)
-    if len(content) > MAX_RESUME_BYTES:
-        raise ResumeProcessingError("简历不能超过 10 MB")
+    # Establish owner/session scope before copying the uploaded document from
+    # Starlette's multipart spool into application memory.
+    await service.get_state(session_id)
+    content = await read_upload_bounded(
+        file,
+        max_bytes=MAX_RESUME_BYTES,
+        too_large_detail="简历不能超过 10 MB",
+    )
     state = await service.upload_resume(
         session_id, file.filename or "resume", content, structure=structure
     )

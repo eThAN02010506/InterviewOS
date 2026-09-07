@@ -34,7 +34,7 @@ class JobAgent(Agent):
             parsed.raw_description = jd_text
             state.job = parsed
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse job description: %s", exc)
+            logger.warning("Failed to parse job description (%s)", type(exc).__name__)
             state.job.raw_description = jd_text
         state.job_review = review_job_description(jd_text, state.job.competencies)
 

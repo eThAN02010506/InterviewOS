@@ -101,6 +101,45 @@ async def test_tool_registry_missing():
     assert "not found" in result.error
 
 
+@pytest.mark.asyncio
+async def test_tool_registry_redacts_untrusted_exception_detail():
+    class FailingTool(Tool):
+        name = "failing"
+
+        async def execute(self, **kwargs):
+            raise RuntimeError("candidate@example.com https://private.internal secret-token")
+
+    registry = ToolRegistry()
+    registry.register(FailingTool())
+    result = await registry.call("failing")
+
+    assert result.error == "Tool execution failed (RuntimeError)"
+    assert "candidate@example.com" not in result.error
+
+
+@pytest.mark.asyncio
+async def test_asr_transport_error_does_not_expose_endpoint_or_credentials():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            "secret-token at https://private-asr.internal",
+            request=request,
+        )
+
+    client = ASRClient(
+        base_url="http://asr.test:9001",
+        api_key="asr-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(Exception) as captured:
+            await client.transcribe(b"audio", filename="answer.webm")
+    finally:
+        await client.close()
+
+    assert str(captured.value) == "ASR request failed"
+    assert "private-asr" not in str(captured.value)
+
+
 class FakeSearchProvider(SearchProvider):
     async def search(self, query: str, limit: int = 5, *, search_depth: str = "basic"):
         return [

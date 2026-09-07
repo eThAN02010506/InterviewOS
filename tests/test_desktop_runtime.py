@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from interview_os.api.app import create_app
+from interview_os.api.app import _bootstrap_token_matches, create_app
 from interview_os.database.storage import Storage
 from interview_os.runtime import platform_data_dir, resolve_runtime_paths
 from interview_os.services.settings_service import LocalSettingsStore
@@ -82,3 +82,7 @@ def test_optional_bootstrap_token_protects_sidecar_api(monkeypatch, tmp_path):
         )
         assert preflight.status_code == 200
         assert preflight.headers["access-control-allow-origin"] == "http://tauri.localhost"
+
+
+def test_bootstrap_comparison_rejects_non_ascii_header_without_error():
+    assert not _bootstrap_token_matches("é", "one-time-secret")

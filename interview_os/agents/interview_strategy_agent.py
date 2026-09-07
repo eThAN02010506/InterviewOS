@@ -57,7 +57,7 @@ class InterviewStrategyAgent(Agent):
                 state.strategy.key_risks = []
             self._remove_unsupported_quantitative_claims(state)
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse interview strategy: %s", exc)
+            logger.warning("Failed to parse interview strategy (%s)", type(exc).__name__)
         if not state.strategy.summary and not state.strategy.key_risks:
             # The three-way fusion output was empty or ungrounded; give the
             # candidate a deterministic fallback so preparation never hard-fails.

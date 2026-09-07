@@ -86,6 +86,33 @@ def test_chinese_technical_answer_recognizes_latency_metric_and_result():
     assert statuses["给出结果与验证方式"] == "covered"
 
 
+def test_real_product_case_uses_observed_metrics_instead_of_later_support_phrase():
+    question = (
+        "请选一个最近三年你亲自负责、最能体现生成式 AI 产品管理的真实案例："
+        "当时要解决什么业务问题，你做了什么关键决定，结果如何验证？"
+    )
+    answer = (
+        "2025 年我负责企业知识助手从试点走向规模化。当时 5 家试点客户反馈回答质量不稳定，"
+        "但销售希望立即扩大。我先和客户成功访谈 30 家目标客户，把问题拆成检索覆盖、答案可信度"
+        "和使用习惯三类；备选方案是直接扩容，或先建立质量门槛。我选择后者，因为错误答案会放大"
+        "信任风险。随后我与 20 人研发团队重构 RAG 工作流，建立离线评测集和线上采纳率、周活、"
+        "成本监控，并设置分阶段准入与回滚条件。三个月内试点从 5 家增至 18 家，周活从 42% 到 "
+        "61%，采纳率从 55% 到 73%。我的复盘是早期仍低估了客户成功的支持压力，之后把支持工时"
+        "也纳入扩张门槛。"
+    )
+
+    analysis = analyze_spoken_answer(question, answer)
+    coverage = {item.requirement: item for item in analysis.question_coverage}
+
+    assert analysis.answer_type == "behavioral_example"
+    assert coverage["说明执行动作"].status == "covered"
+    assert "访谈 30 家" in coverage["说明执行动作"].evidence
+    assert coverage["给出结果与验证方式"].status == "covered"
+    assert "5 家增至 18 家" in coverage["给出结果与验证方式"].evidence
+    assert "42% 到 61%" in coverage["给出结果与验证方式"].evidence
+    assert "支持工时" not in coverage["给出结果与验证方式"].evidence
+
+
 def test_past_context_question_uses_behavioral_contract_and_precise_evidence():
     analysis = analyze_spoken_answer(
         "请描述你在订单服务中，如何完成容量规划与故障恢复？",
@@ -282,6 +309,54 @@ def test_metric_led_followup_does_not_invent_an_unasked_alternative_requirement(
     assert "阈值" in feedback
     assert "不必补讲一套新的 STAR 案例" in evaluation.improved_answer
     assert "[补充" not in evaluation.improved_answer
+
+
+def test_motivation_feedback_does_not_demand_star_or_project_metrics():
+    question = "为什么你想从成熟企业转到创业公司？请说明评估机会的具体标准。"
+    answer = (
+        "我希望对产品方向和商业结果承担完整责任。过去三年我负责企业知识助手的完整闭环。"
+        "我评估机会主要看公司问题是否真实、产品是否有客户采用、团队是否用数据修正判断，"
+        "以及岗位是否有明确决策责任。我会核验客户留存、交付成本和十二个月里程碑，"
+        "入职前三个月再用客户访谈和质量基线验证匹配。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    evaluation = AnswerEvaluation(
+        content=0.85,
+        technical_depth=0.7,
+        structure=0.8,
+        impact=0.75,
+        spoken_analysis=analysis,
+    )
+
+    apply_specific_feedback(evaluation, answer, question=question, competency="求职动机")
+    CoachAgent._build_grounded_improvement(evaluation, answer, question=question)
+    feedback = " ".join(evaluation.feedback)
+
+    assert "至少一个备选方案" not in feedback
+    assert "补充已核验的结果" not in feedback
+    assert "一票否决" in feedback
+    assert "不必套用 STAR" in evaluation.improved_answer
+
+
+def test_motivation_scores_are_floored_by_criteria_and_validation_evidence():
+    question = "为什么你想去创业公司？请说明你评估机会的具体标准。"
+    answer = (
+        "我希望承担完整的产品责任。我评估机会主要看客户问题、产品采用、团队判断方式和岗位责任。"
+        "风险是资源有限，所以我会核验客户留存与成本，并在入职前三个月验证匹配。"
+    )
+    analysis = analyze_spoken_answer(question, answer)
+    evaluation = AnswerEvaluation(
+        content=0.4,
+        technical_depth=0.4,
+        structure=0.7,
+        impact=0.4,
+    )
+
+    calibrate_evaluation(evaluation, analysis)
+
+    assert evaluation.content >= 0.65
+    assert evaluation.technical_depth >= 0.70
+    assert evaluation.impact >= 0.70
 
 
 def test_capacity_answer_extracts_actions_and_observed_result_not_forecast():

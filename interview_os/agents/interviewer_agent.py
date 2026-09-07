@@ -132,7 +132,7 @@ class InterviewerAgent(Agent):
             parsed.public_research_status = research_status
             state.interviewer = parsed
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse interviewer profile: %s", exc)
+            logger.warning("Failed to parse interviewer profile (%s)", type(exc).__name__)
             info.public_expressions = existing_sources
             info.public_research_status = research_status
             state.interviewer = info

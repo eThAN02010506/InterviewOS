@@ -4,26 +4,34 @@ import {$, esc, tags} from './ui.js';
 export function renderLiveView(runtime) {
   const {
     liveContinuousMode, liveContinuousQueueLength, liveContinuousUploading,
-    liveRecorderActive, liveSuggestionStreamActive, microphoneAvailabilityMessage,
-    sessionRecordingActive, updateLiveVadNote
+    livePendingAudio, liveRecorderActive, liveSuggestionStreamActive, microphoneAvailabilityMessage,
+    liveStatusUncertain, mediaTransitionInProgress, sessionAudioPending, sessionAudioSaveError,
+    sessionAudioUploading, sessionRecordingActive, sessionRecordingError, settingsReady,
+    utterancePendingAudio, utteranceCaptureBusy,
+    updateLiveVadNote
   } = runtime;
   const live = state.session?.live_interview;
   if (!$('live-transcript')) return;
   const statusLabels = {idle:'尚未开始',active:'监听中',paused:'已暂停',completed:'已结束'};
   const status = live?.status || 'idle';
-  $('live-status-label').textContent = statusLabels[status] || status;
-  $('live-status-dot').className = status === 'active' ? 'active' : status;
+  $('live-status-label').textContent = liveStatusUncertain ? '状态确认中 · 本机麦克风已停止' : statusLabels[status] || status;
+  $('live-status-dot').className = liveStatusUncertain ? 'paused' : status === 'active' ? 'active' : status;
   $('live-consent-panel').classList.toggle('hidden', status !== 'idle' && status !== 'completed');
   $('live-pause').textContent = status === 'paused' ? '恢复' : '暂停';
-  $('live-pause').disabled = !['active','paused'].includes(status);
-  $('live-finish').disabled = !['active','paused'].includes(status) || liveContinuousMode || liveContinuousQueueLength > 0 || liveContinuousUploading;
+  $('live-start').disabled = mediaTransitionInProgress || liveStatusUncertain || !settingsReady || status === 'completed';
+  $('live-pause').disabled = mediaTransitionInProgress || liveStatusUncertain || !['active','paused'].includes(status);
+  $('live-finish').disabled = mediaTransitionInProgress || liveStatusUncertain || !['active','paused'].includes(status) || liveContinuousMode || liveContinuousQueueLength > 0 || liveContinuousUploading;
   const microphoneUnavailable = !!microphoneAvailabilityMessage();
-  $('live-record').disabled = status !== 'active' || liveRecorderActive || microphoneUnavailable;
-  $('live-dialogue').disabled = status !== 'active' || liveRecorderActive || microphoneUnavailable;
-  $('live-continuous').disabled = status !== 'active' || liveRecorderActive || microphoneUnavailable;
-  $('live-stop-continuous').disabled = !liveContinuousMode;
-  $('live-plan').disabled = status !== 'active';
-  $('live-stream-plan').disabled = status !== 'active' || liveSuggestionStreamActive;
+  $('live-record').disabled = mediaTransitionInProgress || liveStatusUncertain || !settingsReady || status !== 'active' || liveRecorderActive || microphoneUnavailable;
+  $('live-dialogue').disabled = mediaTransitionInProgress || liveStatusUncertain || !settingsReady || status !== 'active' || liveRecorderActive || microphoneUnavailable;
+  $('live-continuous').disabled = mediaTransitionInProgress || liveStatusUncertain || !settingsReady || status !== 'active' || liveRecorderActive || microphoneUnavailable;
+  $('live-stop-continuous').disabled = mediaTransitionInProgress || !liveContinuousMode;
+  const retryPendingAudio=$('live-retry-pending-audio');
+  if(retryPendingAudio){const retryRecorder=!!sessionRecordingError&&status==='active';retryPendingAudio.textContent=retryRecorder?'重试启动全场录音':'重试保存待处理音频';retryPendingAudio.hidden=liveContinuousMode||(!retryRecorder&&!livePendingAudio&&liveContinuousQueueLength===0)||liveContinuousUploading;retryPendingAudio.disabled=mediaTransitionInProgress||liveStatusUncertain||!['active','paused','completed'].includes(status)||liveContinuousUploading;}
+  const discardPendingAudio=$('live-discard-pending-audio');
+  if(discardPendingAudio){discardPendingAudio.hidden=liveContinuousMode||!utterancePendingAudio;discardPendingAudio.disabled=mediaTransitionInProgress||utteranceCaptureBusy;}
+  $('live-plan').disabled = liveStatusUncertain || status !== 'active';
+  $('live-stream-plan').disabled = liveStatusUncertain || status !== 'active' || liveSuggestionStreamActive;
   if (liveContinuousMode || liveContinuousQueueLength || liveContinuousUploading) {
     if (liveContinuousMode) {
       updateLiveVadNote();
@@ -35,24 +43,40 @@ export function renderLiveView(runtime) {
   const sessionRecording = $('live-session-recording');
   if (sessionRecording) {
     const audioFile = live?.audio_file;
+    const audioParts = live?.audio_parts || [];
     const recordingStatus = $('session-recording-status');
     const downloadBtn = $('session-audio-download');
-    const isError = recordingStatus?.classList.contains('error');
-    if (audioFile && state.sessionId) {
+    const deleteBtn = $('session-audio-delete');
+    const partsNode = $('session-audio-parts');
+    if (sessionRecordingActive || sessionAudioUploading) {
       sessionRecording.hidden = false;
-      recordingStatus.textContent = '全场录音已保存';
+      const saved=audioParts.length?`，已保存 ${audioParts.length} 段`:'';
+      recordingStatus.textContent = sessionAudioUploading?`正在保存新的全场录音${saved}`:status === 'paused' ? `全场录音已暂停${saved}` : `全场录音中…${saved}`;
+      recordingStatus.classList.remove('error');
+      downloadBtn.hidden = !audioFile;
+      deleteBtn.hidden = !audioFile;
+      deleteBtn.disabled = true;
+    } else if (sessionAudioPending || sessionAudioSaveError || sessionRecordingError) {
+      sessionRecording.hidden = false;
+      const saved=audioParts.length?`；此前已保存 ${audioParts.length} 段`:'；此前没有已保存分片';
+      recordingStatus.textContent = `${sessionAudioSaveError||sessionRecordingError||'新的全场录音分片正在等待保存'}${saved}`;
+      recordingStatus.classList.add('error');
+      downloadBtn.hidden = !audioFile;
+      deleteBtn.hidden = !audioFile && !sessionAudioPending;
+      deleteBtn.disabled = mediaTransitionInProgress;
+    } else if (audioFile && state.sessionId) {
+      sessionRecording.hidden = false;
+      recordingStatus.textContent = audioParts.length > 1 ? `全场录音已保存 ${audioParts.length} 段` : '全场录音已保存';
       recordingStatus.classList.remove('error');
       downloadBtn.hidden = false;
-    } else if (sessionRecordingActive) {
-      sessionRecording.hidden = false;
-      recordingStatus.textContent = '全场录音中…';
-      recordingStatus.classList.remove('error');
-      downloadBtn.hidden = true;
-    } else if (isError) {
-      sessionRecording.hidden = false;
-      downloadBtn.hidden = true;
+      deleteBtn.hidden = false;
+      deleteBtn.disabled = mediaTransitionInProgress;
     } else {
       sessionRecording.hidden = true;
+      deleteBtn.hidden = true;
+    }
+    if(partsNode){
+      partsNode.innerHTML=audioParts.length>1?audioParts.map((part,index)=>`<button class="btn compact" type="button" data-session-audio-id="${esc(part.id)}" data-session-audio-file="${esc(part.audio_file)}">下载第 ${index+1} 段</button>`).join(''):'';
     }
   }
   const segments = live?.segments || [];

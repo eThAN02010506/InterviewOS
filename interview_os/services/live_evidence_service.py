@@ -312,7 +312,7 @@ class LiveEvidenceServiceMixin(InterviewServiceMixin):
         try:
             evaluation = await self._score_live_record(runtime, record)
         except Exception as exc:  # noqa: BLE001 - background boundary, record failure
-            logger.error("Live scoring failed for %s: %s", record_id, exc)
+            logger.error("Live scoring failed for %s (%s)", record_id, type(exc).__name__)
             async with self._lock_for(session_id):
                 current = next(
                     (item for item in runtime.state.live_interview_records if item.id == record_id),
@@ -328,7 +328,7 @@ class LiveEvidenceServiceMixin(InterviewServiceMixin):
                     # fails: it must not make a reviewed record provisional.
                     return
                 current.scoring_status = "failed"
-                current.scoring_error = str(exc)[:500]
+                current.scoring_error = f"Scoring failed ({type(exc).__name__})"
                 await self._persist(session_id, runtime.state)
             return
         async with self._lock_for(session_id):

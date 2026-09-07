@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from interview_os.core.evidence import EvidencePolarity
 from interview_os.core.state import ResumeClaimStatus
@@ -164,10 +164,37 @@ class MockSessionResponse(BaseModel):
 
 class LiveInterviewStartRequest(BaseModel):
     consent_confirmed: bool
+    expected_revision: int = Field(ge=0)
+    operation_id: UUID
 
 
 class LiveInterviewStatusRequest(BaseModel):
     status: Literal["active", "paused", "completed"]
+    expected_revision: int = Field(ge=0)
+    operation_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def require_resume_operation_id(self) -> LiveInterviewStatusRequest:
+        if self.status == "active" and self.operation_id is None:
+            raise ValueError("operation_id is required when resuming a live interview")
+        return self
+
+
+class LiveInterviewStatusBarrierRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+class LiveAudioDeleteRequest(BaseModel):
+    expected_audio_revision: int = Field(ge=0)
+    operation_id: UUID
+
+
+class LiveAudioCaptureRegistrationRequest(BaseModel):
+    expected_capture_epoch: int = Field(ge=0)
+    expected_settings_revision: int = Field(ge=0)
+    expected_settings_etag: str = Field(min_length=32, max_length=64)
+    parent_recording_id: UUID | None = None
+    capture_role: Literal["utterance", "guard"] = "utterance"
 
 
 class LiveTranscriptRequest(BaseModel):

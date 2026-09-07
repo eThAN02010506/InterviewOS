@@ -3,7 +3,20 @@ import pytest
 from interview_os.core.question_understanding import (
     deterministic_question_understanding,
     merge_model_understanding,
+    reconcile_question_understanding,
 )
+
+
+def test_reconcile_rebuilds_stale_rule_only_question_taxonomy():
+    question = "请选一个你亲自负责的真实案例，说明关键决定和结果如何验证？"
+    stale = deterministic_question_understanding("你通常如何制定产品路线图？")
+    current = deterministic_question_understanding(question)
+
+    reconciled = reconcile_question_understanding(stale, current)
+
+    assert reconciled.answer_type == "behavioral_example"
+    assert reconciled.answer_type_label == "行为经历题"
+    assert reconciled.assessment_goal == current.assessment_goal
 
 
 def test_behavioral_question_builds_transferable_question_family():

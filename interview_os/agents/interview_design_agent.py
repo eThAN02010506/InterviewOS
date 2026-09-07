@@ -62,7 +62,7 @@ class InterviewDesignAgent(Agent):
             )
             state.blueprint.position = state.blueprint.position or state.job.title
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse interview blueprint: %s", exc)
+            logger.warning("Failed to parse interview blueprint (%s)", type(exc).__name__)
         if not state.blueprint.rounds:
             # Local models can return a valid blueprint with empty rounds when no
             # candidate resume is available; fall back to a deterministic generic

@@ -1,4 +1,4 @@
-"""Runtime paths shared by browser-server and future desktop launchers."""
+"""Runtime paths shared by the standalone browser server and packaged desktop sidecar."""
 
 from __future__ import annotations
 

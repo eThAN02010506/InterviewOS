@@ -16,6 +16,14 @@ and final interviewer decisions.
 
 ## Quick Start
 
+InterviewOS has two launch shapes with the same frontend/API contract:
+
+- **Browser/server:** Python 3.10 or newer runs the standalone FastAPI server,
+  and a normal browser opens its URL.
+- **Desktop:** a Rust/Tauri shell starts a packaged Python sidecar and loads the
+  same web client against a private loopback API. The renderer does not contain
+  business logic that is unique to desktop.
+
 ```bash
 pip install -e ".[dev,local-llm]"
 cp .env.example .env
@@ -58,6 +66,12 @@ account. Tests can explicitly
 set `INTERVIEW_OS_REQUIRE_AUTH=0`; the production default is enabled.
 Concurrent registration attempts for the same normalized username are resolved by
 the database unique constraint and consistently returned as HTTP 409 conflicts.
+Authentication and session switches are also hard renderer boundaries. Only fields
+the user actually edited are retained as an in-memory recovery draft, and only the
+same username may restore that draft after the backend confirms that it still owns
+the original session. Candidate/JD forms, consent switches, modal identifiers,
+playback state, and write-only secret inputs are otherwise cleared before another
+account or session can render.
 
 The interviewer workspace includes a **Live Interview Copilot**. With explicit
 consent, it processes typed or recorded interview turns and prepares the next
@@ -66,10 +80,16 @@ chooses, edits, skips, or postpones every suggested question. See the
 [product requirements](docs/product_requirements.md) for scope, privacy rules,
 delivery phases, and acceptance criteria.
 
-Whole-session audio has one authoritative file per session. If the browser's
-page-exit fallback replaces a normal WAV save with WebM or M4A, the persisted
-filename controls downloads and superseded encodings are removed after the new
-state is durable; download media types continue to match the stored encoding.
+Whole-session audio is an append-only archive. Explicit pause, resume, and end
+transitions flush capture segments as immutable `audio_parts`, each with its own
+identifier, format, and content digest; `audio_file` is retained only as the
+legacy/latest-part pointer. During a long active interview the browser rotates a
+part every five minutes or 64 MiB, starts the successor on the same `MediaStream`
+before sealing its predecessor, and uploads finalized parts in sequence order. A
+three-part/192 MiB pending high-water mark stops capture instead of allowing
+unbounded memory growth. Pause, finish, session/auth boundaries, and desktop close
+drain the queue; `pagehide` never tries to upload a large file and `beforeunload`
+warns while audio is still unsaved.
 
 ## Development Working Agreement
 
@@ -87,9 +107,13 @@ debug logs, screenshots, and exported data.
 
 ## Current Product Shape
 
-The current codebase is a feature-complete local, single-process MVP rather than a
-multi-worker production service. The candidate and interviewer workflows are usable end
-to end, but productization work now takes priority over adding more Agent capabilities.
+The current codebase is a usable local MVP with two runtime forms: a standalone
+Python browser server and a Rust/Tauri desktop shell with a packaged Python
+sidecar. In both forms the backend is intentionally one worker; runtime locks,
+background tasks, and parts of optimistic coordination remain process-local, so
+this is not a multi-worker production service. The candidate and interviewer
+workflows are usable end to end, but productization work now takes priority over
+adding more Agent capabilities.
 The behavior-preserving modular split is now complete. `InterviewService` remains the
 API-compatible composition facade and owns runtime, locking, persistence, and workflow
 coordination. Preparation, mock interview, evaluation, live interview, and media behavior
@@ -113,39 +137,140 @@ module-only update invalidates the frontend entry asset.
 The browser UI no longer assumes that the API shares its origin. Every JSON,
 streaming, upload, transcript export, and audio request crosses the single client
 in `interview_os/web/modules/api.js`. Its transport settings come from
-`interview_os/web/modules/runtime.js` with this precedence:
+`interview_os/web/modules/runtime.js`. A normal browser uses the optional
+`interview-os-api-base` meta value and otherwise remains same-origin. Inside the
+Tauri app, the renderer obtains its private loopback address and bootstrap token
+from the narrow `desktop_runtime_config` Rust command; an explicit in-memory
+`window.__INTERVIEW_OS_RUNTIME__` value remains available to tests and controlled
+embedding environments.
 
-1. `window.__INTERVIEW_OS_RUNTIME__`, injected in memory by a future desktop launcher;
-2. the `interview-os-api-base` meta tag, useful for a controlled static deployment;
-3. an empty base URL, which preserves the current same-origin browser behavior.
+The desktop contract contains `apiBaseUrl`, `bootstrapToken`, and
+`mode: "desktop"`. The Rust shell generates a new 256-bit token for each process
+launch, sends it to the Python child over stdin, and reuses it for that process
+lifetime. The renderer keeps it only in memory and sends it as
+`X-InterviewOS-Bootstrap`; it is never placed in a URL, localStorage, SQLite,
+stdout, provider logs, or the Debug Console.
 
-The injected contract may contain `apiBaseUrl`, `bootstrapToken`, and
-`mode: "desktop"`. The token is sent only as `X-InterviewOS-Bootstrap`; it is not
-written to local storage. When the Python sidecar is launched with
-`INTERVIEW_OS_BOOTSTRAP_TOKEN`, `/health` and every `/api/*` route require the
-matching value. Desktop mode accepts the standard Tauri local origins and restricts
-a non-HTTP desktop page to a loopback API address. Normal browser launches remain
-unchanged and continue to use account bearer authentication.
+In desktop mode, `/health` and every non-`OPTIONS` `/api/*` request require
+the bootstrap header. This launcher boundary is separate from account
+authentication: normal product routes also require the account bearer token,
+while registration and login remain the deliberate bearer-token exceptions. The
+sidecar reserves a real `127.0.0.1:0` listener before Uvicorn starts, and the Rust
+parent accepts readiness only from a versioned `protocol=1`, `status=ready`,
+`mode=desktop` record with a nonzero loopback port.
 
-Writable locations are centralized in `interview_os/runtime.py`. Existing server
-launches deliberately retain `./interview_os.db`, `~/.interview_os/settings.json`,
-and `./data/recordings` so current data does not disappear after this refactor. A
-desktop launcher sets `INTERVIEW_OS_RUNTIME_MODE=desktop` (or
-`INTERVIEW_OS_DATA_DIR`) to consolidate data under the OS application directory:
+### Desktop data and lifecycle
 
-- macOS: `~/Library/Application Support/InterviewOS`
-- Windows: `%LOCALAPPDATA%\InterviewOS`
-- Linux: `$XDG_DATA_HOME/interview-os` or `~/.local/share/interview-os`
+Writable locations are centralized in `interview_os/runtime.py`. Existing
+standalone server launches deliberately retain `./interview_os.db`,
+`~/.interview_os/settings.json`, and `./data/recordings` and still honor
+`DATABASE_URL`, `INTERVIEW_OS_DATA_DIR`, `INTERVIEW_OS_SETTINGS_PATH`, and
+`INTERVIEW_OS_RECORDINGS_DIR`. The packaged child clears all four inherited
+overrides before application import, then uses the Tauri
+`app_local_data_dir` passed by the Rust parent:
 
-`DATABASE_URL`, `INTERVIEW_OS_SETTINGS_PATH`, and
-`INTERVIEW_OS_RECORDINGS_DIR` remain explicit overrides. This is the platform-neutral
-boundary required before adding a Tauri shell and PyInstaller sidecar; no Tauri API
-is coupled to interview workflows or view modules.
+- macOS: `~/Library/Application Support/com.interviewos.desktop`
+- Windows: `%LOCALAPPDATA%\com.interviewos.desktop`
+- Linux: `$XDG_DATA_HOME/com.interviewos.desktop` (normally
+  `~/.local/share/com.interviewos.desktop`)
 
-This modularization does not by itself make the app multi-process safe. Durable background
-jobs, database-level optimistic concurrency, formal migrations, automated browser E2E,
-security hardening, and long-duration stress tests remain separate production-readiness
-milestones.
+That directory owns the SQLite database, permission-restricted `settings.json`,
+recording files and recovery journals, `llm_metrics.json`,
+`debug_events.json`, `search_cache.json`, and `search_metrics.json`. Desktop
+storage is intentionally separate from browser-server storage; there is no
+automatic browser-to-desktop account or session migration. Recording directories
+are tightened to mode `0700` and created/reconciled recording files to `0600` on
+platforms that expose POSIX permissions.
+
+The desktop shell is single-instance because SQLite state, runtime locks, and
+background tasks are process-local. First launch allows roughly 90 seconds for a
+frozen sidecar to unpack and report the validated readiness record. Closing the
+window asks the renderer to reconcile an in-flight state transition and flush
+mock, live, and whole-session audio before Rust requests graceful Uvicorn shutdown.
+The renderer budgets up to 30 seconds for transition reconciliation and 90 seconds
+for media draining; Rust has a 150-second renderer watchdog, while the Python
+server uses a 15-second graceful timeout and a 20-second total child deadline.
+Rust kills the child only after its final bounded wait. Shutdown readiness is
+acknowledged per WebView document: reload/navigation invalidates the previous
+listener, and a renderer loss during an already-requested close resumes native
+shutdown instead of waiting for a stale 150-second acknowledgement. If the
+JavaScript shutdown bridge cannot be installed, microphone actions fail closed and
+surface a retryable error rather than allowing unsaved recording in an unprotected
+window. The startup deadline atomically claims `Starting -> Failed`; only that
+winner terminates the child, and a late readiness handshake cannot revive a timed-
+out process.
+
+Mock answer audio is persisted as a recoverable draft before ASR, and whole-session
+audio is committed in immutable archive parts at capture boundaries. Reopening a
+question restores its text, playback, and retry context. If the sidecar dies after
+readiness, the shell invalidates the in-memory runtime credentials and closes the
+renderer to avoid a port-rebind credential leak. It does not automatically restart
+the sidecar or replay an interrupted workflow.
+
+### Desktop development and local packaging
+
+Desktop development requires Python 3.10 or newer with the `desktop` extra
+(including PyInstaller), Rust 1.88 or newer, and Node.js with npm. The sidecar must
+be frozen on the same OS and CPU architecture as the Tauri app; PyInstaller
+artifacts are therefore ignored by Git and rebuilt for every desktop build. From
+the repository root:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate                 # Windows: .venv\Scripts\activate
+pip install -e ".[dev,local-llm,desktop]"
+cd desktop
+npm ci
+npm run dev                              # rebuilds the sidecar, then opens Tauri
+npm run build:local -- --bundles app --ci
+```
+
+`INTERVIEW_OS_BUILD_PYTHON` can point the npm scripts at an explicit Python
+executable; otherwise they prefer the repository `.venv` and then a platform
+Python command. `npm run dev` rebuilds the sidecar before opening Tauri but does
+not run the frozen-sidecar smoke test. `npm run build:local` rebuilds and
+smoke-tests before bundling. The shown `--bundles app` target is the macOS app
+bundle; use the native Tauri bundle target on other platforms. Desktop artifacts
+are native to the build machine's OS and CPU, not universal or cross-compiled
+release binaries.
+
+The current packaging status is:
+
+| Platform | Implemented path | Remaining release validation |
+| --- | --- | --- |
+| macOS 14+ | Native arm64 app build, microphone entitlement, sidecar smoke test, and ad-hoc signature verification | Developer ID distribution build and Apple notarization/stapling |
+| Windows | Shared Tauri/Python source and native sidecar build orchestration | Installer, WebView2, microphone, Authenticode, and long-duration acceptance |
+| Linux | Shared Tauri/Python source and native sidecar build orchestration | Distribution packaging, WebView/microphone coverage, signing policy, and end-to-end acceptance |
+
+The local macOS artifact is
+`desktop/target/release/bundle/macos/InterviewOS.app`. It is ad-hoc signed for
+local testing only; its local entitlement disables library validation solely so
+the PyInstaller one-file child with no Apple Team ID can load. Never distribute
+that build. The normal `npm run build` is fail-closed on macOS unless
+`APPLE_SIGNING_IDENTITY` names an installed Developer ID Application identity
+and notarization credentials are present. The same identity signs PyInstaller's
+embedded Mach-O files and the outer Tauri app, and the release entitlement keeps
+library validation enabled. Passing the guard is not a substitute for verifying
+the notarized and stapled artifact before release.
+
+### Desktop security boundary and known limits
+
+The bootstrap token isolates a Tauri-launched loopback service from accidental
+local callers; it is not account authentication, TLS, an operating-system sandbox,
+or protection from malicious software running as the same user. CSP, CORS, ATS,
+loopback binding, and single-instance behavior reduce exposure but are not
+authentication mechanisms. The account bearer token remains in browser
+`localStorage`; the separate desktop bootstrap token remains in renderer memory,
+so an XSS or same-user process compromise is outside this local MVP's threat
+boundary.
+
+Configured LLM, ASR, TTS, omni, and search services are external dependencies and
+may receive the user data sent to them; they are not embedded or isolated by the
+desktop installer. There is currently no automatic updater, embedded model
+runtime, browser-to-desktop data migration, multi-worker backend, durable job
+queue, or WebSocket transcript protocol. Release signing/notarization, formal
+migrations, automated desktop E2E, and 60-90 minute audio/recovery stress tests
+remain production-readiness work.
 
 InterviewOS currently has two primary UI modes:
 
@@ -422,10 +547,14 @@ the previous candidate's resume, JD, or company context across the candidate bou
 When every question requirement is covered, the compact coaching card says what is
 worth polishing rather than presenting a covered strength as the "top improvement".
 
-Candidates can answer by voice instead of typing. While recording, bounded
-cumulative audio snapshots are sent to `POST /api/live-interviews/{session_id}/
-audio/preview`; the provisional text appears in the answer box but is never
-persisted as transcript or evidence. Stopping the recording sends one stable WAV
+Candidates can answer by voice instead of typing. While recording, serialized,
+cancelable cumulative audio snapshots are sent to `POST /api/live-interviews/{session_id}/
+audio/preview`; each request has a 15-second client deadline and the cumulative
+preview stops after a 90-second window to avoid quadratic decode/network growth.
+The UI explicitly says that recording continues and the final pass will process the
+whole answer. Provisional text appears in the answer box but is never persisted as
+transcript or evidence, and an ASR response cannot overwrite text the candidate
+edited while it was in flight. Stopping the recording sends one stable WAV
 to `POST /api/mock-interviews/{session_id}/transcribe`, keeps the original browser
 recording available in an audio player, and lets the candidate edit the final
 text before submitting. The server stages that recording under an opaque ID;
@@ -435,6 +564,8 @@ recording for side-by-side coaching; the user can explicitly delete either recor
 without deleting its text or score. Unsubmitted staging files become cleanup
 candidates after 24 hours, while active and archived response recordings are retained.
 Uploads are limited to signature-validated WAV, WebM, and M4A files (25 MB maximum).
+Mock capture warns at nine minutes and stops automatically at ten minutes so the
+16 kHz PCM conversion remains below that limit under normal operation.
 Recording, replay, provisional ASR, and delivery feedback are scoped to the session
 where recording started. Switching sessions stops active capture, revokes browser
 object URLs, clears coaching output, and prevents a late transcription response from
@@ -569,7 +700,13 @@ BRAVE_SEARCH_API_KEY=your-key
 When more than one is configured, precedence is Tavily, SearXNG, then Brave.
 SearXNG remains available for a fully self-hosted deployment and requires its JSON
 response format to be enabled. Search results retain their title, URL, snippet,
-and provider so the analysis can be traced back to public sources.
+and provider so the analysis can be traced back to public sources. Cache keys
+include a non-reversible fingerprint of the effective provider configuration;
+identical concurrent searches share one in-flight provider request, and a response
+from a retired configuration generation is returned to its caller but cannot
+repopulate the current cache. Cache and search-metric persistence are best-effort:
+disk-full, read-only, invalid, or oversized local files do not turn an otherwise
+successful provider response into a user-visible failure.
 
 Runtime search and Local LLM settings are changed from the authenticated Settings
 workspace in the main UI. Secrets are write-only and are never returned to the
@@ -582,7 +719,17 @@ LLM, ASR, TTS, live-audio, and resume-LLM clients. Validation or local persisten
 failure restores the previous runtime configuration. The resume structuring model
 initially reuses the main LLM, but its first dedicated UI update creates a separate
 client so changing resume extraction cannot silently move the primary reasoning
-endpoint.
+endpoint. Configurable provider addresses use one strict rule: an exact, whitespace-
+free `http://` or `https://` URL with a hostname and valid port, no embedded
+username/password, query, or fragment. LAN hosts and IP literals remain supported.
+
+ASR preview, live upload, mock transcription, and background speech-delivery work
+lease the effective ASR/omni client generation while they run. An audio setting
+change publishes new clients without closing those still in use and discards a late
+background result from the retired generation. The persistent generation fingerprint
+includes only endpoint/model behavior and a one-way digest of configured API keys;
+the raw key never enters the fingerprint or API response. Clients receive only an
+opaque audio-settings ETag and monotonic revision.
 
 Runtime secrets are not written to SQLite, returned by the API, or included in the
 Debug Console. A platform keychain or external secret manager can replace the local
@@ -605,7 +752,10 @@ accepted prompt and assembled completion are estimated locally. The console:
   `impact:missing`) without storing the model response, resume, or answer text;
 - does not provide arbitrary Python, shell, SQL, or prompt execution.
 
-Background failures expose only exception types in logs and events. During app
+Persistent Debug storage is best-effort and permission-restricted (`0700` parent,
+`0600` file where supported); an unwritable/full disk retains the bounded in-memory
+event without failing the business operation. Background failures expose only
+exception types in logs and events. During app
 shutdown, tracked scoring and question-refill tasks are cancelled before their
 shared transports close; distinct text, resume, ASR, and omni clients then close
 exactly once so a dedicated resume-model connection is not leaked.
@@ -617,6 +767,12 @@ Do not reverse-proxy `/api/debug` to untrusted networks without authentication.
 The turn-based live copilot is implemented. It records one speaker turn in the
 browser, sends it to the configured LAN ASR, and asks the configured text model for
 a grounded next question. Typed/pasted dialogue remains available when audio fails.
+Live start, resume, pause, and completion use `status_revision` optimistic
+compare-and-swap. Every start/resume carries a client UUID `operation_id`; the
+persisted `active_start_operation_id` is the owner of that active capture epoch, so
+a lost response can be retried idempotently while a competing tab receives a
+conflict. Pause/completion retire that owner, and later audio writes remain fenced by
+the persisted `capture_epoch`.
 The live evidence review loop is also implemented: transcript segments can be
 edited before confirmation, candidate answers can be converted into traceable
 `live_interview` evidence, and the review queue shows whether enough evidence and
@@ -649,7 +805,15 @@ control, and mono audio. The VAD ignores speech bursts shorter than 0.7s, retain
 the WebM container header while discarding idle chunks, and permits only one
 provisional ASR request at a time. This prevents background noise from creating a
 large upload queue without making finalized utterances undecodable. Provisional
-transcripts never mutate session state. More importantly, `unknown` transcript
+transcripts never mutate session state. Because Web Audio timers and contexts can be
+throttled in a hidden WebView/browser tab, moving a running continuous-listening page
+to the background requests the normal safe pause-and-flush path and tells the user to
+resume explicitly on return; it never pretends that background VAD remained reliable.
+This automatic visibility pause is deliberately limited to continuous mode (including
+its pending guard). Other microphone permission/start paths recheck visibility after
+each asynchronous boundary and refuse to activate if the page became hidden; they do
+not manufacture a remote pause for a microphone that never started.
+More importantly, `unknown` transcript
 segments are excluded from rolling summaries and next-question context until the
 interviewer has reviewed their speaker; the UI label therefore matches the Agent's
 actual data boundary.
@@ -739,15 +903,38 @@ The live audio path is switchable between two modes (Settings → 实时音频�
   as `unknown`-speaker "待确认" segments, in `audio_direct` they land with an
   auto-detected speaker.
 
-  The live workspace can also **record the whole interview as one audio file**.
-  With the consent checkbox confirmed, a separate recorder captures the entire
-  session (independent of the per-utterance VAD path, which discards silence
-  gaps) and, on ending the interview, uploads it once to
-  `POST /api/live-interviews/{id}/audio/final`. The WAV is saved under
-  `data/recordings/{session_id}.wav` (a per-session file, never shared across
-  accounts) and can be downloaded back from the live panel. The file lives on
-  this machine only; the recording is opt-in via the same explicit consent that
-  gates transcription.
+  The live workspace can also **record a recoverable whole-interview audio
+  archive**. With the consent checkbox confirmed, a separate recorder captures
+  the session independently of the per-utterance VAD path. Explicit pause,
+  resume, session-boundary, app-shutdown, and end flows flush the current segment
+  through `POST /api/live-interviews/{id}/audio/final`; resuming starts the next
+  segment instead of overwriting an earlier recording.
+
+  Every five minutes or 64 MiB the client starts a successor recorder on the same
+  media stream before stopping the old recorder, then drains sequence-numbered parts
+  FIFO. Three pending parts or 192 MiB is the capture high-water mark. Each part keeps
+  the `recording_id` and archive revision captured at the beginning of the recording
+  run; pause, finish, session/account boundaries, and desktop shutdown wait for its
+  queue to drain. The server appends one immutable `audio_parts` manifest entry with
+  its file metadata and SHA-256 digest, while duplicate retries with the same ID
+  are idempotent and conflicting content is rejected. `audio_file` continues to
+  point at the latest part for older clients. The live panel can download each
+  part. Archive upload requires both `recording_id` and
+  `expected_audio_revision`; archive deletion requires an expected revision plus a
+  UUID `operation_id`, making a repeated delete idempotent while fencing stale
+  uploads. Files stay on this machine; capture is opt-in through the same explicit
+  consent gate as transcription. Browser `pagehide` may send only a tiny best-effort
+  pause mutation; it never uploads a large recording, so users must allow the
+  explicit pause/end flush to complete.
+
+  Multipart uploads have two independent bounds. ASGI middleware counts the wire
+  body before Starlette can spool it (file limit plus 1 MiB multipart allowance),
+  while each route validates session ownership before reading the spooled file into
+  application memory in 1 MiB chunks. The browser rotates a whole-session archive
+  part at 64 MiB; the route accepts at most 65 MiB of file content and the ASGI
+  boundary allows at most 66 MiB including multipart metadata. Live/mock final audio
+  remains capped at 25 MiB, and ASR preview/resume upload at 10 MiB. Oversized bodies
+  receive HTTP 413 rather than being fully materialized by application code.
 
   The direct path's context is **focused and priority-ordered** for speed: it
   carries only the job/covered competencies (the anchor, always kept), the
@@ -799,7 +986,8 @@ The remaining roadmap is deliberately separated:
    older stable turns are summarized into bounded context, and next-question planning
    uses summary + recent turns + evidence rather than the full transcript.
 4. **Continuous streaming** — partial transcript events, stronger answer-boundary
-   detection, WebSocket reconnect/protocol-level deduplication, and optional speaker diarization.
+   detection, WebSocket reconnect/protocol-level deduplication, and
+   confidence-calibrated streaming speaker attribution.
 5. **Evidence map hardening** — confirmed turns already become `live_interview`
    evidence, can be revoked, merged, re-evaluated, and turned into coverage
    guidance, question-usage tracking, explainable boundary confidence, and a
@@ -877,8 +1065,18 @@ case correctly bound the observed result to “实际峰值 / P99 / 错误率”
 forecast. On 2026-08-21, a browser-driven complex platform-lead case scored a fully
 grounded capacity answer at 90/80/80/72 and a polished but off-topic technical incident
 against a collaboration question at 10/30/60/30; the final report retained the relevance
-gap and rejected contradictory model prose. The complete automated gate now covers 359
-tests plus Ruff, mypy, JavaScript syntax, and diff checks.
+gap and rejected contradictory model prose. The complete automated gate covers the
+full pytest suite plus Ruff, mypy, JavaScript syntax, Rust tests/formatting, frozen
+sidecar smoke checks, and the platform-appropriate Tauri build.
+
+On 2026-09-08, the shared App UI was exercised against the configured local
+GPT-OSS 20B endpoint at `192.168.1.97:8001`: candidate setup, Tavily-assisted
+preparation, a generated behavioral question, a user-supplied motivation question,
+semantic question expansion, answer submission, retry, and evidence-grounded feedback
+all completed through the UI. The run also verified persisted-question taxonomy
+reconciliation, inline JD section/clause splitting, and question-type-specific
+motivation coaching so older sessions and non-STAR questions use the current scoring
+contract. Debug diagnostics do not emit API keys or candidate answer text.
 
 The full audio loop (the interviewer's primary input path) was verified against the
 real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s
@@ -902,13 +1100,17 @@ longer fails the whole workflow.
 
 The next work should move in this order:
 
-1. **True streaming design** — add WebSocket transcript events, stronger answer-boundary
-   detection, reconnect handling, and protocol-level deduplication.
-2. **Interviewer-side long-run pass** — repeat the verified interviewer workflow
-   with longer 60-90 minute transcripts, mixed competencies, ASR failures, and model
-   retries.
-3. **Search and fact-card hardening** — improve source ranking, richer conflict
+1. **Desktop release hardening** — complete a Developer ID signed, notarized, and
+   stapled macOS artifact; then run native Windows and Linux installer,
+   WebView/microphone, signing-policy, and lifecycle acceptance passes.
+2. **Interviewer-side long-run and recovery pass** — exercise 60-90 minute
+   interviews with repeated pause/resume archives, app-close boundaries, sidecar
+   failure, ASR failure, settings changes, mixed competencies, and model retries.
+3. **True streaming design** — add WebSocket transcript events, stronger
+   answer-boundary detection, reconnect handling, and protocol-level
+   deduplication.
+4. **Search and fact-card hardening** — improve source ranking, richer conflict
    explanations, Tavily cache-hit reasoning, and longer-lived source review UX.
-4. **Operational hardening** — expand Debug Console timings, retry paths, redacted
+5. **Operational hardening** — expand Debug Console timings, retry paths, redacted
    cost/token metrics, local secret persistence tests, and 60-90 minute live
    interview load tests.

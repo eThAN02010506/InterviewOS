@@ -17,16 +17,16 @@ _OBSERVED_DISCOURSE_WORDS = ("就是", "那个", "然后")
 _SCORE_FIELDS = ("content", "technical_depth", "structure", "impact")
 _METRIC_PATTERN = re.compile(
     r"(?:"
-    r"\d+(?:[.,]\d+)?\s*(?:%|％|人|天|周|月|年|倍|ms|s|sec|seconds?|min|minutes?|"
+    r"\d+(?:[.,]\d+)?\s*(?:%|％|人|家|户|项|天|周|月|年|倍|ms|s|sec|seconds?|min|minutes?|"
     r"qps|rps|tps|gb|mb|kb|万元|元|美元|usd|cny|\$|¥)"
     r"|百分之\s*[零〇一二两三四五六七八九十百千万\d.]+"
-    r"|[零〇一二两三四五六七八九十百千万]+(?:个)?(?:人|天|周|月|年|倍|万元|元|美元)"
+    r"|[零〇一二两三四五六七八九十百千万]+(?:个)?(?:人|家|户|项|天|周|月|年|倍|万元|元|美元)"
     r")",
     re.IGNORECASE,
 )
 _NAMED_METRIC_PATTERN = re.compile(
     r"(?:p\d{2}|qps|rps|tps|cpu|内存|连接池|命中率|错误率|超时率|通过率|转化率|"
-    r"接受率|满意度|留存率|续费率|使用频率|积压|吞吐|延迟|周期|成本|"
+    r"接受率|采纳率|活跃率|周活|满意度|留存率|续费率|使用频率|积压|吞吐|延迟|周期|成本|"
     r"不一致率|完整率|安全余量)",
     re.IGNORECASE,
 )
@@ -164,6 +164,7 @@ _STEP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "结果与验证",
         (
             "提升",
+            "增至",
             "降低",
             "缩短",
             "达成",
@@ -233,7 +234,7 @@ def _excerpt(sentences: list[str], keywords: tuple[str, ...]) -> str:
 def _answer_type(question: str) -> str:
     folded = question.casefold()
     if re.search(
-        r"请讲|举例|一次|(?:谈谈|描述|说明).{0,30}经历|期间|已经发生|已经结束|具体项目|你是如何|"
+        r"请讲|举例|一次|真实案例|亲自负责|最能体现|(?:谈谈|描述|说明).{0,30}经历|期间|已经发生|已经结束|具体项目|你是如何|"
         r"请(?:描述|说明)你在|(?:你)?在.{2,80}(?:时|中)[，,]?(?:你)?(?:是)?如何",
         question,
     ) or re.search(
@@ -356,6 +357,7 @@ def _outcome_evidence(sentences: list[str]) -> str:
         "最终",
         "最后",
         "提升",
+        "增至",
         "降低",
         "降到",
         "下降",
@@ -366,7 +368,6 @@ def _outcome_evidence(sentences: list[str]) -> str:
         "达到",
         "完成",
         "交付",
-        "支持",
         "improved",
         "reduced",
         "restored to",
@@ -379,12 +380,21 @@ def _outcome_evidence(sentences: list[str]) -> str:
     # Answers usually state the observed outcome after explaining the baseline
     # and target. Prefer the latest eligible sentence to avoid citing a
     # pre-action metric as the result.
-    for sentence in reversed(sentences):
+    for index in range(len(sentences) - 1, -1, -1):
+        sentence = sentences[index]
         folded = sentence.casefold()
         if any(term.casefold() in folded for term in result_terms) and not any(
             term in sentence for term in forecast_terms
         ):
-            return sentence[:200]
+            window = [sentence]
+            for following in sentences[index + 1 : index + 3]:
+                if _METRIC_PATTERN.search(following) or re.search(
+                    r"(?:从.{0,40}(?:到|至)|增至|降至|提升至|降低至)", following
+                ):
+                    window.append(following)
+                else:
+                    break
+            return "，".join(window)[:200]
     return ""
 
 
@@ -484,6 +494,25 @@ def _coverage(
         )
 
     execution = _excerpt(
+        sentences,
+        (
+            "我先",
+            "我再",
+            "我通过",
+            "我分析",
+            "我推动",
+            "我建立",
+            "我实施",
+            "我上线",
+            "我回放",
+            "我和",
+            "我与",
+            "随后我",
+            "i analyzed",
+            "i implemented",
+            "i launched",
+        ),
+    ) or _excerpt(
         sentences,
         (
             "分析",
@@ -848,6 +877,18 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
         floor("content", 0.65, "回答已直接覆盖题目核心")
         if statuses.get("提供一个真实案例") == "covered":
             floor("content", 0.72, "题目核心与具体案例均有证据")
+    if analysis.answer_type == "motivation" and statuses.get("说明动机与匹配关系") == "covered":
+        floor("content", 0.65, "已说明选择动机及其与机会的匹配关系")
+        if re.search(
+            r"(?:评估|标准|看重|关注|主要看|判断).{0,100}(?:公司|产品|团队|岗位|机会)",
+            analysis.cleaned_transcript,
+        ):
+            floor("technical_depth", 0.70, "已给出具体的机会判断标准")
+        if re.search(
+            r"(?:风险|核验|验证|前三个月|入职后|里程碑|留存|成本)",
+            analysis.cleaned_transcript,
+        ):
+            floor("impact", 0.70, "已说明选择风险或后续验证方式")
     depth_requirements = (
         "明确个人职责与关键决策",
         "说明备选方案、权衡标准与最终选择",

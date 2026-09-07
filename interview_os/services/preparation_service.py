@@ -139,6 +139,7 @@ class PreparationServiceMixin(InterviewServiceMixin):
         """Whether resetting candidate inputs would discard real interview data."""
         return bool(
             state.mock_session.responses
+            or state.mock_session.answer_draft
             or state.live_interview.segments
             or state.live_interview_records
             or state.evidence
@@ -461,7 +462,7 @@ class PreparationServiceMixin(InterviewServiceMixin):
             try:
                 batch = await provider.search(query, limit=5, search_depth="basic")
             except Exception as exc:  # noqa: BLE001 - provider may be disabled
-                logger.warning("Past-employer search failed: %s", exc)
+                logger.warning("Past-employer search failed (%s)", type(exc).__name__)
                 continue
             batch_dicts: list[dict[str, Any]] = []
             for item in batch:

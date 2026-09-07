@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
 from uuid import UUID
 
+from interview_os.core.request_context import current_owner
+from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
     ANSWER_BOUNDARY_SUGGESTIONS_MAX,
     BOUNDARY_BASE_SCORE,
     BOUNDARY_MAX_SCORE,
     BOUNDARY_MIN_SCORE,
+    LIVE_AUDIO_CANCELLED_CAPTURE_MAX,
     LIVE_RECENT_SEGMENT_WINDOW,
     LIVE_SUMMARY_CHAR_LIMIT,
     MIN_ANSWER_BOUNDARY_SEGMENTS,
@@ -34,49 +38,234 @@ from interview_os.services.service_mixin import InterviewServiceMixin
 class LiveInterviewServiceMixin(InterviewServiceMixin):
     """Live interview transcript, question planning, and evidence operations."""
 
+    @staticmethod
+    def _retire_audio_capture_guards(live: LiveInterviewSession) -> None:
+        """Fence guard leases from an earlier ACTIVE recording epoch.
+
+        Finalized utterances already registered under a guard remain uploadable,
+        but the guard itself cannot authorize new child captures after resume.
+        Tombstones also reject delayed re-registration requests.
+        """
+
+        guard_ids = list(live.audio_capture_guard_ids)
+        if not guard_ids:
+            return
+        guard_set = set(guard_ids)
+        live.pending_audio_capture_ids = [
+            capture_id
+            for capture_id in live.pending_audio_capture_ids
+            if capture_id not in guard_set
+        ]
+        receipt_ids = {item.id for item in live.audio_capture_receipts}
+        for capture_id in guard_ids:
+            key = str(capture_id)
+            live.pending_audio_capture_registered_at.pop(key, None)
+            live.pending_audio_capture_settings_etags.pop(key, None)
+            live.pending_audio_capture_epochs.pop(key, None)
+            if (
+                capture_id not in live.cancelled_audio_capture_ids
+                and capture_id not in receipt_ids
+            ):
+                live.cancelled_audio_capture_ids.append(capture_id)
+        if len(live.cancelled_audio_capture_ids) > LIVE_AUDIO_CANCELLED_CAPTURE_MAX:
+            del live.cancelled_audio_capture_ids[:-LIVE_AUDIO_CANCELLED_CAPTURE_MAX]
+        live.audio_capture_guard_ids = []
+
+    async def _recover_live_state_after_persist_error(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        previous_state: InterviewState,
+    ) -> None:
+        """Reconcile cache with SQLite after an uncertain persistence outcome."""
+
+        owner = current_owner()
+        try:
+            raw_state = await asyncio.shield(
+                self.storage.get_session_state(session_id, owner_id=owner)
+            )
+        except BaseException:  # noqa: BLE001 - cancellation also leaves commit outcome unknown
+            # Keep the runtime identity stable: requests may already hold a
+            # reference while waiting for the session lock. Every later lock
+            # entry is fenced until SQLite can reload the authoritative state.
+            self._runtime_recovery_required.add((owner, session_id))
+            return
+        self._runtime_recovery_required.discard((owner, session_id))
+        runtime.state = (
+            InterviewState.model_validate(raw_state)
+            if raw_state is not None
+            else previous_state
+        )
+
     async def start_live_interview(
-        self, session_id: str, *, consent_confirmed: bool
+        self,
+        session_id: str,
+        *,
+        consent_confirmed: bool,
+        expected_revision: int | None = None,
+        operation_id: UUID | None = None,
     ) -> InterviewState:
         if not consent_confirmed:
             raise LiveInterviewStateError("开始监听前必须确认候选人已知情并同意转写")
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
-            live = runtime.state.live_interview
+            previous_state = runtime.state
+            candidate_state = runtime.state.model_copy(deep=True)
+            live = candidate_state.live_interview
+            if operation_id is not None and live.status == LiveInterviewStatus.ACTIVE:
+                if live.active_start_operation_id == operation_id:
+                    # The earlier response may have been lost after commit.
+                    # Confirm the same logical operation without advancing the
+                    # revision or capture epoch a second time.
+                    return runtime.state
+                raise LiveInterviewStateError(
+                    "Live interview is already active under another start operation"
+                )
+            self._assert_live_status_revision(live, expected_revision)
             if live.status == LiveInterviewStatus.COMPLETED:
-                runtime.state.live_interview = LiveInterviewSession()
-                live = runtime.state.live_interview
+                raise LiveInterviewStateError(
+                    "Completed live interview cannot be restarted; create a new session"
+                )
+            if live.status != LiveInterviewStatus.ACTIVE:
+                self._retire_audio_capture_guards(live)
+                live.capture_epoch += 1
             live.status = LiveInterviewStatus.ACTIVE
+            live.active_start_operation_id = operation_id
             live.consent_confirmed = True
             live.started_at = live.started_at or datetime.now(timezone.utc)
             live.completed_at = None
-            self._refresh_live_coverage_guidance(runtime.state)
-            self._refresh_live_question_usage(runtime.state)
-            runtime.state.next_action = "Listen to the interview and prepare the next question"
-            await self._persist(session_id, runtime.state)
+            live.capture_closed_at = None
+            live.status_revision += 1
+            self._refresh_live_coverage_guidance(candidate_state)
+            self._refresh_live_question_usage(candidate_state)
+            candidate_state.next_action = "Listen to the interview and prepare the next question"
+            try:
+                await self._persist(session_id, candidate_state)
+            except BaseException:
+                await self._recover_live_state_after_persist_error(
+                    session_id, runtime, previous_state
+                )
+                raise
+            runtime.state = candidate_state
         self._record_debug("live_interview_started", session_id)
         return runtime.state
 
     async def set_live_interview_status(
-        self, session_id: str, status: LiveInterviewStatus
+        self,
+        session_id: str,
+        status: LiveInterviewStatus,
+        *,
+        expected_revision: int | None = None,
+        operation_id: UUID | None = None,
     ) -> InterviewState:
         runtime = await self._get_runtime(session_id)
         async with self._lock_for(session_id):
-            live = runtime.state.live_interview
+            previous_state = runtime.state
+            candidate_state = runtime.state.model_copy(deep=True)
+            live = candidate_state.live_interview
+            if status == LiveInterviewStatus.ACTIVE and operation_id is None:
+                raise LiveInterviewStateError(
+                    "An operation_id is required to resume a live interview"
+                )
+            if (
+                operation_id is not None
+                and status == LiveInterviewStatus.ACTIVE
+                and live.status == LiveInterviewStatus.ACTIVE
+            ):
+                if live.active_start_operation_id == operation_id:
+                    # A resume response may have been lost after commit.
+                    return runtime.state
+                raise LiveInterviewStateError(
+                    "Live interview is already active under another resume operation"
+                )
+            self._assert_live_status_revision(live, expected_revision)
             if not live.consent_confirmed:
                 raise LiveInterviewStateError("Live interview has not been started with consent")
+            if (
+                live.status == LiveInterviewStatus.COMPLETED
+                and status != LiveInterviewStatus.COMPLETED
+            ):
+                raise LiveInterviewStateError(
+                    "Completed live interview must be explicitly started as a new run"
+                )
             if status not in {
                 LiveInterviewStatus.ACTIVE,
                 LiveInterviewStatus.PAUSED,
                 LiveInterviewStatus.COMPLETED,
             }:
                 raise LiveInterviewStateError("Unsupported live interview status")
+            previous_status = live.status
+            now = datetime.now(timezone.utc)
+            if status == LiveInterviewStatus.ACTIVE and previous_status != status:
+                self._retire_audio_capture_guards(live)
+                live.capture_epoch += 1
             live.status = status
+            if status == LiveInterviewStatus.ACTIVE and previous_status != status:
+                live.active_start_operation_id = operation_id
+            elif status != LiveInterviewStatus.ACTIVE:
+                # A closed capture epoch must not remain claimable by the
+                # operation that started it.
+                live.active_start_operation_id = None
+            live.status_revision += 1
+            if status == LiveInterviewStatus.ACTIVE:
+                live.capture_closed_at = None
+            elif previous_status == LiveInterviewStatus.ACTIVE:
+                # This timestamp seals the short drain window. Repeated pause
+                # or PAUSED -> COMPLETED transitions must never extend it.
+                live.capture_closed_at = now
             if status == LiveInterviewStatus.COMPLETED:
-                live.completed_at = datetime.now(timezone.utc)
-                runtime.state.next_action = "Review the transcript before final evaluation"
-            await self._persist(session_id, runtime.state)
+                live.completed_at = live.completed_at or now
+                candidate_state.next_action = "Review the transcript before final evaluation"
+            try:
+                await self._persist(session_id, candidate_state)
+            except BaseException:
+                await self._recover_live_state_after_persist_error(
+                    session_id, runtime, previous_state
+                )
+                raise
+            runtime.state = candidate_state
         self._record_debug(f"live_interview_{status.value}", session_id)
         return runtime.state
+
+    async def advance_live_status_revision(
+        self, session_id: str, *, expected_revision: int
+    ) -> InterviewState:
+        """Create a CAS barrier that invalidates an earlier timed-out mutation.
+
+        A browser abort only stops waiting for a response; it cannot prove that
+        the server-side handler was cancelled. Advancing the revision makes a
+        delayed request with the old expected revision fail instead of silently
+        changing the persisted interview status later.
+        """
+
+        runtime = await self._get_runtime(session_id)
+        async with self._lock_for(session_id):
+            previous_state = runtime.state
+            candidate_state = runtime.state.model_copy(deep=True)
+            live = candidate_state.live_interview
+            self._assert_live_status_revision(live, expected_revision)
+            live.status_revision += 1
+            try:
+                await self._persist(session_id, candidate_state)
+            except BaseException:
+                await self._recover_live_state_after_persist_error(
+                    session_id, runtime, previous_state
+                )
+                raise
+            runtime.state = candidate_state
+        self._record_debug("live_interview_status_barrier", session_id)
+        return runtime.state
+
+    @staticmethod
+    def _assert_live_status_revision(
+        live: LiveInterviewSession, expected_revision: int | None
+    ) -> None:
+        if expected_revision is None:
+            return
+        if live.status_revision != expected_revision:
+            raise LiveInterviewStateError(
+                "Live interview status changed; refresh before retrying the operation"
+            )
 
     async def append_live_transcript(
         self,
@@ -93,38 +282,23 @@ class LiveInterviewServiceMixin(InterviewServiceMixin):
         duplicate_detail = ""
         duplicate_detected = False
         async with self._lock_for(session_id):
-            live = runtime.state.live_interview
-            if live.status != LiveInterviewStatus.ACTIVE:
-                raise LiveInterviewStateError(
-                    "Live interview must be active before adding transcript"
-                )
-            duplicate = self._find_duplicate_live_segment(live.segments, clean_text, speaker)
+            duplicate = self._append_live_transcript_locked(
+                runtime.state,
+                text=clean_text,
+                speaker=speaker,
+                source=source,
+            )
             if duplicate is not None:
-                live.duplicate_segments_dropped += 1
-                live.last_duplicate_reason = (
-                    f"重复片段已忽略：与 #{duplicate.sequence} "
-                    f"{duplicate.speaker.value} 发言高度一致"
-                )
                 duplicate_detail = (
                     f"speaker={speaker.value}; source={source}; "
                     f"duplicate_of={duplicate.sequence}; chars={len(clean_text)}"
                 )
                 duplicate_detected = True
-                await self._persist(session_id, runtime.state)
             else:
-                live.current_speaker = speaker
-                live.segments.append(
-                    TranscriptSegment(
-                        sequence=len(live.segments) + 1,
-                        speaker=speaker,
-                        text=clean_text,
-                        source=source,
-                    )
-                )
                 self._refresh_live_answer_boundaries(runtime.state)
                 self._refresh_live_rolling_summary(runtime.state)
                 self._refresh_live_coverage_guidance(runtime.state)
-                await self._persist(session_id, runtime.state)
+            await self._persist(session_id, runtime.state)
         if duplicate_detected:
             self._record_debug(
                 "live_transcript_duplicate_dropped", session_id, detail=duplicate_detail
@@ -136,6 +310,54 @@ class LiveInterviewServiceMixin(InterviewServiceMixin):
             detail=f"speaker={speaker.value}; source={source}; chars={len(clean_text)}",
         )
         return runtime.state
+
+    def _append_live_transcript_locked(
+        self,
+        state: InterviewState,
+        *,
+        text: str,
+        speaker: TranscriptSpeaker,
+        source: str,
+        allow_completed_capture: bool = False,
+    ) -> TranscriptSegment | None:
+        """Append one segment while the caller holds the session mutation lock.
+
+        The media service uses this primitive to commit every diarized segment
+        and its idempotency receipt in one database write. Returning the prior
+        segment identifies a duplicate; ``None`` means a new segment was added.
+        Derived summaries are refreshed by the caller once per mutation batch.
+        """
+
+        live = state.live_interview
+        captured_before_stop = source in {"asr", "audio_direct"} and (
+            live.status == LiveInterviewStatus.PAUSED
+            or (
+                live.status == LiveInterviewStatus.COMPLETED
+                and allow_completed_capture
+            )
+        )
+        if live.status != LiveInterviewStatus.ACTIVE and not captured_before_stop:
+            raise LiveInterviewStateError(
+                "Live interview must be active before adding transcript"
+            )
+        duplicate = self._find_duplicate_live_segment(live.segments, text, speaker)
+        if duplicate is not None:
+            live.duplicate_segments_dropped += 1
+            live.last_duplicate_reason = (
+                f"重复片段已忽略：与 #{duplicate.sequence} "
+                f"{duplicate.speaker.value} 发言高度一致"
+            )
+            return duplicate
+        live.current_speaker = speaker
+        live.segments.append(
+            TranscriptSegment(
+                sequence=len(live.segments) + 1,
+                speaker=speaker,
+                text=text,
+                source=source,
+            )
+        )
+        return None
 
     async def update_live_transcript_segment(
         self,

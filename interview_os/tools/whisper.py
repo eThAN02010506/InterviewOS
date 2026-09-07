@@ -25,5 +25,5 @@ class WhisperTool(Tool):
             return ToolResult(success=True, data={"text": result["text"], "segments": result["segments"]})
         except ImportError:
             return ToolResult(success=False, error="whisper not installed. Run: pip install openai-whisper")
-        except Exception as exc:  # noqa: BLE001 - third-party model errors vary
-            return ToolResult(success=False, error=str(exc))
+        except Exception:  # noqa: BLE001 - third-party model errors vary
+            return ToolResult(success=False, error="Speech transcription failed")

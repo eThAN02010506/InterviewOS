@@ -1,6 +1,8 @@
 """Transcript export endpoint tests."""
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from interview_os.api.app import create_app
@@ -48,7 +50,9 @@ def _make_app(tmp_path):
 def _seed_live_session(client: TestClient, token: str) -> str:
     sid = client.post("/api/interviews/sessions", json={}, headers=_auth(token)).json()["id"]
     client.post(
-        f"/api/live-interviews/{sid}/start", json={"consent_confirmed": True}, headers=_auth(token)
+        f"/api/live-interviews/{sid}/start",
+        json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
+        headers=_auth(token),
     )
     client.post(
         f"/api/live-interviews/{sid}/segments",

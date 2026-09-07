@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import logging
+import math
 import os
 import re
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from time import time
 from typing import Any, ClassVar
@@ -16,8 +21,39 @@ import httpx
 from pydantic import BaseModel
 
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
+from interview_os.core.provider_config import (
+    normalize_provider_api_key,
+    provider_api_key_from_env,
+)
 from interview_os.core.tool import Tool, ToolResult
-from interview_os.services.settings_service import PermissionRestrictedJsonStore
+from interview_os.services.settings_service import (
+    PermissionRestrictedJsonStore,
+    is_valid_http_endpoint,
+)
+
+MAX_SEARCH_REQUEST_COST_USD = 10_000.0
+MAX_PERSISTED_SEARCH_METRIC = 10**18
+MAX_PERSISTED_SEARCH_COST_USD = (
+    MAX_PERSISTED_SEARCH_METRIC * MAX_SEARCH_REQUEST_COST_USD
+)
+MAX_SEARCH_CACHE_FILE_BYTES = 8 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+
+def _normalized_search_credential(value: str, *, label: str) -> str:
+    """Normalize one search credential using the shared HTTP-header contract."""
+
+    return normalize_provider_api_key(value, label=label)
+
+
+def _search_endpoint_from_env(name: str) -> str:
+    """Read one optional endpoint without allowing it to poison startup."""
+
+    value = os.getenv(name, "")
+    if value and not is_valid_http_endpoint(value):
+        logger.warning("Ignoring invalid %s configuration", name)
+        return ""
+    return value.rstrip("/")
 
 
 class SearchResult(BaseModel):
@@ -239,7 +275,9 @@ class SearchProvider(ABC):
 
 class SearXNGProvider(SearchProvider):
     def __init__(self, base_url: str, timeout: float = 20.0) -> None:
-        self.base_url = base_url.rstrip("/")
+        if not is_valid_http_endpoint(base_url):
+            raise ValueError("SearXNG base_url must be a valid http:// or https:// URL")
+        self.base_url = base_url.strip().rstrip("/")
         self.timeout = timeout
 
     async def search(
@@ -267,7 +305,7 @@ class BraveSearchProvider(SearchProvider):
     endpoint = "https://api.search.brave.com/res/v1/web/search"
 
     def __init__(self, api_key: str, timeout: float = 20.0) -> None:
-        self.api_key = api_key
+        self.api_key = _normalized_search_credential(api_key, label="Brave API key")
         self.timeout = timeout
 
     async def search(
@@ -301,7 +339,7 @@ class TavilySearchProvider(SearchProvider):
         timeout: float = 20.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.api_key = api_key
+        self.api_key = _normalized_search_credential(api_key, label="Tavily API key")
         self.timeout = timeout
         self.transport = transport
 
@@ -349,27 +387,87 @@ class SearchProviderManager(SearchProvider):
         cache_path: str | Path | None = None,
         metrics_path: str | Path | None = None,
     ) -> None:
+        searxng_endpoint = _search_endpoint_from_env("SEARXNG_BASE_URL")
         self._credentials = {
-            "tavily": os.getenv("TAVILY_API_KEY", "").strip(),
-            "searxng": os.getenv("SEARXNG_BASE_URL", "").strip(),
-            "brave": os.getenv("BRAVE_SEARCH_API_KEY", "").strip(),
+            "tavily": provider_api_key_from_env(
+                None,
+                env_name="TAVILY_API_KEY",
+                logger=logger,
+            ),
+            "searxng": searxng_endpoint,
+            "brave": provider_api_key_from_env(
+                None,
+                env_name="BRAVE_SEARCH_API_KEY",
+                logger=logger,
+            ),
         }
         self.selected = self._default_provider()
-        self._cache: OrderedDict[tuple[str, str, int, str], tuple[float, list[SearchResult]]] = (
-            OrderedDict()
-        )
+        self._configuration_generation = 0
+        self._cache: OrderedDict[
+            tuple[str, str, str, int, str], tuple[float, list[SearchResult]]
+        ] = OrderedDict()
+        self._in_flight: dict[
+            tuple[str, str, str, int, str], asyncio.Task[list[SearchResult]]
+        ] = {}
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache_capacity = cache_capacity
         self._cache_store = (
-            PermissionRestrictedJsonStore(cache_path) if cache_path is not None else None
+            PermissionRestrictedJsonStore(
+                cache_path,
+                max_file_bytes=MAX_SEARCH_CACHE_FILE_BYTES,
+            )
+            if cache_path is not None
+            else None
         )
         self._metrics_store = (
             PermissionRestrictedJsonStore(metrics_path) if metrics_path is not None else None
         )
         persisted_metrics = self._metrics_store.load() if self._metrics_store else {}
-        self._cache_hits = int(persisted_metrics.get("cache_hits", 0))
-        self._cache_misses = int(persisted_metrics.get("cache_misses", 0))
-        self._provider_requests = int(persisted_metrics.get("provider_requests", 0))
+        self._cache_hits = self._safe_persisted_metric(
+            persisted_metrics.get("cache_hits", 0)
+        )
+        self._cache_misses = self._safe_persisted_metric(
+            persisted_metrics.get("cache_misses", 0)
+        )
+        self._provider_requests = self._safe_persisted_metric(
+            persisted_metrics.get("provider_requests", 0)
+        )
+        metrics_have_outcomes = any(
+            key in persisted_metrics
+            for key in ("provider_successes", "provider_failures")
+        )
+        self._provider_failures = min(
+            self._provider_requests,
+            self._safe_persisted_metric(
+                persisted_metrics.get("provider_failures", 0)
+            ),
+        )
+        # Before outcome counters existed, provider_requests was incremented only
+        # after a successful response. Preserve that history as successful rather
+        # than turning every upgraded installation into an apparent failure.
+        legacy_successes = self._provider_requests if not metrics_have_outcomes else 0
+        self._provider_successes = min(
+            self._provider_requests - self._provider_failures,
+            self._safe_persisted_metric(
+                persisted_metrics.get("provider_successes", legacy_successes)
+            ),
+        )
+        self._accrued_cost_usd = self._safe_persisted_cost(
+            persisted_metrics.get("accrued_cost_usd", 0.0)
+        )
+        # Old metric files did not retain the historical unit price. Keep those
+        # attempts explicit instead of silently repricing them with today's rate.
+        self._unpriced_provider_requests = min(
+            self._provider_requests,
+            self._safe_persisted_metric(
+                persisted_metrics.get(
+                    "unpriced_provider_requests",
+                    self._provider_requests
+                    if "accrued_cost_usd" not in persisted_metrics
+                    else 0,
+                )
+            ),
+        )
         self.search_request_cost_usd = 0.0
         self.debug_events = debug_events
         self._load_cache()
@@ -390,19 +488,89 @@ class SearchProviderManager(SearchProvider):
     ) -> None:
         if provider not in {"none", "tavily", "searxng", "brave"}:
             raise ValueError(f"Unsupported search provider: {provider}")
-        updates = {
+        previous_fingerprint = self._configuration_fingerprint()
+        next_credentials = dict(self._credentials)
+        api_key_updates = {
             "tavily": tavily_api_key,
-            "searxng": searxng_base_url,
             "brave": brave_api_key,
         }
-        for name, value in updates.items():
+        for name, value in api_key_updates.items():
             if value is not None:
-                self._credentials[name] = value.strip()
-        if provider != "none" and not self._credentials[provider]:
+                next_credentials[name] = _normalized_search_credential(
+                    value, label=f"{name} API key"
+                )
+        if searxng_base_url is not None:
+            if searxng_base_url and not is_valid_http_endpoint(searxng_base_url):
+                raise ValueError(
+                    "SearXNG base_url must be a valid http:// or https:// URL"
+                )
+            next_credentials["searxng"] = searxng_base_url.rstrip("/")
+        if provider != "none" and not next_credentials[provider]:
             raise ValueError(f"Credentials for {provider} are not configured")
-        self.selected = provider
+        next_cost = self.search_request_cost_usd
         if search_request_cost_usd is not None:
-            self.search_request_cost_usd = max(0.0, search_request_cost_usd)
+            try:
+                cost = float(search_request_cost_usd)
+            except (TypeError, ValueError, OverflowError):
+                cost = 0.0
+            next_cost = (
+                min(MAX_SEARCH_REQUEST_COST_USD, max(0.0, cost))
+                if math.isfinite(cost)
+                else 0.0
+            )
+        next_fingerprint = self._fingerprint_for(provider, next_credentials)
+
+        # Publish only after every normalization and validation step succeeds.
+        # Settings rollback can therefore never encounter a half-applied,
+        # unencodable credential from a rejected request.
+        self._credentials = next_credentials
+        self.selected = provider
+        self.search_request_cost_usd = next_cost
+        if next_fingerprint != previous_fingerprint:
+            self._configuration_generation += 1
+
+    @staticmethod
+    def _safe_persisted_metric(value: Any) -> int:
+        """Normalize untrusted counters without failing process startup."""
+
+        if isinstance(value, bool):
+            return 0
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return min(MAX_PERSISTED_SEARCH_METRIC, max(0, normalized))
+
+    @staticmethod
+    def _safe_persisted_cost(value: Any) -> float:
+        """Normalize an untrusted cumulative monetary value."""
+
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not math.isfinite(normalized):
+            return 0.0
+        return min(MAX_PERSISTED_SEARCH_COST_USD, max(0.0, normalized))
+
+    def _configuration_fingerprint(self) -> str:
+        """Identify result-affecting routing without exposing credentials."""
+
+        return self._fingerprint_for(self.selected, self._credentials)
+
+    @staticmethod
+    def _fingerprint_for(provider: str, credentials: dict[str, str]) -> str:
+        """Hash one complete candidate configuration before publishing it."""
+
+        credential = credentials.get(provider, "")
+        encoded = f"{provider}\0{credential}".encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _increment_metric(self, name: str) -> None:
+        current = int(getattr(self, name))
+        setattr(self, name, min(MAX_PERSISTED_SEARCH_METRIC, current + 1))
 
     def secret_snapshot(self) -> dict[str, Any]:
         return {
@@ -424,71 +592,212 @@ class SearchProviderManager(SearchProvider):
                 "misses": self._cache_misses,
                 "persistent": self._cache_store is not None,
             },
+            # Compatibility: provider_requests remains the total number of
+            # provider calls actually started. The outcome counters split that
+            # total without changing the long-standing top-level field name.
             "provider_requests": self._provider_requests,
-            "search_request_cost_usd": self.search_request_cost_usd,
-            "estimated_cost_usd": round(
-                self._provider_requests * self.search_request_cost_usd, 6
+            "provider_successes": self._provider_successes,
+            "provider_failures": self._provider_failures,
+            "provider_unresolved": max(
+                0,
+                self._provider_requests
+                - self._provider_successes
+                - self._provider_failures,
             ),
+            "unpriced_provider_requests": self._unpriced_provider_requests,
+            "search_request_cost_usd": self.search_request_cost_usd,
+            "estimated_cost_usd": round(self._accrued_cost_usd, 6),
             "source_filter_policy": "exact entity/context match, or one-character Chinese alias with corroboration",
         }
 
     async def search(
         self, query: str, limit: int = 5, *, search_depth: str = "basic"
     ) -> list[SearchResult]:
-        key = (self.selected, query.strip(), limit, search_depth)
+        provider_name = self.selected
+        configuration_generation = self._configuration_generation
+        configuration_fingerprint = self._configuration_fingerprint()
+        key = (
+            configuration_fingerprint,
+            provider_name,
+            query.strip(),
+            limit,
+            search_depth,
+        )
         cached = self._cache.get(key)
         if cached and time() - cached[0] <= self._cache_ttl_seconds:
-            self._cache_hits += 1
+            self._increment_metric("_cache_hits")
             self._cache.move_to_end(key)
             self._persist_metrics()
-            self._record_search(query, len(cached[1]), cache_hit=True)
+            self._record_search(
+                query, len(cached[1]), provider=provider_name, cache_hit=True
+            )
             return [
                 item.model_copy(deep=True, update={"cache_hit": True})
                 for item in cached[1]
             ]
         if cached:
             self._cache.pop(key, None)
-        self._cache_misses += 1
-        value = self._credentials.get(self.selected, "")
-        providers: dict[str, SearchProvider] = {
-            "tavily": TavilySearchProvider(value),
-            "searxng": SearXNGProvider(value),
-            "brave": BraveSearchProvider(value),
-        }
-        if self.selected == "none":
-            raise ValueError("Web search provider is disabled")
+        in_flight = self._in_flight.get(key)
+        coalesced = in_flight is not None
+        if in_flight is None:
+            self._increment_metric("_cache_misses")
+            value = self._credentials.get(provider_name, "")
+            if provider_name == "none":
+                raise ValueError("Web search provider is disabled")
+            provider: SearchProvider = (
+                TavilySearchProvider(value)
+                if provider_name == "tavily"
+                else SearXNGProvider(value)
+                if provider_name == "searxng"
+                else BraveSearchProvider(value)
+            )
+            in_flight = asyncio.create_task(
+                self._run_provider_search(
+                    key=key,
+                    query=query,
+                    limit=limit,
+                    search_depth=search_depth,
+                    provider_name=provider_name,
+                    provider=provider,
+                    configuration_generation=configuration_generation,
+                    configuration_fingerprint=configuration_fingerprint,
+                    unit_cost_usd=self.search_request_cost_usd,
+                ),
+                name="interview-os-search-provider",
+            )
+            self._in_flight[key] = in_flight
+            in_flight.add_done_callback(partial(self._finish_in_flight, key))
+
+        # Every caller, including the one that created the manager-owned task,
+        # awaits through a shield. Cancelling an HTTP request or navigation must
+        # not cancel provider work that another coalesced caller still needs.
+        results = await asyncio.shield(in_flight)
+        if coalesced:
+            self._record_search(
+                query,
+                len(results),
+                provider=provider_name,
+                cache_hit=False,
+                coalesced=True,
+            )
+        return [item.model_copy(deep=True) for item in results]
+
+    async def _run_provider_search(
+        self,
+        *,
+        key: tuple[str, str, str, int, str],
+        query: str,
+        limit: int,
+        search_depth: str,
+        provider_name: str,
+        provider: SearchProvider,
+        configuration_generation: int,
+        configuration_fingerprint: str,
+        unit_cost_usd: float,
+    ) -> list[SearchResult]:
+        """Run shared provider work independently from any one HTTP caller."""
+
         fetched_at = datetime.now(timezone.utc)
-        results = assess_source_quality(
-            await providers[self.selected].search(query, limit, search_depth=search_depth), query
+        self._increment_metric("_provider_requests")
+        self._accrued_cost_usd = min(
+            MAX_PERSISTED_SEARCH_COST_USD,
+            self._accrued_cost_usd + unit_cost_usd,
         )
+        # Persist before the network await: a provider can bill a request even if
+        # the process exits or the response never reaches this application.
+        self._persist_metrics()
+        try:
+            raw_results = await provider.search(
+                query, limit, search_depth=search_depth
+            )
+        except BaseException:
+            self._increment_metric("_provider_failures")
+            self._persist_metrics()
+            raise
+        self._increment_metric("_provider_successes")
+        self._persist_metrics()
+        results = assess_source_quality(raw_results, query)
         results = [
             item.model_copy(update={"fetched_at": fetched_at, "cache_hit": False})
             for item in results
         ]
-        self._provider_requests += 1
-        self._cache[key] = (time(), [item.model_copy(deep=True) for item in results])
-        self._cache.move_to_end(key)
-        while len(self._cache) > self._cache_capacity:
-            self._cache.popitem(last=False)
-        self._persist_cache()
+        stale = (
+            configuration_generation != self._configuration_generation
+            or configuration_fingerprint != self._configuration_fingerprint()
+        )
+        if not stale:
+            self._cache[key] = (
+                time(),
+                [item.model_copy(deep=True) for item in results],
+            )
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._cache_capacity:
+                self._cache.popitem(last=False)
+            self._persist_cache()
         self._persist_metrics()
-        self._record_search(query, len(results), cache_hit=False)
+        self._record_search(
+            query,
+            len(results),
+            provider=provider_name,
+            cache_hit=False,
+            stale=stale,
+        )
         return results
 
-    def _record_search(self, query: str, count: int, *, cache_hit: bool) -> None:
+    def _finish_in_flight(
+        self,
+        key: tuple[str, str, str, int, str],
+        completed: asyncio.Future[list[SearchResult]],
+    ) -> None:
+        """Retire shared work and consume unobserved terminal exceptions."""
+
+        if self._in_flight.get(key) is completed:
+            self._in_flight.pop(key, None)
+        try:
+            completed.exception()
+        except asyncio.CancelledError:
+            # The event loop may cancel manager-owned work during shutdown.
+            pass
+
+    def _record_search(
+        self,
+        query: str,
+        count: int,
+        *,
+        provider: str,
+        cache_hit: bool,
+        stale: bool = False,
+        coalesced: bool = False,
+    ) -> None:
         if self.debug_events is None:
             return
         self.debug_events.record(
             DebugEvent(
                 level=DebugLevel.INFO,
                 category="search",
-                action="cache_hit" if cache_hit else "provider_request",
+                action=(
+                    "inflight_join"
+                    if coalesced
+                    else "cache_hit"
+                    if cache_hit
+                    else "provider_request_stale"
+                    if stale
+                    else "provider_request"
+                ),
                 detail=query[:500],
                 metadata={
-                    "provider": self.selected,
+                    "provider": provider,
                     "result_count": count,
                     "source_filter": "exact entity or one-character alias with corroboration",
-                    "cache": "hit" if cache_hit else "miss",
+                    "cache": (
+                        "coalesced"
+                        if coalesced
+                        else "hit"
+                        if cache_hit
+                        else "stale_not_saved"
+                        if stale
+                        else "miss"
+                    ),
                 },
             )
         )
@@ -497,14 +806,19 @@ class SearchProviderManager(SearchProvider):
         if self._cache_store is None:
             return
         entries = self._cache_store.load().get("entries", [])
+        if not isinstance(entries, list):
+            return
         for entry in entries[-self._cache_capacity :]:
             try:
                 key = (
+                    str(entry["configuration_fingerprint"]),
                     str(entry["provider"]),
                     str(entry["query"]),
                     int(entry["limit"]),
                     str(entry["depth"]),
                 )
+                if not re.fullmatch(r"[0-9a-f]{64}", key[0]):
+                    continue
                 timestamp = float(entry["timestamp"])
                 if time() - timestamp > self._cache_ttl_seconds:
                     continue
@@ -518,37 +832,55 @@ class SearchProviderManager(SearchProvider):
             return
         entries = [
             {
-                "provider": key[0],
-                "query": key[1],
-                "limit": key[2],
-                "depth": key[3],
+                "configuration_fingerprint": key[0],
+                "provider": key[1],
+                "query": key[2],
+                "limit": key[3],
+                "depth": key[4],
                 "timestamp": timestamp,
                 "results": [item.model_dump(mode="json") for item in results],
             }
             for key, (timestamp, results) in self._cache.items()
         ]
-        self._cache_store.save({"entries": entries})
+        try:
+            self._cache_store.save({"entries": entries})
+        except (OSError, ValueError, UnicodeError):
+            # Search succeeded already. A best-effort local cache must never
+            # turn a paid provider response into a failed user request.
+            logger.warning("Could not persist the local search-result cache")
 
     def _persist_metrics(self) -> None:
         if self._metrics_store is not None:
-            self._metrics_store.save(
-                {
-                    "cache_hits": self._cache_hits,
-                    "cache_misses": self._cache_misses,
-                    "provider_requests": self._provider_requests,
-                }
-            )
+            try:
+                self._metrics_store.save(
+                    {
+                        "cache_hits": self._cache_hits,
+                        "cache_misses": self._cache_misses,
+                        "provider_requests": self._provider_requests,
+                        "provider_successes": self._provider_successes,
+                        "provider_failures": self._provider_failures,
+                        "accrued_cost_usd": self._accrued_cost_usd,
+                        "unpriced_provider_requests": self._unpriced_provider_requests,
+                    }
+                )
+            except (OSError, ValueError, UnicodeError):
+                # Metrics are diagnostic; serving search results has priority.
+                logger.warning("Could not persist local search metrics")
 
 
 def search_provider_from_env() -> SearchProvider | None:
     """Select a provider without leaking configuration into domain agents."""
-    tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
+    tavily_key = provider_api_key_from_env(
+        None, env_name="TAVILY_API_KEY", logger=logger
+    )
     if tavily_key:
         return TavilySearchProvider(tavily_key)
-    searxng_url = os.getenv("SEARXNG_BASE_URL", "").strip()
+    searxng_url = _search_endpoint_from_env("SEARXNG_BASE_URL")
     if searxng_url:
         return SearXNGProvider(searxng_url)
-    brave_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+    brave_key = provider_api_key_from_env(
+        None, env_name="BRAVE_SEARCH_API_KEY", logger=logger
+    )
     if brave_key:
         return BraveSearchProvider(brave_key)
     return None
@@ -591,7 +923,10 @@ class WebSearchTool(Tool):
                 },
             )
         except (httpx.HTTPError, ValueError, TypeError) as exc:
-            return ToolResult(success=False, error=f"Web search failed: {exc}")
+            return ToolResult(
+                success=False,
+                error=f"Web search failed ({type(exc).__name__})",
+            )
 
 
 def format_search_results(results: list[dict[str, Any]]) -> str:

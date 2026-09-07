@@ -121,6 +121,290 @@ async def test_local_llm_chat_stream_yields_delta_content():
 
 
 @pytest.mark.asyncio
+async def test_llm_metrics_persistence_failure_never_breaks_chat_or_stream(
+    tmp_path, monkeypatch
+):
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    def handler(request):
+        payload = json.loads(request.content)
+        if payload.get("stream"):
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"streamed"}}]}\n\n'
+                "data: [DONE]\n\n",
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "complete"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="m",
+        metrics_path=tmp_path / "llm-metrics.json",
+        transport=httpx.MockTransport(handler),
+    )
+    assert client._metrics_store is not None
+
+    def fail_save(payload):
+        raise OSError("disk full with private path")
+
+    monkeypatch.setattr(client._metrics_store, "save", fail_save)
+    assert await client.chat([{"role": "user", "content": "hi"}]) == "complete"
+    assert [piece async for piece in client.chat_stream([])] == ["streamed"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_reconfigure_preserves_injected_transport_and_new_base_url():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={"data": [{"id": "local-model"}]})
+
+    client = LocalLLMClient(
+        base_url="http://old.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.reconfigure(base_url="http://new.test/v1")
+    result = await client.probe()
+
+    assert result["models"] == ["local-model"]
+    assert requests == ["http://new.test/v1/models"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_reconfigure_retires_client_after_active_request_drains():
+    import asyncio
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://old.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    old_http_client = client._client
+    request_task = asyncio.create_task(
+        client.chat([{"role": "user", "content": "hello"}])
+    )
+    await started.wait()
+
+    await client.reconfigure(base_url="http://new.test/v1")
+    await asyncio.sleep(0)
+
+    assert not old_http_client.is_closed
+    assert old_http_client in client._retired_clients
+    release.set()
+    assert await request_task == "ok"
+    for _ in range(10):
+        if old_http_client.is_closed:
+            break
+        await asyncio.sleep(0)
+    assert old_http_client.is_closed
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_old_llm_generation_cannot_overwrite_new_response_format_capability():
+    import asyncio
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    old_request_started = asyncio.Event()
+    release_old_request = asyncio.Event()
+    payloads = []
+
+    async def handler(request):
+        payload = json.loads(request.content)
+        payloads.append((request.url.host, payload))
+        if request.url.host == "old.test" and "response_format" in payload:
+            old_request_started.set()
+            await release_old_request.wait()
+            return httpx.Response(400, text="unsupported")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://old.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    old_call = asyncio.create_task(
+        client.chat(
+            [{"role": "user", "content": "old"}],
+            response_format={"type": "json_object"},
+        )
+    )
+    await old_request_started.wait()
+    await client.reconfigure(base_url="http://new.test/v1")
+    release_old_request.set()
+    assert await old_call == '{"ok":true}'
+
+    await client.chat(
+        [{"role": "user", "content": "new"}],
+        response_format={"type": "json_object"},
+    )
+
+    new_payload = next(payload for host, payload in payloads if host == "new.test")
+    assert new_payload["response_format"] == {"type": "json_object"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_changing_llm_model_reprobes_response_format_capability():
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    payloads = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if payload["model"] == "old" and "response_format" in payload:
+            return httpx.Response(400, text="unsupported")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        model="old",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.chat(
+        [{"role": "user", "content": "old"}],
+        response_format={"type": "json_object"},
+    )
+    await client.reconfigure(model="new")
+    await client.chat(
+        [{"role": "user", "content": "new"}],
+        response_format={"type": "json_object"},
+    )
+
+    new_payload = next(payload for payload in payloads if payload["model"] == "new")
+    assert new_payload["response_format"] == {"type": "json_object"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_old_model_request_cannot_overwrite_new_model_capability():
+    import asyncio
+    import json
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    old_request_started = asyncio.Event()
+    release_old_request = asyncio.Event()
+    payloads = []
+
+    async def handler(request):
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if payload["model"] == "old" and "response_format" in payload:
+            old_request_started.set()
+            await release_old_request.wait()
+            return httpx.Response(400, text="unsupported")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        model="old",
+        transport=httpx.MockTransport(handler),
+    )
+    old_call = asyncio.create_task(
+        client.chat(
+            [{"role": "user", "content": "old"}],
+            response_format={"type": "json_object"},
+        )
+    )
+    await old_request_started.wait()
+    await client.reconfigure(model="new")
+    release_old_request.set()
+    assert await old_call == '{"ok":true}'
+
+    await client.chat(
+        [{"role": "user", "content": "new"}],
+        response_format={"type": "json_object"},
+    )
+
+    new_payload = next(payload for payload in payloads if payload["model"] == "new")
+    assert new_payload["response_format"] == {"type": "json_object"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_persistent_metrics_cannot_leak_stream_client_lease(tmp_path):
+    import asyncio
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        '{"requests":"not-a-number","failures":-3}', encoding="utf-8"
+    )
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        metrics_path=metrics_path,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                "data: [DONE]\n\n",
+            )
+        ),
+    )
+
+    assert [piece async for piece in client.chat_stream([])] == ["ok"]
+    assert client.settings_status()["metrics"]["requests"] == 1
+    assert client.settings_status()["metrics"]["failures"] == 0
+    await asyncio.wait_for(client.close(), timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_local_gpt_oss_uses_low_reasoning_effort_to_preserve_final_content():
     import json
 
@@ -367,6 +651,66 @@ async def test_local_llm_chat_stream_yields_before_response_finishes():
     assert not gate.is_set()
     gate.set()
     assert [piece async for piece in stream] == ["last"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_chat_stream_accounts_for_partial_output_when_consumer_closes():
+    import asyncio
+
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    gate = asyncio.Event()
+
+    class GatedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+            await gate.wait()
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        api_key="local",
+        model="m",
+        input_cost_per_million=2,
+        output_cost_per_million=4,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=GatedStream())),
+    )
+    stream = client.chat_stream([{"role": "user", "content": "hi"}])
+    assert await anext(stream) == "first"
+    await stream.aclose()
+
+    metrics = client.settings_status()["metrics"]
+    assert metrics["prompt_tokens"] > 0
+    assert metrics["completion_tokens"] > 0
+    assert metrics["estimated_cost_usd"] > 0
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_llm_ignores_non_finite_provider_token_usage():
+    import httpx
+
+    from interview_os.models.local_llm import LocalLLMClient
+
+    client = LocalLLMClient(
+        base_url="http://llm.test/v1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=(
+                    b'{"choices":[{"message":{"content":"ok"}}],'
+                    b'"usage":{"prompt_tokens":1e309,"completion_tokens":"invalid"}}'
+                ),
+                headers={"content-type": "application/json"},
+            )
+        ),
+    )
+
+    assert await client.chat([]) == "ok"
+    assert client.settings_status()["metrics"]["prompt_tokens"] == 0
+    assert client.settings_status()["metrics"]["completion_tokens"] == 0
     await client.close()
 
 

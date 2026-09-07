@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from interview_os.api.dependencies import get_interview_service
@@ -15,7 +15,9 @@ from interview_os.api.schemas.interview import (
     MockAnswerRequest,
     MockSessionResponse,
 )
+from interview_os.api.upload_utils import read_upload_bounded
 from interview_os.services.interview_service import InterviewService
+from interview_os.services.service_contracts import WorkflowExecutionError
 
 router = APIRouter()
 Service = Annotated[InterviewService, Depends(get_interview_service)]
@@ -123,34 +125,94 @@ async def finish_mock_interview(session_id: str, service: Service):
 
 @router.post("/{session_id}/transcribe")
 async def transcribe_mock_answer(
-    session_id: str, service: Service, file: Annotated[UploadFile, File()]
+    session_id: str,
+    service: Service,
+    file: Annotated[UploadFile, File()],
+    question_id: Annotated[UUID | None, Form()] = None,
+    question: Annotated[str, Form()] = "",
+    retry: Annotated[bool, Form()] = False,
+    retry_response_id: Annotated[UUID | None, Form()] = None,
 ):
     # get_state enforces ownership (404 for a foreign session).
     await service.get_state(session_id)
-    content = await file.read()
+    content = await read_upload_bounded(
+        file,
+        max_bytes=MAX_MOCK_AUDIO_BYTES,
+        too_large_detail="音频不超过 25 MB",
+    )
     if not content:
         raise HTTPException(status_code=422, detail="音频为空")
-    if len(content) > MAX_MOCK_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="音频不超过 25 MB")
     extension = _validated_audio_extension(file.filename or "answer.wav", content)
-    text = await service.transcribe_mock_spoken_answer(
-        session_id, content, file.filename or "answer.webm"
-    )
     recording_id = uuid4()
-    await service.save_mock_answer_audio(session_id, recording_id, content, extension=extension)
-    speech_feedback = service.schedule_mock_speech_delivery_analysis(
+    # Durability precedes model work: an unavailable ASR service must never
+    # discard a recording the user just made.
+    await service.save_mock_answer_audio(
+        session_id,
+        recording_id,
+        content,
+        extension=extension,
+        question_id=question_id,
+        question=question,
+        retry=retry,
+        retry_response_id=retry_response_id,
+    )
+    transcription_status = "completed"
+    transcription_error = ""
+    try:
+        text = await service.transcribe_mock_spoken_answer(
+            session_id, content, file.filename or "answer.webm"
+        )
+    except WorkflowExecutionError:
+        text = ""
+        transcription_status = "failed"
+        transcription_error = "录音已保存在本机，但自动转写暂不可用；可回放后手动补充文字。"
+    speech_feedback = await service.schedule_mock_speech_delivery_analysis(
         session_id,
         recording_id,
         content,
         text,
         content_type=MOCK_AUDIO_MEDIA_TYPES[extension],
     )
+    draft = await service.update_mock_answer_draft(
+        session_id,
+        recording_id,
+        transcript=text,
+        status=transcription_status,
+        transcription_error=transcription_error,
+        speech_delivery=speech_feedback,
+    )
     return {
         "text": text,
         "recording_id": str(recording_id),
+        "transcription_status": transcription_status,
+        "transcription_error": transcription_error,
+        "draft": draft.model_dump(mode="json"),
         "speech_feedback_status": "analyzing",
         "speech_feedback": speech_feedback.model_dump(mode="json"),
     }
+
+
+@router.get("/{session_id}/recordings/{recording_id}/audio")
+async def get_mock_answer_draft_audio(
+    session_id: str, recording_id: UUID, service: Service
+):
+    state = await service.get_state(session_id)
+    draft = state.mock_session.answer_draft
+    if draft is None or draft.recording_id != recording_id:
+        raise HTTPException(status_code=404, detail="未找到待提交录音")
+    path = service.get_mock_answer_audio_path(session_id, draft.audio_file)
+    if path is None:
+        raise HTTPException(status_code=404, detail="录音文件不存在")
+    media_type = MOCK_AUDIO_MEDIA_TYPES.get(path.suffix.lstrip("."), "application/octet-stream")
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@router.delete("/{session_id}/recordings/{recording_id}")
+async def discard_mock_answer_draft(
+    session_id: str, recording_id: UUID, service: Service
+):
+    discarded = await service.discard_mock_answer_draft(session_id, recording_id)
+    return {"discarded": discarded}
 
 
 @router.get("/{session_id}/recordings/{recording_id}/speech-feedback")

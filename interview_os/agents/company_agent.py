@@ -118,7 +118,7 @@ class CompanyAgent(Agent):
             parsed.public_research_status = research_status
             state.company = parsed
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse company info: %s", exc)
+            logger.warning("Failed to parse company info (%s)", type(exc).__name__)
             state.company.public_sources = existing_sources
             state.company.public_research_status = research_status
             state.company.context = supplied_context

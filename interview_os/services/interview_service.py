@@ -14,7 +14,10 @@ from uuid import UUID, uuid4
 from interview_os.core.debug import DebugEvent, DebugEventStore, DebugLevel
 from interview_os.core.factory import create_runtime
 from interview_os.core.message import Message
-from interview_os.core.question_understanding import deterministic_question_understanding
+from interview_os.core.question_understanding import (
+    deterministic_question_understanding,
+    reconcile_question_understanding,
+)
 from interview_os.core.request_context import current_owner
 from interview_os.core.runtime import AgentRuntime
 from interview_os.core.state import (
@@ -92,6 +95,39 @@ __all__ = [
 ]
 
 
+class _SessionMutationLock:
+    """Serialize a session and reconcile uncertain durable state before mutation.
+
+    Callers can retain an ``AgentRuntime`` reference while waiting for the
+    session lock.  Keeping one stable runtime identity and healing its state on
+    lock entry prevents a failed status write from creating two runtimes that
+    later overwrite each other.
+    """
+
+    def __init__(
+        self,
+        service: InterviewService,
+        key: tuple[str, str],
+        lock: asyncio.Lock,
+    ) -> None:
+        self._service = service
+        self._key = key
+        self._lock = lock
+
+    async def __aenter__(self) -> _SessionMutationLock:  # noqa: PYI034
+        # ``typing.Self`` is unavailable on the project's supported Python 3.10.
+        await self._lock.acquire()
+        try:
+            await self._service._recover_runtime_if_required(self._key)
+        except BaseException:
+            self._lock.release()
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        self._lock.release()
+
+
 class InterviewService(
     PreparationServiceMixin,
     MockInterviewServiceMixin,
@@ -115,6 +151,8 @@ class InterviewService(
         tts_client: TTSClient | None = None,
         resume_llm_client: Any = None,
         recordings_dir: Path | None = None,
+        audio_settings_etag: str | None = None,
+        audio_settings_revision: int = 0,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -125,14 +163,55 @@ class InterviewService(
         self.tts_client = tts_client
         self.resume_llm_client = resume_llm_client
         self.live_audio_mode = "asr_text"  # "asr_text" | "audio_direct"
+        self.audio_settings_revision = audio_settings_revision
+        self.audio_settings_etag = audio_settings_etag or uuid4().hex
         self._background = background or BackgroundTaskManager(debug_events=debug_events)
         self._runtimes: dict[tuple[str, str], AgentRuntime] = {}
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._locks: dict[tuple[str, str], _SessionMutationLock] = {}
+        self._raw_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._runtime_load_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._runtime_recovery_required: set[tuple[str, str]] = set()
+        # Runtime audio clients are process-global. Capture registration,
+        # transcription/coaching leases, and settings transactions share this
+        # lock so another tab cannot reconfigure ASR/omni mid-operation.
+        self._settings_lock = asyncio.Lock()
+        self._active_audio_settings_leases = 0
         self._recordings_dir = recordings_dir or Path("data/recordings")
+        self._ensure_private_recordings_dir()
         self._mock_speech_feedback: dict[
             tuple[str, str, UUID], tuple[str, SpeechDeliveryFeedback, float]
         ] = {}
+        self._live_audio_in_flight: dict[
+            tuple[str, str, UUID],
+            tuple[str, asyncio.Task[tuple[InterviewState, str]]],
+        ] = {}
         self.resume_processor = ResumeProcessor()
+
+    async def shutdown_runtime_tasks(self) -> None:
+        """Stop all service-owned work before provider transports are closed."""
+
+        try:
+            await self._background.close()
+        finally:
+            tasks = list(
+                {
+                    task
+                    for _, task in self._live_audio_in_flight.values()
+                    if not task.done()
+                }
+            )
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            # Done callbacks normally remove these entries. Clear defensively
+            # because shutdown is terminal for this service instance.
+            self._live_audio_in_flight.clear()
+            if self._active_audio_settings_leases:
+                logger.error(
+                    "Audio settings leases remained during service shutdown: %d",
+                    self._active_audio_settings_leases,
+                )
 
     async def create_session(
         self, candidate_name: str = "", job_title: str = "", company_name: str = ""
@@ -145,14 +224,24 @@ class InterviewService(
         runtime.state.candidate.name = candidate_name
         runtime.state.job.title = job_title
         runtime.state.company.name = company_name
-        self._runtimes[(owner, session_id)] = runtime
-        self._locks[(owner, session_id)] = asyncio.Lock()
-        await self._persist(session_id, runtime.state)
+        key = (owner, session_id)
+        self._lock_for(session_id)
+        try:
+            await self._persist(session_id, runtime.state)
+        except BaseException:
+            self._locks.pop(key, None)
+            self._raw_locks.pop(key, None)
+            raise
+        self._runtimes[key] = runtime
         self._record_debug("session_created", session_id)
         return session_id, runtime.state
 
     async def get_state(self, session_id: str) -> InterviewState:
-        return (await self._get_runtime(session_id)).state
+        runtime = await self._get_runtime(session_id)
+        # API serialization happens after this method returns. A synchronous
+        # deep copy gives callers a stable snapshot without blocking progress
+        # polling while a long LLM workflow owns the session mutation lock.
+        return runtime.state.model_copy(deep=True)
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         return await self.storage.list_sessions(owner_id=current_owner())
@@ -440,16 +529,18 @@ class InterviewService(
                     await self._persist(session_id, runtime.state)
                 self._validate_workflow_result(name, runtime.state)
             except Exception as exc:
+                failed_step = runtime.state.workflow.current_step or "workflow"
+                safe_error = f"Workflow failed during {failed_step}; retry or inspect Debug Console"
                 runtime.state.workflow.status = WorkflowStatus.FAILED
-                runtime.state.workflow.error = str(exc)
+                runtime.state.workflow.error = safe_error
                 await self._persist(session_id, runtime.state)
                 self._record_debug(
                     "workflow_failed",
                     session_id,
                     level=DebugLevel.ERROR,
-                    detail=f"{name}: {exc}",
+                    detail=f"workflow={name}; step={failed_step}; error_type={type(exc).__name__}",
                 )
-                raise WorkflowExecutionError(str(exc)) from exc
+                raise WorkflowExecutionError(safe_error) from exc
             runtime.state.workflow.status = WorkflowStatus.COMPLETED
             runtime.state.workflow.current_step = ""
             runtime.state.next_action = (
@@ -546,102 +637,146 @@ class InterviewService(
 
     async def _get_runtime(self, session_id: str) -> AgentRuntime:
         owner = current_owner()
-        cached = self._runtimes.get((owner, session_id))
+        key = (owner, session_id)
+        cached = self._runtimes.get(key)
         if cached is not None:
+            if key in self._runtime_recovery_required:
+                async with self._lock_for(session_id):
+                    pass
             return cached
+        load_lock = self._runtime_load_locks.setdefault(key, asyncio.Lock())
+        async with load_lock:
+            cached = self._runtimes.get(key)
+            if cached is not None:
+                return cached
+            async with self._lock_for(session_id):
+                cached = self._runtimes.get(key)
+                if cached is not None:
+                    return cached
+                state = await self.storage.get_session_state(session_id, owner_id=owner)
+                if state is None:
+                    raise SessionNotFoundError(session_id)
+                runtime = create_runtime(
+                    self.llm_client, self.search_provider, self.debug_events, session_id
+                )
+                runtime.state = InterviewState.model_validate(state)
+                # Upgrade persisted pre-quality-contract questions in place. This keeps
+                # existing user sessions usable after deployment instead of requiring a
+                # new candidate workflow solely to obtain bounded questions/examples.
+                mock_agent = runtime.get_agent("mock_interview_agent")
+                if mock_agent is not None and hasattr(mock_agent, "enrich_question"):
+                    for question in runtime.state.mock_interview.questions:
+                        # User-supplied wording is itself part of the practice contract.
+                        # It already receives requirements/framework/example at insert
+                        # time and must not be rewritten by legacy-question migration.
+                        if question.source == "custom":
+                            explicit_requirements = [
+                                item.text
+                                for item in runtime.state.job_review.requirements
+                                if item.origin.value == "explicit"
+                            ]
+                            deep_fallback = deterministic_question_understanding(
+                                question.question,
+                                competency=(
+                                    ""
+                                    if question.competency == "自定义问题"
+                                    else question.competency
+                                ),
+                                job_title=runtime.state.job.title,
+                                explicit_job_requirements=explicit_requirements,
+                                confirmed_claims=[
+                                    (str(claim.id), claim.statement)
+                                    for claim in runtime.state.resume_review.claims
+                                    if claim.status.value in {"confirmed", "modified"}
+                                ],
+                            )
+                            question.understanding = reconcile_question_understanding(
+                                question.understanding,
+                                deep_fallback,
+                            )
+                            if not question.understanding.decision_criteria:
+                                # Preserve the older model-enhanced shallow analysis and
+                                # backfill only the newly introduced deep layer.
+                                question.understanding.role_relevance = deep_fallback.role_relevance
+                                question.understanding.role_relevance_source = (
+                                    deep_fallback.role_relevance_source
+                                )
+                                question.understanding.secondary_competencies = (
+                                    deep_fallback.secondary_competencies
+                                )
+                                question.understanding.decision_criteria = (
+                                    deep_fallback.decision_criteria
+                                )
+                                question.understanding.answer_levels = deep_fallback.answer_levels
+                                question.understanding.candidate_story_options = (
+                                    deep_fallback.candidate_story_options
+                                )
+                                question.understanding.story_selection_guidance = (
+                                    deep_fallback.story_selection_guidance
+                                )
+                                question.understanding.probe_tree = deep_fallback.probe_tree
+                        elif question.source != "custom":
+                            mock_agent.enrich_question(  # type: ignore[union-attr]
+                                question, runtime.state
+                            )
+                # In-process refill tasks do not survive a service restart.
+                runtime.state.mock_session.refill_in_flight = False
+                if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:
+                    # The evaluation coroutine was process-local. Restore a retryable
+                    # state rather than leaving the session permanently in-flight.
+                    runtime.state.mock_session.status = MockSessionStatus.ACTIVE
+                    runtime.state.mock_session.completed_at = None
+                    runtime.state.next_action = (
+                        "Evaluation was interrupted; retry ending the interview"
+                    )
+                if not runtime.state.job_review.requirements and (
+                    runtime.state.job.raw_description or runtime.state.job.title
+                ):
+                    inferred = [
+                        *runtime.state.job.required_skills,
+                        *runtime.state.job.preferred_skills,
+                        *runtime.state.job.competencies,
+                    ]
+                    runtime.state.job_review = review_job_description(
+                        runtime.state.job.raw_description or runtime.state.job.title,
+                        list(dict.fromkeys(inferred)),
+                    )
+                self._sync_intelligence(runtime.state)
+                self._refresh_live_coverage_guidance(runtime.state)
+                self._refresh_live_question_usage(runtime.state)
+                if runtime.state.evaluation.finalized_at:
+                    runtime.state.enforce_evaluation_evidence_floor()
+                await self._persist(session_id, runtime.state)
+                # Do not expose a half-loaded runtime. A concurrent request must
+                # wait for the migration snapshot to persist successfully first.
+                self._runtimes[key] = runtime
+                return runtime
+
+    async def _recover_runtime_if_required(self, key: tuple[str, str]) -> None:
+        if key not in self._runtime_recovery_required:
+            return
+        owner, session_id = key
         state = await self.storage.get_session_state(session_id, owner_id=owner)
         if state is None:
             raise SessionNotFoundError(session_id)
-        runtime = create_runtime(
-            self.llm_client, self.search_provider, self.debug_events, session_id
-        )
+        runtime = self._runtimes.get(key)
+        if runtime is None:
+            raise SessionNotFoundError(session_id)
         runtime.state = InterviewState.model_validate(state)
-        # Upgrade persisted pre-quality-contract questions in place. This keeps
-        # existing user sessions usable after deployment instead of requiring a
-        # new candidate workflow solely to obtain bounded questions/examples.
-        mock_agent = runtime.get_agent("mock_interview_agent")
-        if mock_agent is not None and hasattr(mock_agent, "enrich_question"):
-            for question in runtime.state.mock_interview.questions:
-                # User-supplied wording is itself part of the practice contract.
-                # It already receives requirements/framework/example at insert
-                # time and must not be rewritten by legacy-question migration.
-                if question.source == "custom":
-                    explicit_requirements = [
-                        item.text
-                        for item in runtime.state.job_review.requirements
-                        if item.origin.value == "explicit"
-                    ]
-                    deep_fallback = deterministic_question_understanding(
-                        question.question,
-                        competency=(
-                            "" if question.competency == "自定义问题" else question.competency
-                        ),
-                        job_title=runtime.state.job.title,
-                        explicit_job_requirements=explicit_requirements,
-                        confirmed_claims=[
-                            (str(claim.id), claim.statement)
-                            for claim in runtime.state.resume_review.claims
-                            if claim.status.value in {"confirmed", "modified"}
-                        ],
-                    )
-                    if question.understanding is None:
-                        question.understanding = deep_fallback
-                    elif not question.understanding.decision_criteria:
-                        # Preserve the older model-enhanced shallow analysis and
-                        # backfill only the newly introduced deep layer.
-                        question.understanding.role_relevance = deep_fallback.role_relevance
-                        question.understanding.role_relevance_source = (
-                            deep_fallback.role_relevance_source
-                        )
-                        question.understanding.secondary_competencies = (
-                            deep_fallback.secondary_competencies
-                        )
-                        question.understanding.decision_criteria = deep_fallback.decision_criteria
-                        question.understanding.answer_levels = deep_fallback.answer_levels
-                        question.understanding.candidate_story_options = (
-                            deep_fallback.candidate_story_options
-                        )
-                        question.understanding.story_selection_guidance = (
-                            deep_fallback.story_selection_guidance
-                        )
-                        question.understanding.probe_tree = deep_fallback.probe_tree
-                elif question.source != "custom":
-                    mock_agent.enrich_question(  # type: ignore[union-attr]
-                        question, runtime.state
-                    )
-        # In-process refill tasks do not survive a service restart.
-        runtime.state.mock_session.refill_in_flight = False
-        if runtime.state.mock_session.status == MockSessionStatus.EVALUATING:
-            # The evaluation coroutine was process-local. Restore a retryable
-            # state rather than leaving the session permanently in-flight.
-            runtime.state.mock_session.status = MockSessionStatus.ACTIVE
-            runtime.state.mock_session.completed_at = None
-            runtime.state.next_action = "Evaluation was interrupted; retry ending the interview"
-        if not runtime.state.job_review.requirements and (
-            runtime.state.job.raw_description or runtime.state.job.title
-        ):
-            inferred = [
-                *runtime.state.job.required_skills,
-                *runtime.state.job.preferred_skills,
-                *runtime.state.job.competencies,
-            ]
-            runtime.state.job_review = review_job_description(
-                runtime.state.job.raw_description or runtime.state.job.title,
-                list(dict.fromkeys(inferred)),
-            )
-        self._sync_intelligence(runtime.state)
-        self._refresh_live_coverage_guidance(runtime.state)
-        self._refresh_live_question_usage(runtime.state)
-        if runtime.state.evaluation.finalized_at:
-            runtime.state.enforce_evaluation_evidence_floor()
-        self._runtimes[(owner, session_id)] = runtime
-        self._locks.setdefault((owner, session_id), asyncio.Lock())
-        await self._persist(session_id, runtime.state)
-        return runtime
+        # Persistence can fail after a whole-session audio file was quarantined
+        # or replaced. Reconcile that session while its mutation lock is still
+        # held, so callers never observe bytes that disagree with SQLite.
+        self._reconcile_live_audio_for_state(session_id, runtime.state, strict=True)
+        self._runtime_recovery_required.discard(key)
 
-    def _lock_for(self, session_id: str) -> asyncio.Lock:
+    def _lock_for(self, session_id: str) -> _SessionMutationLock:
         owner = current_owner()
-        return self._locks.setdefault((owner, session_id), asyncio.Lock())
+        key = (owner, session_id)
+        lock = self._locks.get(key)
+        if lock is None:
+            raw_lock = self._raw_locks.setdefault(key, asyncio.Lock())
+            lock = self._locks[key] = _SessionMutationLock(self, key, raw_lock)
+        return lock
 
     async def _persist(self, session_id: str, state: InterviewState) -> None:
         self._refresh_live_action_card(state)

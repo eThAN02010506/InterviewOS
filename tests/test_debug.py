@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -45,6 +47,75 @@ def test_debug_owner_filter_is_applied_before_result_limit():
 
     events = store.list_events(limit=1, owner_id="alice")
     assert [event.action for event in events] == ["alice-old"]
+
+
+def test_debug_persistence_failure_is_fail_open(monkeypatch, tmp_path):
+    store = DebugEventStore(path=tmp_path / "events.json")
+
+    def fail_persistence():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_persist_locked", fail_persistence)
+    store.record(DebugEvent(category="service", action="committed"))
+
+    assert [event.action for event in store.list_events()] == ["committed"]
+
+
+def test_cyclic_debug_metadata_is_dropped_without_affecting_business_flow():
+    store = DebugEventStore()
+    event = DebugEvent(category="service", action="must-not-break")
+    event.metadata["cycle"] = event.metadata
+
+    store.record(event)
+
+    assert store.list_events() == []
+
+
+def test_legacy_unredacted_debug_file_is_sanitized_at_runtime_startup_boundary(tmp_path):
+    path = tmp_path / "debug_events.json"
+    event = DebugEvent(
+        category="legacy",
+        action="loaded",
+        detail="api_key=very-secret user@example.com 13800138000",
+        metadata={"authorization": "Bearer secret-token"},
+    )
+    path.write_text(
+        json.dumps({"events": [event.model_dump(mode="json")]}),
+        encoding="utf-8",
+    )
+
+    store = DebugEventStore(path=path)
+    loaded = store.list_events()[0]
+
+    assert "very-secret" not in loaded.detail
+    assert "user@example.com" not in loaded.detail
+    assert "13800138000" not in loaded.detail
+    assert loaded.metadata["authorization"] == "[REDACTED_SECRET]"
+    # Construction/import is read-only. The app lifespan invokes this explicit
+    # startup boundary before it starts accepting requests.
+    assert "very-secret" in path.read_text(encoding="utf-8")
+    store.rewrite_sanitized_file()
+    assert "very-secret" not in path.read_text(encoding="utf-8")
+
+
+def test_bearer_credentials_are_fully_redacted_in_memory_and_on_disk(tmp_path):
+    path = tmp_path / "debug_events.json"
+    store = DebugEventStore(path=path)
+
+    store.record(
+        DebugEvent(
+            category="provider",
+            action="request",
+            detail="Authorization: Bearer supersecret token: Bearer secondsecret",
+        )
+    )
+
+    detail = store.list_events()[0].detail
+    assert "supersecret" not in detail
+    assert "secondsecret" not in detail
+    persisted = path.read_text(encoding="utf-8")
+    assert "supersecret" not in persisted
+    assert "secondsecret" not in persisted
 
 
 def test_debug_console_rejects_remote_clients():

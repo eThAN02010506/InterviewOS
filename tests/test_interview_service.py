@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from interview_os.core.debug import DebugEventStore
 from interview_os.core.state import (
     InterviewQuestion,
     LiveInterviewStatus,
@@ -49,6 +50,45 @@ class FakeSearchProvider(SearchProvider):
                 source="fake",
             )
         ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_failure_redacts_private_exception_from_state_and_debug(
+    tmp_path, monkeypatch
+):
+    private_detail = "candidate@example.com https://private-llm.internal secret-token"
+    debug = DebugEventStore()
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'workflow-privacy.db'}")
+    await storage.init_db()
+    service = InterviewService(
+        storage,
+        MockLLM(),
+        FakeSearchProvider(),
+        debug_events=debug,
+    )
+    session_id, _ = await service.create_session()
+    runtime = await service._get_runtime(session_id)
+
+    async def fail_run(*args, **kwargs):
+        raise ValueError(private_detail)
+
+    monkeypatch.setattr(runtime, "run", fail_run)
+    with pytest.raises(WorkflowExecutionError) as captured:
+        await service._execute_workflow(
+            session_id,
+            runtime,
+            "privacy_test",
+            [("candidate_agent", "private input")],
+        )
+
+    state = await service.get_state(session_id)
+    rendered = " ".join(
+        [str(captured.value), state.workflow.error]
+        + [event.detail for event in debug.list_events()]
+    )
+    assert private_detail not in rendered
+    assert "ValueError" in rendered
+    await storage.close()
 
 
 class EmployerSearchProvider(SearchProvider):

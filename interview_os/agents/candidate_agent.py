@@ -42,7 +42,7 @@ class CandidateAgent(Agent):
                 parsed.name = existing_name
             state.candidate = parsed
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse candidate profile: %s", exc)
+            logger.warning("Failed to parse candidate profile (%s)", type(exc).__name__)
             if not state.candidate.name:
                 state.candidate.name = self._explicit_name(resume_text)
 

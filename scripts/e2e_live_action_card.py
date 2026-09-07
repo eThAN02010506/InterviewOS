@@ -11,6 +11,7 @@ import argparse
 import json
 import time
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from e2e_support import authenticate_e2e_client
@@ -112,7 +113,11 @@ def main() -> None:
             client,
             "POST",
             f"/api/live-interviews/{session_id}/start",
-            {"consent_confirmed": True},
+            {
+                "consent_confirmed": True,
+                "expected_revision": 0,
+                "operation_id": str(uuid4()),
+            },
         )
         checkpoint("started", started)
         require(action_type(started) == "plan_gap_question", "start should ask for evidence")
@@ -226,7 +231,10 @@ def main() -> None:
             client,
             "POST",
             f"/api/live-interviews/{session_id}/status",
-            {"status": "completed"},
+            {
+                "status": "completed",
+                "expected_revision": started["state"]["live_interview"]["status_revision"],
+            },
         )
         checkpoint("completed", completed)
         require(action_type(completed) == "evaluate", "completed sufficient evidence should evaluate")

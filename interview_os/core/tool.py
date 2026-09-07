@@ -49,7 +49,10 @@ class ToolRegistry:
         try:
             return await tool.execute(**kwargs)
         except Exception as exc:  # noqa: BLE001 - registry is an isolation boundary
-            return ToolResult(success=False, error=str(exc))
+            return ToolResult(
+                success=False,
+                error=f"Tool execution failed ({type(exc).__name__})",
+            )
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [t.to_llm_format() for t in self._tools.values()]

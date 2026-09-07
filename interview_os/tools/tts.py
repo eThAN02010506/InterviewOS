@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import httpx
+
+from interview_os.core.provider_config import (
+    normalize_provider_api_key,
+    normalize_provider_endpoint,
+    provider_api_key_from_env,
+    provider_endpoint_from_env,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TTS_BASE_URL = "http://192.168.1.97:8002/v1"
 DEFAULT_TTS_MODEL = "qwen3-tts"
@@ -26,8 +36,18 @@ class TTSClient:
         timeout_seconds: float = 90,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.base_url = (base_url or os.getenv("TTS_BASE_URL") or DEFAULT_TTS_BASE_URL).rstrip("/")
-        self.api_key = api_key or os.getenv("TTS_API_KEY") or ""
+        self.base_url = provider_endpoint_from_env(
+            base_url,
+            env_name="TTS_BASE_URL",
+            default=DEFAULT_TTS_BASE_URL,
+            label="TTS base_url",
+            logger=logger,
+        )
+        self.api_key = provider_api_key_from_env(
+            api_key,
+            env_name="TTS_API_KEY",
+            logger=logger,
+        )
         self.model = model or os.getenv("TTS_MODEL") or DEFAULT_TTS_MODEL
         self.voice = voice or os.getenv("TTS_VOICE") or "温和、专业、清晰的中文声音"
         self.speech_path = speech_path or "/audio/speech"
@@ -35,11 +55,20 @@ class TTSClient:
         self._client = httpx.AsyncClient(timeout=timeout_seconds, transport=transport)
 
     def configure(self, **values: Any) -> None:
-        if values.get("base_url") is not None:
-            base_url = str(values["base_url"]).strip().rstrip("/")
-            if not base_url.startswith(("http://", "https://")):
-                raise ValueError("TTS base_url must use http:// or https://")
-            self.base_url = base_url
+        raw_api_key = values.get("api_key")
+        next_api_key = (
+            normalize_provider_api_key(raw_api_key, label="TTS API key")
+            if raw_api_key is not None
+            else None
+        )
+        raw_base_url = values.get("base_url")
+        next_base_url = (
+            normalize_provider_endpoint(raw_base_url, label="TTS base_url")
+            if raw_base_url is not None
+            else None
+        )
+        if next_base_url is not None:
+            self.base_url = next_base_url
         for name in ("model", "voice"):
             value = values.get(name)
             if value is not None and str(value).strip():
@@ -47,8 +76,8 @@ class TTSClient:
         if values.get("speech_path") is not None:
             path = str(values["speech_path"]).strip()
             self.speech_path = path if path.startswith("/") else f"/{path}"
-        if values.get("api_key") is not None and str(values["api_key"]).strip():
-            self.api_key = str(values["api_key"]).strip()
+        if next_api_key is not None:
+            self.api_key = next_api_key
         if values.get("timeout_seconds") is not None:
             self.timeout_seconds = float(values["timeout_seconds"])
 

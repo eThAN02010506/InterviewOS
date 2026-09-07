@@ -149,7 +149,7 @@ class LiveInterviewAgent(Agent):
             if not [item for item in suggestion.expected_signals if item.strip()]:
                 raise ValueError("Suggestion omitted expected evidence signals")
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Live question planning degraded: %s", exc)
+            logger.warning("Live question planning degraded (%s)", type(exc).__name__)
             suggestion = self._fallback_suggestion(state)
             self.record_degradation(
                 "Live question planner used a deterministic unused blueprint question"

@@ -27,5 +27,5 @@ class PDFParserTool(Tool):
                 return ToolResult(success=True, data={"text": text, "pages": len(pdf.pages)})
         except ImportError:
             return ToolResult(success=False, error="pdfplumber not installed. Run: pip install pdfplumber")
-        except Exception as exc:  # noqa: BLE001 - third-party parser errors vary
-            return ToolResult(success=False, error=str(exc))
+        except Exception:  # noqa: BLE001 - third-party parser errors vary
+            return ToolResult(success=False, error="PDF parsing failed")

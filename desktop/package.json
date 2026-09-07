@@ -1,0 +1,20 @@
+{
+  "name": "interview-os-desktop-tooling",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "sidecar:build": "node scripts/run-python.mjs ../scripts/build_desktop_sidecar.py",
+    "sidecar:smoke": "node scripts/run-python.mjs ../scripts/smoke_desktop_sidecar.py",
+    "release:guard": "node scripts/require-release-signing.mjs",
+    "local:guard": "node scripts/require-local-adhoc.mjs",
+    "prepare:release": "npm run release:guard && npm run sidecar:build && npm run sidecar:smoke",
+    "prepare:local": "npm run local:guard && npm run sidecar:build && npm run sidecar:smoke",
+    "build": "tauri build",
+    "build:local": "tauri build --config tauri.local.conf.json",
+    "dev": "tauri dev",
+    "icons": "tauri icon icons/icon.svg -o icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

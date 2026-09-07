@@ -42,20 +42,51 @@ class InterviewServiceMixin:
     tts_client: TTSClient | None
     resume_llm_client: Any
     live_audio_mode: str
+    audio_settings_revision: int
+    audio_settings_etag: str
+
+    def refresh_audio_settings_etag(self) -> str:
+        raise NotImplementedError
     _background: BackgroundTaskManager
     _runtimes: dict[tuple[str, str], AgentRuntime]
-    _locks: dict[tuple[str, str], asyncio.Lock]
+    _locks: dict[tuple[str, str], Any]
+    _raw_locks: dict[tuple[str, str], asyncio.Lock]
+    _runtime_load_locks: dict[tuple[str, str], asyncio.Lock]
+    _runtime_recovery_required: set[tuple[str, str]]
+    _settings_lock: asyncio.Lock
+    _active_audio_settings_leases: int
     _recordings_dir: Path
     _mock_speech_feedback: dict[tuple[str, str, UUID], tuple[str, SpeechDeliveryFeedback, float]]
+    _live_audio_in_flight: dict[
+        tuple[str, str, UUID],
+        tuple[str, asyncio.Task[tuple[InterviewState, str]]],
+    ]
     resume_processor: ResumeProcessor
 
     async def _get_runtime(self, session_id: str) -> AgentRuntime:
         raise NotImplementedError
 
-    def _lock_for(self, session_id: str) -> asyncio.Lock:
+    def _lock_for(self, session_id: str) -> Any:
         raise NotImplementedError
 
     async def _persist(self, session_id: str, state: InterviewState) -> None:
+        raise NotImplementedError
+
+    async def _recover_live_state_after_persist_error(
+        self,
+        session_id: str,
+        runtime: AgentRuntime,
+        previous_state: InterviewState,
+    ) -> None:
+        raise NotImplementedError
+
+    def _reconcile_live_audio_for_state(
+        self,
+        session_id: str,
+        state: InterviewState,
+        *,
+        strict: bool = False,
+    ) -> tuple[int, int]:
         raise NotImplementedError
 
     def _record_debug(
@@ -149,6 +180,17 @@ class InterviewServiceMixin:
         speaker: TranscriptSpeaker,
         source: str = "manual",
     ) -> InterviewState:
+        raise NotImplementedError
+
+    def _append_live_transcript_locked(
+        self,
+        state: InterviewState,
+        *,
+        text: str,
+        speaker: TranscriptSpeaker,
+        source: str,
+        allow_completed_capture: bool = False,
+    ) -> TranscriptSegment | None:
         raise NotImplementedError
 
     def _refresh_live_coverage_guidance(self, state: InterviewState) -> None:

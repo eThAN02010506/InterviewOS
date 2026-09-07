@@ -166,18 +166,41 @@ class Storage:
                 for record in result.scalars()
             ]
 
-    async def list_all_session_states(self) -> list[dict[str, Any]]:
+    async def list_all_session_states(
+        self, *, strict: bool = False
+    ) -> list[dict[str, Any]]:
         """Return all persisted state blobs for local maintenance tasks."""
+        return [
+            state
+            for state, _ in await self.list_all_session_state_records(strict=strict)
+        ]
+
+    async def list_all_session_state_records(
+        self, *, strict: bool = False
+    ) -> list[tuple[dict[str, Any], datetime]]:
+        """Return state blobs with row timestamps for bounded legacy migrations."""
+
         async with self.session_factory() as session:
-            result = await session.execute(select(InterviewSession.state_json))
-            states: list[dict[str, Any]] = []
-            for raw_state in result.scalars():
+            result = await session.execute(
+                select(InterviewSession.state_json, InterviewSession.updated_at)
+            )
+            states: list[tuple[dict[str, Any], datetime]] = []
+            for raw_state, updated_at in result:
                 try:
                     value = json.loads(raw_state)
                 except (TypeError, json.JSONDecodeError):
+                    if strict:
+                        raise ValueError(
+                            "A persisted interview session contains invalid JSON"
+                        ) from None
                     continue
-                if isinstance(value, dict):
-                    states.append(value)
+                if not isinstance(value, dict):
+                    if strict:
+                        raise ValueError(
+                            "A persisted interview session is not a JSON object"
+                        )
+                    continue
+                states.append((value, updated_at))
             return states
 
     async def save_evidence(self, session_id: str, evidence: dict[str, Any]) -> None:

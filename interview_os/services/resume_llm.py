@@ -62,7 +62,7 @@ async def structure_resume_with_llm(
     try:
         raw = await llm_client.chat(messages, temperature=0.2, max_tokens=max_tokens)
     except Exception as exc:  # noqa: BLE001 - report and fall back
-        logger.warning("LLM resume structuring failed: %s", exc)
+        logger.warning("LLM resume structuring failed (%s)", type(exc).__name__)
         return []
     return _parse_structured_response(raw)
 
@@ -80,7 +80,9 @@ def _parse_structured_response(raw: str) -> list[ResumeStructuredSection]:
     try:
         payload = json.loads(text[start : end + 1])
     except json.JSONDecodeError as exc:
-        logger.warning("LLM resume structuring returned invalid JSON: %s", exc)
+        logger.warning(
+            "LLM resume structuring returned invalid JSON (%s)", type(exc).__name__
+        )
         return []
     sections: list[ResumeStructuredSection] = []
     if not isinstance(payload, dict):

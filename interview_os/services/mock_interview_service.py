@@ -121,6 +121,8 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
                 MockSessionStatus.COMPLETED,
             }:
                 raise MockInterviewStateError("本轮已结束，请新建练习会话后添加问题")
+            if practice_now and mock_session.answer_draft is not None:
+                raise MockInterviewStateError("请先提交或删除当前语音回答草稿")
 
             questions = state.mock_interview.questions
             comparison = normalized_text.casefold()
@@ -215,7 +217,10 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
         staged_audio: Path | None = None
         async with self._lock_for(session_id):
             mock_session = runtime.state.mock_session
+            answer_draft = mock_session.answer_draft
             if recording_id is not None:
+                if answer_draft is None or answer_draft.recording_id != recording_id:
+                    raise MockInterviewStateError("Recording draft does not belong to this session")
                 staged_audio = self._pending_mock_audio_path(session_id, recording_id)
                 if staged_audio is None:
                     raise MockInterviewStateError("Recording does not belong to this session")
@@ -264,6 +269,19 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
                 if retry_target is not None
                 else mock_session.pending_follow_up or question.question
             )
+            if (
+                answer_draft is not None
+                and recording_id is not None
+                and (
+                    answer_draft.question_id != expected_id
+                    or answer_draft.question.strip() != asked_question.strip()
+                    or answer_draft.retry != retry
+                    or answer_draft.retry_response_id != (retry_response_id if retry else None)
+                )
+            ):
+                raise MockInterviewStateError(
+                    "Recording draft does not match the answer being submitted"
+                )
             follow_up_stage = (
                 retry_target.follow_up_stage
                 if retry_target is not None
@@ -310,7 +328,9 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
                 follow_up_stage=follow_up_stage if is_follow_up else "",
                 audio_file=staged_audio.name if staged_audio is not None else "",
                 speech_delivery=(
-                    self._mock_speech_feedback[(current_owner(), session_id, recording_id)][1]
+                    answer_draft.speech_delivery
+                    if recording_id is not None and answer_draft is not None
+                    else self._mock_speech_feedback[(current_owner(), session_id, recording_id)][1]
                     if recording_id is not None
                     and (current_owner(), session_id, recording_id) in self._mock_speech_feedback
                     else SpeechDeliveryFeedback()
@@ -361,6 +381,8 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
                     # branch merely because the old attempt already saw it.
                     mock_session.follow_up_history.pop(str(question.id), None)
             mock_session.responses.append(record)
+            if recording_id is not None:
+                mock_session.answer_draft = None
             runtime.state.evidence.append(
                 Evidence(
                     competency=record.competency or "Answer Quality",
@@ -396,6 +418,8 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
             questions = runtime.state.mock_interview.questions
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
+            if mock_session.answer_draft is not None:
+                raise MockInterviewStateError("请先提交或删除当前语音回答草稿")
             if mock_session.current_question_index >= len(questions):
                 raise MockInterviewStateError("Mock interview has no remaining questions")
             question = questions[mock_session.current_question_index]
@@ -464,6 +488,8 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
             mock_session = runtime.state.mock_session
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
+            if mock_session.answer_draft is not None:
+                raise MockInterviewStateError("请先提交或删除当前语音回答草稿")
             if mock_session.current_question_index <= 0:
                 raise MockInterviewStateError("已回到第一题")
             # Clear any follow-up state so the previous question renders cleanly.
@@ -486,6 +512,8 @@ class MockInterviewServiceMixin(InterviewServiceMixin):
                 raise MockInterviewStateError("Mock interview evaluation is already running")
             if mock_session.status != MockSessionStatus.ACTIVE:
                 raise MockInterviewStateError("Mock interview is not active")
+            if mock_session.answer_draft is not None:
+                raise MockInterviewStateError("请先提交或删除当前语音回答草稿")
             should_evaluate = bool(mock_session.responses)
             mock_session.pending_follow_up = ""
             mock_session.pending_parent_question_id = None

@@ -28,8 +28,8 @@ class ResumeParserTool(Tool):
         try:
             text = await to_thread(self._read_text, file_path)
             return ToolResult(success=True, data={"text": text, "pages": 1})
-        except Exception as exc:  # noqa: BLE001 - tool returns failures as values
-            return ToolResult(success=False, error=str(exc))
+        except Exception:  # noqa: BLE001 - tool returns failures as values
+            return ToolResult(success=False, error="Resume text parsing failed")
 
     @staticmethod
     def _read_text(file_path: str) -> str:

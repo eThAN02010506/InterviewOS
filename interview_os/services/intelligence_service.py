@@ -44,18 +44,25 @@ def review_job_description(raw_text: str, inferred: list[str]) -> JobDescription
         if title_only
         else [name for name in section_markers if name not in present]
     )
-    lines = [
-        # Remove bullets and enumerators such as "1." or "(2)", but preserve
-        # meaningful leading numbers in requirements like "7年以上".
-        re.sub(
-            r"^\s*(?:(?:[•·*\-—]+)|(?:[（(]?\d{1,2}[、.．)）]\s*))\s*",
-            "",
-            line,
-        ).strip()
-        for line in text.splitlines()
-        if line.strip()
-    ]
-    explicit = [] if title_only else [line for line in lines if len(line) >= 6][:30]
+    section_heading = re.compile(
+        r"(?:岗位职责|工作职责|职位职责|任职要求|职位要求|任职资格|团队背景)\s*[:：]",
+        re.IGNORECASE,
+    )
+    sections = section_heading.split(text)
+    # With labeled sections, the prefix is normally the job title rather than
+    # an explicit requirement. Each section is split before it reaches prompts.
+    source_parts = sections[1:] if len(sections) > 1 else sections
+    clauses: list[str] = []
+    for part in source_parts:
+        for clause in re.split(r"[\n；;。]+", part):
+            cleaned = re.sub(
+                r"^\s*(?:(?:[•·*\-—]+)|(?:[（(]?\d{1,2}[、.．)）]\s*))\s*",
+                "",
+                clause,
+            ).strip(" ：:")
+            if len(cleaned) >= 4 and cleaned not in clauses:
+                clauses.append(cleaned)
+    explicit = [] if title_only else clauses[:30]
     requirements = [
         JobRequirement(text=line, origin=RequirementOrigin.EXPLICIT) for line in explicit
     ]

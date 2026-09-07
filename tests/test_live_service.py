@@ -7,6 +7,8 @@ API-level end-to-end tests.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
@@ -31,7 +33,7 @@ from interview_os.core.state import (
 )
 from interview_os.database.storage import Storage
 from interview_os.services.background import BackgroundTaskManager
-from interview_os.services.interview_service import InterviewService
+from interview_os.services.interview_service import InterviewService, LiveInterviewStateError
 
 
 class _CoachLLM:
@@ -356,6 +358,217 @@ def test_action_card_paused_shows_resume(service):
     state.live_interview.status = LiveInterviewStatus.PAUSED
     service._refresh_live_action_card(state)
     assert state.live_interview.action_card.action_type == "resume"
+
+
+async def test_paused_session_accepts_only_audio_captured_before_pause(service):
+    session_id, _ = await service.create_session()
+    await service.start_live_interview(session_id, consent_confirmed=True)
+    await service.set_live_interview_status(session_id, LiveInterviewStatus.PAUSED)
+
+    state = await service.append_live_transcript(
+        session_id,
+        text="暂停前已录到的最后一句回答。",
+        speaker=TranscriptSpeaker.CANDIDATE,
+        source="asr",
+    )
+    assert state.live_interview.segments[-1].source == "asr"
+
+    with pytest.raises(LiveInterviewStateError):
+        await service.append_live_transcript(
+            session_id,
+            text="暂停后手动新增的内容。",
+            speaker=TranscriptSpeaker.CANDIDATE,
+            source="manual",
+        )
+
+
+async def test_status_revision_barrier_rejects_a_delayed_start(service):
+    session_id, initial = await service.create_session()
+    assert initial.live_interview.status_revision == 0
+
+    barrier = await service.advance_live_status_revision(
+        session_id, expected_revision=0
+    )
+    assert barrier.live_interview.status == LiveInterviewStatus.IDLE
+    assert barrier.live_interview.status_revision == 1
+
+    with pytest.raises(LiveInterviewStateError, match="status changed"):
+        await service.start_live_interview(
+            session_id,
+            consent_confirmed=True,
+            expected_revision=0,
+        )
+
+    current = await service.get_state(session_id)
+    assert current.live_interview.status == LiveInterviewStatus.IDLE
+    assert current.live_interview.status_revision == 1
+
+
+async def test_live_status_recovers_cache_after_pre_commit_failure(service, monkeypatch):
+    session_id, _ = await service.create_session()
+    original_persist = service._persist
+
+    async def fail_before_commit(session_id, state):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(service, "_persist", fail_before_commit)
+    with pytest.raises(OSError, match="database unavailable"):
+        await service.start_live_interview(session_id, consent_confirmed=True)
+
+    recovered = await service.get_state(session_id)
+    assert recovered.live_interview.status == LiveInterviewStatus.IDLE
+    assert recovered.live_interview.status_revision == 0
+
+    monkeypatch.setattr(service, "_persist", original_persist)
+    started = await service.start_live_interview(
+        session_id, consent_confirmed=True, expected_revision=0
+    )
+    assert started.live_interview.status == LiveInterviewStatus.ACTIVE
+    assert started.live_interview.status_revision == 1
+
+
+async def test_live_status_does_not_publish_uncommitted_state(service, monkeypatch):
+    session_id, _ = await service.create_session()
+    persist_started = asyncio.Event()
+    release_persist = asyncio.Event()
+
+    async def delayed_failure(session_id, state):
+        persist_started.set()
+        await release_persist.wait()
+        raise OSError("delayed write failed")
+
+    monkeypatch.setattr(service, "_persist", delayed_failure)
+    start_task = asyncio.create_task(
+        service.start_live_interview(session_id, consent_confirmed=True)
+    )
+    await persist_started.wait()
+
+    while_write_is_pending = await service.get_state(session_id)
+    assert while_write_is_pending.live_interview.status == LiveInterviewStatus.IDLE
+    assert while_write_is_pending.live_interview.status_revision == 0
+
+    release_persist.set()
+    with pytest.raises(OSError, match="delayed write failed"):
+        await start_task
+
+
+async def test_live_status_recovers_committed_state_after_late_error(service, monkeypatch):
+    session_id, _ = await service.create_session()
+    original_persist = service._persist
+
+    async def commit_then_fail(session_id, state):
+        await original_persist(session_id, state)
+        raise OSError("response path failed after commit")
+
+    monkeypatch.setattr(service, "_persist", commit_then_fail)
+    with pytest.raises(OSError, match="after commit"):
+        await service.start_live_interview(session_id, consent_confirmed=True)
+
+    recovered = await service.get_state(session_id)
+    assert recovered.live_interview.status == LiveInterviewStatus.ACTIVE
+    assert recovered.live_interview.status_revision == 1
+
+
+async def test_uncertain_status_recovery_fences_an_already_held_runtime(
+    service, monkeypatch
+):
+    session_id, _ = await service.create_session()
+    stale_runtime = await service._get_runtime(session_id)
+    original_persist = service._persist
+    original_get = service.storage.get_session_state
+    stale_holder_ready = asyncio.Event()
+    release_stale_holder = asyncio.Event()
+
+    async def delayed_stale_mutation():
+        runtime = await service._get_runtime(session_id)
+        stale_holder_ready.set()
+        await release_stale_holder.wait()
+        async with service._lock_for(session_id):
+            runtime.state.candidate.name = "Recovered mutation"
+            await original_persist(session_id, runtime.state)
+
+    holder_task = asyncio.create_task(delayed_stale_mutation())
+    await stale_holder_ready.wait()
+
+    async def fail_persist(session_id, state):
+        raise OSError("database write unavailable")
+
+    async def fail_recovery_read(session_id, *, owner_id="local"):
+        raise OSError("database read unavailable")
+
+    monkeypatch.setattr(service, "_persist", fail_persist)
+    monkeypatch.setattr(service.storage, "get_session_state", fail_recovery_read)
+    with pytest.raises(OSError, match="write unavailable"):
+        await service.start_live_interview(session_id, consent_confirmed=True)
+
+    assert service.get_cached_runtime(session_id) is stale_runtime
+    monkeypatch.setattr(service, "_persist", original_persist)
+    monkeypatch.setattr(service.storage, "get_session_state", original_get)
+    release_stale_holder.set()
+    await holder_task
+
+    current = await service.get_state(session_id)
+    persisted = await service.storage.get_session_state(session_id)
+    assert service.get_cached_runtime(session_id) is stale_runtime
+    assert current.live_interview.status == LiveInterviewStatus.IDLE
+    assert current.candidate.name == "Recovered mutation"
+    assert persisted is not None
+    assert persisted["candidate"]["name"] == "Recovered mutation"
+
+
+async def test_cold_runtime_load_is_single_flight_and_publishes_after_persist(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'cold-load.db'}")
+    await storage.init_db()
+    writer = InterviewService(storage, llm_client=None)
+    session_id, _ = await writer.create_session()
+    reader = InterviewService(storage, llm_client=None)
+    original_get = storage.get_session_state
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def delayed_get(session_id, *, owner_id="local"):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return await original_get(session_id, owner_id=owner_id)
+
+    storage.get_session_state = delayed_get
+    first = asyncio.create_task(reader._get_runtime(session_id))
+    await entered.wait()
+    second = asyncio.create_task(reader._get_runtime(session_id))
+    await asyncio.sleep(0)
+    assert reader.get_cached_runtime(session_id) is None
+    release.set()
+    first_runtime, second_runtime = await asyncio.gather(first, second)
+
+    assert first_runtime is second_runtime
+    assert calls == 1
+
+
+async def test_completed_live_session_cannot_restart_or_orphan_audio_metadata(service):
+    session_id, _ = await service.create_session()
+    started = await service.start_live_interview(
+        session_id, consent_confirmed=True, expected_revision=0
+    )
+    started.live_interview.audio_file = "retained-part.webm"
+    completed = await service.set_live_interview_status(
+        session_id,
+        LiveInterviewStatus.COMPLETED,
+        expected_revision=started.live_interview.status_revision,
+    )
+
+    with pytest.raises(LiveInterviewStateError, match="cannot be restarted"):
+        await service.start_live_interview(
+            session_id,
+            consent_confirmed=True,
+            expected_revision=completed.live_interview.status_revision,
+        )
+
+    current = await service.get_state(session_id)
+    assert current.live_interview.status == LiveInterviewStatus.COMPLETED
+    assert current.live_interview.audio_file == "retained-part.webm"
 
 
 def test_action_card_unknown_speaker_takes_priority(service):

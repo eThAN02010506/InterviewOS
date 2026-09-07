@@ -78,7 +78,7 @@ class CoachAgent(Agent):
                 review_status=AnswerReviewStatus.NOT_REQUIRED,
             )
         except (ValueError, TypeError, ValidationError) as exc:
-            logger.warning("Failed to parse answer evaluation: %s", exc)
+            logger.warning("Failed to parse answer evaluation (%s)", type(exc).__name__)
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
         analysis = analyze_spoken_answer(
@@ -219,6 +219,8 @@ class CoachAgent(Agent):
             organization = (
                 "建议保持“指标 → 统计口径 → 阈值 → 触发动作”的顺序，不必补讲一套新的 STAR 案例。"
                 if metric_follow_up
+                else "建议按“主动选择 → 相关经历 → 与目标岗位的匹配 → 风险与验证”分句表达，不必套用 STAR。"
+                if analysis.answer_type == "motivation"
                 else "建议按“背景与目标 → 个人决定 → 执行动作 → 实际结果 → 复盘”分句表达。"
             )
             evaluation.improved_answer = (

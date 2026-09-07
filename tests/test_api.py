@@ -1,5 +1,6 @@
 import json
 from io import BytesIO
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -9,9 +10,28 @@ from fastapi.testclient import TestClient
 from interview_os.api.app import create_app
 from interview_os.database.storage import Storage
 from interview_os.models.local_llm import LocalLLMClient
+from interview_os.services.interview_service import InterviewService
 from interview_os.services.settings_service import LocalSettingsStore
 from interview_os.tools.asr import ASRClient
 from interview_os.tools.web_search import SearchResult
+
+
+def _register_live_capture(client: TestClient, session_id: str) -> str:
+    settings = client.get("/api/settings").json()
+    live = client.get(f"/api/live-interviews/{session_id}").json()["state"][
+        "live_interview"
+    ]
+    recording_id = str(uuid4())
+    response = client.post(
+        f"/api/live-interviews/{session_id}/audio/captures/{recording_id}",
+        json={
+            "expected_capture_epoch": live["capture_epoch"],
+            "expected_settings_revision": settings["audio_settings_revision"],
+            "expected_settings_etag": settings["audio_settings_etag"],
+        },
+    )
+    assert response.status_code == 200
+    return recording_id
 
 
 class MockLLM:
@@ -159,6 +179,9 @@ def test_session_resume_analysis_flow(tmp_path):
         assert "面试智能工作台" in home.text
         script = client.get("/static/app.js")
         assert script.status_code == 200
+        assert client.get("/app.js").status_code == 200
+        assert client.get("/styles.css").status_code == 200
+        assert client.get("/modules/runtime.js").status_code == 200
         candidate_view = client.get("/static/modules/candidate-view.js")
         assert candidate_view.status_code == 200
         assert "本人确认 · 未外部核验" in candidate_view.text
@@ -247,7 +270,7 @@ def test_resume_upload_and_human_confirmation_flow(tmp_path):
     assert invalid.status_code == 422
 
 
-def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
+def test_settings_api_configures_tavily_without_exposing_key(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
     llm = LocalLLMClient(base_url="http://localhost:11434/v1", api_key="local", model="test")
     app = create_app(
@@ -257,10 +280,6 @@ def test_settings_ui_configures_tavily_without_exposing_key(tmp_path):
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
     )
     with TestClient(app) as client:
-        page = client.get("/api/settings/ui")
-        assert page.status_code == 200
-        assert "Tavily API Key" in page.text
-
         updated = client.put(
             "/api/settings",
             json={
@@ -306,6 +325,73 @@ def test_settings_failure_rolls_back_earlier_provider_mutations(tmp_path):
         assert current["asr"]["base_url"] == "http://192.168.1.97:8007"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"llm": {"base_url": "file:///tmp/model"}},
+        {"asr": {"base_url": ""}},
+        {"asr": {"base_url": "http://"}},
+        {"live_audio": {"base_url": "https:///missing-host"}},
+        {"resume_llm": {"base_url": "file://localhost/model"}},
+        {"tts": {"base_url": "http://tts.test:bad"}},
+        {"asr": {"base_url": "http://\ud800"}},
+        {"live_audio": {"base_url": "http://exa\ud800mple.test/v1"}},
+        {
+            "search": {
+                "provider": "searxng",
+                "searxng_base_url": "file:///tmp/search",
+            }
+        },
+    ],
+)
+def test_settings_put_reuses_startup_http_endpoint_policy(tmp_path, payload):
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'invalid-url.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+
+    with TestClient(app) as client:
+        rejected = client.put("/api/settings", json={**payload, "persist": False})
+
+    assert rejected.status_code == 400
+    assert "http:// or https://" in rejected.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"search": {"provider": "tavily", "tavily_api_key": "bad\nkey"}},
+        {"search": {"provider": "brave", "brave_api_key": "密钥"}},
+        {"llm": {"api_key": " leading"}},
+        {"asr": {"api_key": "bad key"}},
+        {"live_audio": {"api_key": "bad\tkey"}},
+        {"resume_llm": {"api_key": "trailing "}},
+        {"tts": {"api_key": "\ud800"}},
+    ],
+)
+def test_settings_reject_header_unsafe_credentials_before_runtime_mutation(
+    tmp_path, payload
+):
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'invalid-key.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    before = app.state.asr_client.secret_snapshot()
+
+    with TestClient(app) as client:
+        rejected = client.put(
+            "/api/settings", json={**payload, "persist": False}
+        )
+
+    assert rejected.status_code == 400
+    assert "API key" in rejected.json()["detail"]
+    assert app.state.asr_client.secret_snapshot() == before
+
+
 def test_settings_persistence_failure_restores_runtime_configuration(tmp_path):
     class FailingSettingsStore(LocalSettingsStore):
         def save(self, payload):
@@ -327,6 +413,467 @@ def test_settings_persistence_failure_restores_runtime_configuration(tmp_path):
         assert failed.status_code == 500
         assert failed.json()["detail"] == "设置保存失败，运行时配置未更改"
         assert client.app.state.llm_client.model == "main"
+
+
+def test_resume_client_rollback_publishes_original_before_failed_cleanup(
+    tmp_path, monkeypatch
+):
+    class FailingSettingsStore(LocalSettingsStore):
+        def save(self, payload):
+            raise OSError("simulated persistence failure")
+
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-rollback.db'}")
+    primary = LocalLLMClient(base_url="http://main.test/v1", model="main")
+    original_close = LocalLLMClient.close
+
+    async def fail_split_close(self):
+        if self is not primary:
+            raise RuntimeError("simulated cleanup failure")
+        await original_close(self)
+
+    monkeypatch.setattr(LocalLLMClient, "close", fail_split_close)
+    app = create_app(
+        storage=storage,
+        llm_client=primary,
+        configure_llm=False,
+        settings_store=FailingSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        failed = client.put(
+            "/api/settings",
+            json={
+                "resume_llm": {
+                    "base_url": "http://resume.test/v1",
+                    "model": "resume",
+                },
+                "persist": True,
+            },
+        )
+
+        assert failed.status_code == 500
+        assert client.app.state.resume_llm_client is primary
+        assert client.app.state.interview_service.resume_llm_client is primary
+
+
+def test_failed_settings_update_is_rolled_back_before_event_loop_observers(
+    tmp_path,
+):
+    from threading import Event
+
+    observer_ran = Event()
+
+    def observe_url():
+        observed_urls.append(llm.base_url)
+        observer_ran.set()
+
+    class ObserverFailingStore(LocalSettingsStore):
+        fail = False
+
+        def save(self, payload):
+            if not self.fail:
+                return super().save(payload)
+            import asyncio
+
+            loop = asyncio.get_running_loop()
+            loop.call_soon(observe_url)
+            raise OSError("simulated persistence failure")
+
+    observed_urls = []
+    llm = LocalLLMClient(base_url="http://committed.test/v1", model="main")
+    store = ObserverFailingStore(tmp_path / "settings.json")
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'settings-isolation.db'}"),
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=store,
+    )
+    with TestClient(app) as client:
+        store.fail = True
+        failed = client.put(
+            "/api/settings",
+            json={"llm": {"base_url": "http://uncommitted.test/v1"}},
+        )
+
+        assert failed.status_code == 500
+        assert observer_ran.wait(timeout=1)
+        assert observed_urls == ["http://committed.test/v1"]
+        assert llm.base_url == "http://committed.test/v1"
+
+
+def test_startup_read_error_never_overwrites_existing_secret_settings(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    original = '{"search":{"provider":"tavily","tavily_api_key":"keep-me"}}'
+    settings_path.write_text(original, encoding="utf-8")
+
+    class ReadErrorStore(LocalSettingsStore):
+        def load_with_status(self):
+            return {}, "error"
+
+    create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'read-error.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=ReadErrorStore(settings_path),
+    )
+
+    assert settings_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        '{"llm":{"input_cost_per_million":Infinity}}',
+        '{"llm":{"input_cost_per_million":1e309}}',
+    ],
+)
+def test_startup_preserves_non_finite_legacy_settings_for_manual_recovery(
+    tmp_path, original
+):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(original, encoding="utf-8")
+
+    create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'invalid-cost.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+
+    assert settings_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"asr": None},
+        {"asr": {"base_url": ""}},
+        {"llm": []},
+        {"tts": "bad"},
+        {"live_audio": {"base_url": "not-a-url"}},
+        {"resume_llm": {"unknown": "field"}},
+    ],
+)
+def test_startup_ignores_malformed_settings_sections_without_overwriting(
+    tmp_path, payload
+):
+    settings_path = tmp_path / "settings.json"
+    original = json.dumps(payload)
+    settings_path.write_text(original, encoding="utf-8")
+
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'invalid-section.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    assert settings_path.read_text(encoding="utf-8") == original
+
+
+def test_startup_migrates_known_obsolete_resume_llm_fields(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "resume_llm": {
+                    "base_url": "http://resume.test/v1",
+                    "model": "omni",
+                    "embedding_model": "unused",
+                    "input_cost_per_million": 0,
+                    "output_cost_per_million": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'legacy-resume.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/api/settings").status_code == 200
+
+    persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert persisted["resume_llm"]["base_url"] == "http://resume.test/v1"
+    assert "embedding_model" not in persisted["resume_llm"]
+    assert "input_cost_per_million" not in persisted["resume_llm"]
+    assert "output_cost_per_million" not in persisted["resume_llm"]
+
+
+def test_settings_reject_non_finite_or_unbounded_costs_without_committing(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    llm = LocalLLMClient(base_url="http://llm.test/v1", model="main")
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'cost-bounds.db'}"),
+        llm_client=llm,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(app) as client:
+        original = settings_path.read_text(encoding="utf-8")
+        infinite = client.put(
+            "/api/settings",
+            content='{"llm":{"input_cost_per_million":1e309}}',
+            headers={"Content-Type": "application/json"},
+        )
+        excessive = client.put(
+            "/api/settings",
+            json={"search": {"provider": "none", "search_request_cost_usd": 1e308}},
+        )
+
+        assert infinite.status_code == 422
+        assert excessive.status_code == 422
+        assert llm.input_cost_per_million == 0
+        assert settings_path.read_text(encoding="utf-8") == original
+
+
+def test_audio_settings_generation_and_pending_capture_barrier(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'audio-settings-cas.db'}")
+    app = create_app(
+        storage=storage,
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        initial = client.get("/api/settings").json()
+        assert len(initial["audio_settings_etag"]) == 32
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
+        )
+
+        changed = client.put(
+            "/api/settings",
+            json={"asr": {"model": "new-asr"}, "persist": False},
+        )
+        assert changed.status_code == 200
+        current = changed.json()
+        assert current["audio_settings_revision"] == initial["audio_settings_revision"] + 1
+        assert current["audio_settings_etag"] != initial["audio_settings_etag"]
+
+        recording_id = uuid4()
+        stale = client.post(
+            f"/api/live-interviews/{session_id}/audio/captures/{recording_id}",
+            json={
+                "expected_capture_epoch": 1,
+                "expected_settings_revision": initial["audio_settings_revision"],
+                "expected_settings_etag": initial["audio_settings_etag"],
+            },
+        )
+        registered = client.post(
+            f"/api/live-interviews/{session_id}/audio/captures/{recording_id}",
+            json={
+                "expected_capture_epoch": 1,
+                "expected_settings_revision": current["audio_settings_revision"],
+                "expected_settings_etag": current["audio_settings_etag"],
+            },
+        )
+        no_op_audio = client.put(
+            "/api/settings",
+            json={
+                "search": {"provider": "none", "search_request_cost_usd": 0.25},
+                "asr": {
+                    "base_url": current["asr"]["base_url"],
+                    "model": current["asr"]["model"],
+                    "transcription_path": current["asr"]["transcription_path"],
+                    "timeout_seconds": current["asr"]["timeout_seconds"],
+                },
+                "live_audio": {
+                    "mode": current["live_audio"]["mode"],
+                    "name": current["live_audio"]["name"],
+                    "base_url": current["live_audio"]["base_url"],
+                    "model": current["live_audio"]["model"],
+                },
+                "persist": False,
+            },
+        )
+        blocked = client.put(
+            "/api/settings",
+            json={"asr": {"model": "blocked-asr"}, "persist": False},
+        )
+        cancelled = client.delete(
+            f"/api/live-interviews/{session_id}/audio/captures/{recording_id}"
+        )
+        unblocked = client.put(
+            "/api/settings",
+            json={"asr": {"model": "unblocked-asr"}, "persist": False},
+        )
+
+        assert stale.status_code == 409
+        assert registered.status_code == 200
+        assert no_op_audio.status_code == 200
+        assert no_op_audio.json()["audio_settings_revision"] == current[
+            "audio_settings_revision"
+        ]
+        assert no_op_audio.json()["audio_settings_etag"] == current[
+            "audio_settings_etag"
+        ]
+        assert no_op_audio.json()["search"]["search_request_cost_usd"] == 0.25
+        assert blocked.status_code == 409
+        assert cancelled.status_code == 200
+        assert unblocked.status_code == 200
+
+
+def test_invalid_search_secret_does_not_poison_runtime_settings(tmp_path):
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'search-atomic.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        accepted = client.put(
+            "/api/settings",
+            json={
+                "search": {
+                    "provider": "tavily",
+                    "tavily_api_key": "working-key",
+                },
+                "persist": False,
+            },
+        )
+        before = app.state.search_manager.secret_snapshot()
+        rejected = client.put(
+            "/api/settings",
+            json={
+                "search": {
+                    "provider": "tavily",
+                    "tavily_api_key": "\ud800",
+                },
+                "persist": False,
+            },
+        )
+        after = app.state.search_manager.secret_snapshot()
+        recovered = client.put(
+            "/api/settings",
+            json={
+                "search": {
+                    "provider": "tavily",
+                    "tavily_api_key": "replacement-key",
+                },
+                "persist": False,
+            },
+        )
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 400
+    assert after == before
+    assert recovered.status_code == 200
+
+
+def test_provider_credentials_can_be_explicitly_cleared_and_removed_from_disk(
+    tmp_path,
+):
+    settings_path = tmp_path / "settings.json"
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'clear-secrets.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/settings",
+            json={
+                "search": {
+                    "provider": "tavily",
+                    "tavily_api_key": "tavily-old-secret",
+                },
+                "asr": {"api_key": "asr-old-secret"},
+                "live_audio": {"api_key": "omni-old-secret"},
+                "tts": {"api_key": "tts-old-secret"},
+            },
+        )
+        cleared = client.put(
+            "/api/settings",
+            json={
+                "search": {
+                    "provider": "none",
+                    "tavily_api_key": "",
+                    "brave_api_key": "",
+                },
+                "asr": {"api_key": ""},
+                "live_audio": {"api_key": ""},
+                "tts": {"api_key": ""},
+            },
+        )
+
+    assert configured.status_code == 200
+    assert cleared.status_code == 200
+    assert cleared.json()["search"]["configured"]["tavily"] is False
+    assert app.state.search_manager.secret_snapshot()["tavily_api_key"] == ""
+    assert app.state.asr_client.secret_snapshot()["api_key"] == ""
+    assert app.state.omni_client.secret_snapshot()["api_key"] == ""
+    assert app.state.tts_client.secret_snapshot()["api_key"] == ""
+    persisted = settings_path.read_text(encoding="utf-8")
+    for secret in (
+        "tavily-old-secret",
+        "asr-old-secret",
+        "omni-old-secret",
+        "tts-old-secret",
+    ):
+        assert secret not in persisted
+
+
+def test_persistent_audio_generation_survives_backend_restart(tmp_path):
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'audio-settings-restart.db'}"
+    settings_path = tmp_path / "settings.json"
+    recording_id = uuid4()
+
+    first_app = create_app(
+        storage=Storage(database_url),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(first_app) as client:
+        changed = client.put(
+            "/api/settings",
+            json={"asr": {"model": "persistent-asr"}, "persist": True},
+        ).json()
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
+        ).json()
+        capture_epoch = started["state"]["live_interview"]["capture_epoch"]
+        registered = client.post(
+            f"/api/live-interviews/{session_id}/audio/captures/{recording_id}",
+            json={
+                "expected_capture_epoch": capture_epoch,
+                "expected_settings_revision": changed["audio_settings_revision"],
+                "expected_settings_etag": changed["audio_settings_etag"],
+            },
+        )
+        assert registered.status_code == 200
+
+    second_app = create_app(
+        storage=Storage(database_url),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(second_app) as client:
+        restored = client.get("/api/settings").json()
+        assert restored["audio_settings_etag"] == changed["audio_settings_etag"]
+        assert restored["audio_settings_revision"] == changed["audio_settings_revision"]
+        renewed = client.post(
+            f"/api/live-interviews/{session_id}/audio/captures/{recording_id}",
+            json={
+                "expected_capture_epoch": capture_epoch,
+                "expected_settings_revision": restored["audio_settings_revision"],
+                "expected_settings_etag": restored["audio_settings_etag"],
+            },
+        )
+        assert renewed.status_code == 200
 
 
 def test_resume_model_settings_split_default_alias_from_primary_llm(tmp_path):
@@ -360,6 +907,98 @@ def test_resume_model_settings_split_default_alias_from_primary_llm(tmp_path):
         assert primary.model == "main-model"
         assert primary.base_url == "http://main.test/v1"
         assert client.app.state.interview_service.resume_llm_client is dedicated
+
+
+def test_resume_model_split_preserves_injected_transport(tmp_path):
+    import httpx
+
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={"data": [{"id": "resume-model"}]})
+
+    primary = LocalLLMClient(
+        base_url="http://main.test/v1",
+        model="main",
+        transport=httpx.MockTransport(handler),
+    )
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-transport.db'}"),
+        llm_client=primary,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(app) as client:
+        updated = client.put(
+            "/api/settings",
+            json={
+                "resume_llm": {
+                    "base_url": "http://resume.test/v1",
+                    "model": "resume",
+                },
+                "persist": False,
+            },
+        )
+        assert updated.status_code == 200
+        dedicated = client.app.state.resume_llm_client
+        result = client.portal.call(dedicated.probe)
+
+        assert result["models"] == ["resume-model"]
+        assert requests == ["http://resume.test/v1/models"]
+
+
+def test_persisted_resume_model_preserves_injected_transport_after_restart(tmp_path):
+    import httpx
+
+    settings_path = tmp_path / "settings.json"
+    first_primary = LocalLLMClient(
+        base_url="http://main.test/v1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": []})
+        ),
+    )
+    first_app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-first.db'}"),
+        llm_client=first_primary,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(first_app) as client:
+        updated = client.put(
+            "/api/settings",
+            json={
+                "resume_llm": {
+                    "base_url": "http://resume.test/v1",
+                    "model": "resume",
+                }
+            },
+        )
+        assert updated.status_code == 200
+
+    requests = []
+
+    def restarted_handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={"data": [{"id": "persisted-resume"}]})
+
+    second_primary = LocalLLMClient(
+        base_url="http://main.test/v1",
+        transport=httpx.MockTransport(restarted_handler),
+    )
+    second_app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'resume-second.db'}"),
+        llm_client=second_primary,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+    with TestClient(second_app) as client:
+        dedicated = client.app.state.resume_llm_client
+        assert dedicated is not second_primary
+        result = client.portal.call(dedicated.probe)
+
+        assert result["models"] == ["persisted-resume"]
+        assert requests == ["http://resume.test/v1/models"]
 
 
 def test_candidate_prep_api_returns_structured_workflow(tmp_path):
@@ -628,15 +1267,20 @@ def test_live_audio_transcription_and_next_question_flow(tmp_path):
         )
         denied = client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": False},
+            json={"consent_confirmed": False, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         started = client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
+        recording_id = _register_live_capture(client, session_id)
         transcribed = client.post(
             f"/api/live-interviews/{session_id}/audio",
-            data={"speaker": "candidate", "language": "zh"},
+            data={
+                "speaker": "candidate",
+                "language": "zh",
+                "recording_id": recording_id,
+            },
             files={"file": ("answer.webm", b"fake-audio", "audio/webm")},
         )
         planned = client.post(f"/api/live-interviews/{session_id}/suggestions")
@@ -716,7 +1360,7 @@ def test_live_review_queue_batch_confirms_pending_candidate_answers(tmp_path):
         )
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -754,7 +1398,7 @@ def test_live_evidence_can_be_revoked_and_reconfirmed(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         question = client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -797,7 +1441,7 @@ def test_live_candidate_segments_can_be_merged_into_one_evidence_record(tmp_path
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         question = client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -858,7 +1502,7 @@ def test_live_transcript_dedupes_and_rolls_context_for_question_planning(tmp_pat
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -907,7 +1551,7 @@ def test_live_coverage_guidance_tracks_evidence_gaps(tmp_path):
         )
         started = client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         ).json()["state"]["live_interview"]
         question = client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -968,7 +1612,7 @@ def test_live_question_usage_tracks_blueprint_progress(tmp_path):
         ).json()["state"]
         started = client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         ).json()["state"]["live_interview"]
         client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -1007,7 +1651,7 @@ def test_live_evidence_can_be_reevaluated_with_updated_competency(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         question = client.post(
             f"/api/live-interviews/{session_id}/segments",
@@ -1095,7 +1739,7 @@ def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_pa
         )
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         entries = [
             ("interviewer", "请讲一次架构权衡。"),
@@ -1126,7 +1770,7 @@ def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_pa
         )
         client.post(
             f"/api/live-interviews/{session_id}/status",
-            json={"status": "completed"},
+            json={"status": "completed", "expected_revision": 1},
         )
         evaluated = client.post(f"/api/evaluations/{session_id}")
 
@@ -1140,6 +1784,35 @@ def test_live_interviewer_workflow_reaches_sufficient_evidence_evaluation(tmp_pa
     assert result["evaluation"]["recommendation"] != "insufficient_evidence"
 
 
+def test_live_status_revision_barrier_blocks_late_mutations(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'live-status-cas.db'}")
+    app = create_app(storage=storage, llm_client=None, configure_llm=False)
+    with TestClient(app) as client:
+        session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
+
+        barrier = client.post(
+            f"/api/live-interviews/{session_id}/status-barrier",
+            json={"expected_revision": 0},
+        )
+        stale_start = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
+        )
+        current = client.get(f"/api/live-interviews/{session_id}")
+
+        assert barrier.status_code == 200
+        assert barrier.json()["state"]["live_interview"]["status_revision"] == 1
+        assert stale_start.status_code == 409
+        assert current.json()["state"]["live_interview"]["status"] == "idle"
+
+        started = client.post(
+            f"/api/live-interviews/{session_id}/start",
+            json={"consent_confirmed": True, "expected_revision": 1, "operation_id": str(uuid4())},
+        )
+        assert started.status_code == 200
+        assert started.json()["state"]["live_interview"]["status_revision"] == 2
+
+
 def test_long_live_interview_rolls_and_dedupes(tmp_path):
     """Long interview keeps context bounded: summary activates, duplicates drop,
     and the next-question planner stays fast enough for the 5s product target."""
@@ -1149,7 +1822,7 @@ def test_long_live_interview_rolls_and_dedupes(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         # A real long interview: 30+ alternating Q&A turns, with a few
         # consecutive candidate chunks (as chunked ASR would produce).
@@ -1240,7 +1913,7 @@ def test_live_audio_direct_mode_injects_suggestion(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         # Add an interviewer question + candidate answer so the audio-direct
         # context has transcript material to include.
@@ -1252,9 +1925,14 @@ def test_live_audio_direct_mode_injects_suggestion(tmp_path):
             f"/api/live-interviews/{session_id}/segments",
             json={"speaker": "candidate", "text": "我对比了缓存和数据库方案。"},
         )
+        recording_id = _register_live_capture(client, session_id)
         uploaded = client.post(
             f"/api/live-interviews/{session_id}/audio",
-            data={"speaker": "candidate", "language": "zh"},
+            data={
+                "speaker": "candidate",
+                "language": "zh",
+                "recording_id": recording_id,
+            },
             files={"file": ("answer.wav", b"fake-audio-bytes", "audio/wav")},
         )
         assert uploaded.status_code == 200
@@ -1402,7 +2080,7 @@ def test_suggestions_stream_json_encodes_sse_data(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         started = client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         assert started.status_code == 200
         client.post(
@@ -1436,7 +2114,7 @@ def test_suggestions_stream_replaces_partial_output_after_failure(tmp_path):
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
         client.post(
             f"/api/live-interviews/{session_id}/start",
-            json={"consent_confirmed": True},
+            json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())},
         )
         response = client.post(f"/api/live-interviews/{session_id}/suggestions/stream")
         events = [
@@ -1495,10 +2173,16 @@ def test_audio_direct_dialogue_mode_splits_speakers(tmp_path):
     with TestClient(app) as client:
         client.put("/api/settings", json={"live_audio": {"mode": "audio_direct"}, "persist": False})
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
-        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True})
+        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())})
+        recording_id = _register_live_capture(client, session_id)
         uploaded = client.post(
             f"/api/live-interviews/{session_id}/audio",
-            data={"mode": "dialogue", "speaker": "unknown", "language": "zh"},
+            data={
+                "mode": "dialogue",
+                "speaker": "unknown",
+                "language": "zh",
+                "recording_id": recording_id,
+            },
             files={"file": ("dialog.wav", b"audio-bytes", "audio/wav")},
         )
         assert uploaded.status_code == 200
@@ -1553,10 +2237,16 @@ def test_audio_direct_dialogue_mode_single_utterance_creates_segment(tmp_path):
     with TestClient(app) as client:
         client.put("/api/settings", json={"live_audio": {"mode": "audio_direct"}, "persist": False})
         session_id = client.post("/api/interviews/sessions", json={}).json()["id"]
-        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True})
+        client.post(f"/api/live-interviews/{session_id}/start", json={"consent_confirmed": True, "expected_revision": 0, "operation_id": str(uuid4())})
+        recording_id = _register_live_capture(client, session_id)
         uploaded = client.post(
             f"/api/live-interviews/{session_id}/audio",
-            data={"mode": "dialogue", "speaker": "unknown", "language": "zh"},
+            data={
+                "mode": "dialogue",
+                "speaker": "unknown",
+                "language": "zh",
+                "recording_id": recording_id,
+            },
             files={"file": ("utterance.webm", b"audio-bytes", "audio/webm")},
         )
         assert uploaded.status_code == 200
@@ -1723,3 +2413,150 @@ def test_app_shutdown_closes_aliased_model_once_and_continues_after_background_e
         client.app.state.interview_service._background = FailingBackground()
 
     assert order == ["background", "shared-model"]
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_exception_still_shuts_down_tasks_and_clients(tmp_path):
+    order = []
+
+    class ClosingClient:
+        async def close(self):
+            order.append("model")
+
+    class ClosingBackground:
+        async def close(self):
+            order.append("background")
+
+    model = ClosingClient()
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'shutdown-exception.db'}"),
+        llm_client=model,
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+
+    with pytest.raises(RuntimeError, match="lifespan consumer failed"):
+        async with app.router.lifespan_context(app):
+            app.state.interview_service._background = ClosingBackground()
+            raise RuntimeError("lifespan consumer failed")
+
+    assert order == ["background", "model"]
+
+
+@pytest.mark.asyncio
+async def test_app_factory_does_not_persist_audio_metadata_before_lifespan(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'factory-purity.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(settings_path),
+    )
+
+    assert not settings_path.exists()
+    async with app.router.lifespan_context(app):
+        assert settings_path.exists()
+
+    persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert persisted["_meta"]["audio_settings_etag"]
+    assert persisted["_meta"]["audio_settings_revision"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_app_shutdown_finishes_resource_cleanup_before_propagating_cancellation(tmp_path):
+    import asyncio
+
+    order = []
+    shutdown_started = asyncio.Event()
+    allow_shutdown = asyncio.Event()
+
+    class ClosingClient:
+        async def close(self):
+            order.append("model")
+
+    class BlockingBackground:
+        async def close(self):
+            order.append("background-start")
+            shutdown_started.set()
+            await allow_shutdown.wait()
+            order.append("background-end")
+
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'shutdown-cancel.db'}"),
+        llm_client=ClosingClient(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    app.state.interview_service._background = BlockingBackground()
+
+    closing = asyncio.create_task(lifespan.__aexit__(None, None, None))
+    await shutdown_started.wait()
+    closing.cancel()
+    await asyncio.sleep(0)
+    allow_shutdown.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert order == ["background-start", "background-end", "model"]
+
+
+@pytest.mark.asyncio
+async def test_reentering_same_app_lifespan_does_not_overwrite_newer_settings(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    store = LocalSettingsStore(settings_path)
+    app = create_app(
+        storage=Storage(f"sqlite+aiosqlite:///{tmp_path / 'lifespan-reentry.db'}"),
+        llm_client=WorkflowLLM(),
+        configure_llm=False,
+        settings_store=store,
+    )
+
+    async with app.router.lifespan_context(app):
+        pass
+    persisted = store.load()
+    persisted["search"] = {"provider": "none", "search_request_cost_usd": 0.25}
+    store.save(persisted)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert store.load()["search"]["search_request_cost_usd"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_app_startup_failure_still_closes_initialized_resources(tmp_path, monkeypatch):
+    order = []
+
+    class TrackingStorage(Storage):
+        async def close(self):
+            order.append("storage")
+            await super().close()
+
+    class ClosingClient:
+        async def close(self):
+            order.append("model")
+
+    async def fail_reconciliation(self):
+        raise OSError("private recordings path")
+
+    monkeypatch.setattr(
+        InterviewService,
+        "cleanup_orphaned_live_audio",
+        fail_reconciliation,
+    )
+    app = create_app(
+        storage=TrackingStorage(
+            f"sqlite+aiosqlite:///{tmp_path / 'startup-failure-cleanup.db'}"
+        ),
+        llm_client=ClosingClient(),
+        configure_llm=False,
+        settings_store=LocalSettingsStore(tmp_path / "settings.json"),
+    )
+
+    with pytest.raises(OSError, match="private recordings path"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert order == ["model", "storage"]

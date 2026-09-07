@@ -19,6 +19,11 @@ CROSS_VALIDATION_EVIDENCE_COUNT = 2  # 单个胜任力需要多少条独立证�
 # 实时面试上下文边界
 LIVE_RECENT_SEGMENT_WINDOW = 12  # 规划/去重/摘要保留的最近稳定片段窗口
 LIVE_SUMMARY_CHAR_LIMIT = 2800  # 滚动摘要的截断字符上限
+LIVE_AUDIO_RECEIPT_MAX = 256  # 保留最近语音片段的幂等回执，限制长期会话状态增长
+LIVE_AUDIO_PENDING_CAPTURE_MAX = 256  # 完成前登记、尚未提交的语音片段上限
+LIVE_AUDIO_CANCELLED_CAPTURE_MAX = 256  # 防止延迟的登记请求在取消后重新激活
+LIVE_AUDIO_CAPTURE_LEASE_TTL_SECONDS = 60 * 60  # 异常关页后最多保留 1 小时补传窗口
+LIVE_AUDIO_CAPTURE_DRAIN_GRACE_SECONDS = 15  # 离开 ACTIVE 后仅给在途 VAD 登记短暂收口窗口
 
 # 下一问题规划器上下文边界（压缩 prefill）
 PLANNER_QUESTION_MAP_MAX = 12  # 规划器一次最多携带的未用蓝图题数量
@@ -508,6 +513,22 @@ class MockAnswerRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class MockAnswerDraft(BaseModel):
+    """Recoverable, unscored voice answer that has not been submitted yet."""
+
+    recording_id: UUID
+    question_id: UUID
+    question: str
+    audio_file: str
+    transcript: str = ""
+    transcription_status: str = "saved"  # saved | completed | failed
+    transcription_error: str = ""
+    retry: bool = False
+    retry_response_id: UUID | None = None
+    speech_delivery: SpeechDeliveryFeedback = Field(default_factory=SpeechDeliveryFeedback)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class MockSessionStatus(str, Enum):
     IDLE = "idle"
     ACTIVE = "active"
@@ -525,6 +546,7 @@ class MockInterviewSession(BaseModel):
     pending_follow_up_stage: str = ""
     pending_follow_up_rationale: str = ""
     follow_up_history: dict[str, list[str]] = Field(default_factory=dict)
+    answer_draft: MockAnswerDraft | None = None
     refill_in_flight: bool = False
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -692,8 +714,40 @@ class LiveActionCard(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class LiveAudioPart(BaseModel):
+    """One immutable whole-session recording segment.
+
+    A live interview can be paused, moved between app sessions, or recovered
+    after a desktop restart. Each recording period is therefore stored as a
+    separate part instead of overwriting the previous file.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    audio_file: str
+    audio_size_bytes: int = Field(ge=1)
+    payload_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    audio_saved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class LiveAudioCaptureReceipt(BaseModel):
+    """Durable idempotency receipt for one finalized utterance upload."""
+
+    id: UUID
+    payload_sha256: str = Field(min_length=64, max_length=64)
+    processed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class LiveInterviewSession(BaseModel):
     status: LiveInterviewStatus = LiveInterviewStatus.IDLE
+    status_revision: int = Field(default=0, ge=0)
+    # Identifies the client operation that won the transition into the current
+    # ACTIVE run.  It lets a caller distinguish its own uncertain response from
+    # another tab winning the same compare-and-swap revision.  Optional keeps
+    # persisted sessions from releases before this field backward compatible.
+    active_start_operation_id: UUID | None = None
+    # Monotonic identity for one ACTIVE microphone epoch. Unlike
+    # status_revision it remains stable during the post-pause drain window.
+    capture_epoch: int = Field(default=0, ge=0)
     consent_confirmed: bool = False
     current_speaker: TranscriptSpeaker = TranscriptSpeaker.UNKNOWN
     segments: list[TranscriptSegment] = Field(default_factory=list)
@@ -709,9 +763,24 @@ class LiveInterviewSession(BaseModel):
     used_question_ids: list[str] = Field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    capture_closed_at: datetime | None = None
+    audio_archive_revision: int = Field(default=0, ge=0)
+    # Idempotency receipt for the latest destructive archive mutation. It is
+    # retained when new parts are appended so a lost DELETE response cannot
+    # erase recordings created by another window before the retry arrives.
+    last_audio_delete_operation_id: UUID | None = None
     audio_file: str = ""
     audio_size_bytes: int = 0
+    audio_payload_sha256: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
     audio_saved_at: datetime | None = None
+    audio_parts: list[LiveAudioPart] = Field(default_factory=list)
+    pending_audio_capture_ids: list[UUID] = Field(default_factory=list)
+    pending_audio_capture_registered_at: dict[str, datetime] = Field(default_factory=dict)
+    pending_audio_capture_settings_etags: dict[str, str] = Field(default_factory=dict)
+    pending_audio_capture_epochs: dict[str, int] = Field(default_factory=dict)
+    audio_capture_guard_ids: list[UUID] = Field(default_factory=list)
+    cancelled_audio_capture_ids: list[UUID] = Field(default_factory=list)
+    audio_capture_receipts: list[LiveAudioCaptureReceipt] = Field(default_factory=list)
 
 
 def _structured_employment(state: InterviewState) -> list[str]:

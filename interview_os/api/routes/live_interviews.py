@@ -12,17 +12,20 @@ from fastapi.responses import StreamingResponse
 from interview_os.api.dependencies import get_interview_service
 from interview_os.api.schemas.interview import (
     ASRPreviewResponse,
+    LiveAudioCaptureRegistrationRequest,
     LiveEvidenceBatchConfirmationRequest,
     LiveEvidenceConfirmationRequest,
     LiveEvidenceMergeConfirmationRequest,
     LiveEvidenceReevaluationRequest,
     LiveInterviewStartRequest,
+    LiveInterviewStatusBarrierRequest,
     LiveInterviewStatusRequest,
     LiveSuggestionDecisionRequest,
     LiveTranscriptRequest,
     LiveTranscriptUpdateRequest,
     WorkflowResponse,
 )
+from interview_os.api.upload_utils import read_upload_bounded
 from interview_os.core.state import (
     LiveInterviewStatus,
     QuestionSuggestionStatus,
@@ -32,6 +35,8 @@ from interview_os.services.interview_service import InterviewService
 
 router = APIRouter()
 Service = Annotated[InterviewService, Depends(get_interview_service)]
+MAX_LIVE_AUDIO_BYTES = 25 * 1024 * 1024
+MAX_LIVE_PREVIEW_AUDIO_BYTES = 10 * 1024 * 1024
 
 
 def response(session_id: str, state) -> WorkflowResponse:
@@ -48,7 +53,10 @@ async def start_live_interview(
     session_id: str, payload: LiveInterviewStartRequest, service: Service
 ):
     state = await service.start_live_interview(
-        session_id, consent_confirmed=payload.consent_confirmed
+        session_id,
+        consent_confirmed=payload.consent_confirmed,
+        expected_revision=payload.expected_revision,
+        operation_id=payload.operation_id,
     )
     return response(session_id, state)
 
@@ -58,7 +66,21 @@ async def set_live_status(
     session_id: str, payload: LiveInterviewStatusRequest, service: Service
 ):
     state = await service.set_live_interview_status(
-        session_id, LiveInterviewStatus(payload.status)
+        session_id,
+        LiveInterviewStatus(payload.status),
+        expected_revision=payload.expected_revision,
+        operation_id=payload.operation_id,
+    )
+    return response(session_id, state)
+
+
+@router.post("/{session_id}/status-barrier", response_model=WorkflowResponse)
+async def advance_live_status_barrier(
+    session_id: str, payload: LiveInterviewStatusBarrierRequest, service: Service
+):
+    """Invalidate an earlier timed-out status mutation without changing status."""
+    state = await service.advance_live_status_revision(
+        session_id, expected_revision=payload.expected_revision
     )
     return response(session_id, state)
 
@@ -161,15 +183,23 @@ async def transcribe_audio(
     session_id: str,
     service: Service,
     file: Annotated[UploadFile, File()],
+    recording_id: Annotated[UUID, Form()],
     speaker: Annotated[str, Form()] = "candidate",
     language: Annotated[str, Form()] = "zh",
     mode: Annotated[Literal["single", "dialogue"], Form()] = "single",
 ):
+    # Ownership must be established before an untrusted multipart payload is
+    # copied from Starlette's spool into application memory.
+    await service.get_state(session_id)
     try:
         parsed_speaker = TranscriptSpeaker(speaker)
     except ValueError:
         parsed_speaker = TranscriptSpeaker.UNKNOWN
-    content = await file.read()
+    content = await read_upload_bounded(
+        file,
+        max_bytes=MAX_LIVE_AUDIO_BYTES,
+        too_large_detail="Audio chunk exceeds the 25 MB limit",
+    )
     state, _ = await service.transcribe_live_audio(
         session_id,
         content=content,
@@ -178,7 +208,47 @@ async def transcribe_audio(
         speaker=parsed_speaker,
         language=language,
         mode=mode,
+        recording_id=recording_id,
     )
+    return response(session_id, state)
+
+
+@router.post(
+    "/{session_id}/audio/captures/{recording_id}",
+    response_model=WorkflowResponse,
+)
+async def register_audio_capture(
+    session_id: str,
+    recording_id: UUID,
+    service: Service,
+    payload: LiveAudioCaptureRegistrationRequest,
+):
+    state = await service.register_live_audio_capture(
+        session_id,
+        recording_id,
+        expected_capture_epoch=payload.expected_capture_epoch,
+        expected_settings_revision=(
+            payload.expected_settings_revision
+        ),
+        expected_settings_etag=(
+            payload.expected_settings_etag
+        ),
+        parent_recording_id=(
+            payload.parent_recording_id
+        ),
+        capture_role=payload.capture_role,
+    )
+    return response(session_id, state)
+
+
+@router.delete(
+    "/{session_id}/audio/captures/{recording_id}",
+    response_model=WorkflowResponse,
+)
+async def cancel_audio_capture(
+    session_id: str, recording_id: UUID, service: Service
+):
+    state = await service.cancel_live_audio_capture(session_id, recording_id)
     return response(session_id, state)
 
 
@@ -189,7 +259,12 @@ async def preview_audio_transcription(
     file: Annotated[UploadFile, File()],
     language: Annotated[str, Form()] = "zh",
 ):
-    content = await file.read()
+    await service.get_state(session_id)
+    content = await read_upload_bounded(
+        file,
+        max_bytes=MAX_LIVE_PREVIEW_AUDIO_BYTES,
+        too_large_detail="ASR preview exceeds the 10 MB limit",
+    )
     text = await service.preview_audio_transcription(
         session_id,
         content=content,
