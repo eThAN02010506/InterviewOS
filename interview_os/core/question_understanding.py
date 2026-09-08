@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from interview_os.core.conversation_contracts import CONVERSATIONAL_TYPES
 from interview_os.core.spoken_answer import question_answer_type, question_requirements
 from interview_os.core.state import (
     CandidateStorySuggestion,
@@ -44,18 +45,6 @@ def _infer_competency(question: str, explicit: str = "") -> str:
 
 def _normalize_type(question: str) -> str:
     folded = question.casefold()
-    if any(term in folded for term in ("期望薪资", "薪资要求", "薪酬", "salary", "compensation")):
-        return "compensation"
-    if any(
-        term in folded
-        for term in ("反问面试官", "问面试官", "有什么想问", "questions for me")
-    ):
-        return "candidate_question"
-    if any(
-        term in folded
-        for term in ("搬迁", "签证", "到岗时间", "空档", "gap", "relocation", "visa")
-    ):
-        return "constraint"
     answer_type = question_answer_type(question)
     if answer_type == "methodology" and any(
         term in folded for term in ("架构", "技术", "算法", "系统", "代码", "性能")
@@ -183,7 +172,7 @@ def deterministic_question_understanding(
         answer_type_label=_TYPE_LABELS[answer_type],
         assessment_goal=goal,
         competency=inferred_competency,
-        answer_boundary=list(dict.fromkeys(boundaries))[:5],
+        answer_boundary=list(dict.fromkeys(requirements or boundaries)),
         common_mistakes=mistakes,
         transfer_principle=transfer,
         related_questions=_clean_questions(variants, original=question),
@@ -217,6 +206,7 @@ def reconcile_question_understanding(
             "transfer_principle": fallback.transfer_principle,
             "role_relevance": fallback.role_relevance,
             "role_relevance_source": fallback.role_relevance_source,
+            **({"probe_tree": fallback.probe_tree} if fallback.answer_type in CONVERSATIONAL_TYPES else {}),
         }
     )
 
@@ -336,6 +326,17 @@ def _candidate_story_options(
 def _probe_tree(
     answer_type: str, competency: str, follow_ups: list[str]
 ) -> list[QuestionProbeNode]:
+    if answer_type in CONVERSATIONAL_TYPES:
+        questions = {
+            "motivation": ["这个岗位的哪项具体工作吸引你？你的哪段经历与它匹配？", "哪段已发生的经历支持这个职业选择？", "你的机会判断标准中，哪一项是一票否决条件？", "如果核验后发现岗位与预期不同，什么情况下你会放弃这个机会？"],
+            "compensation": ["你的预期金额是多少，指税前年薪还是整体包？", "这个预期的依据是什么，哪些信息还待核对？", "固定薪酬、奖金和股权之间，你可以如何取舍？", "如果预算低于预期，哪些具体条件会改变你的选择？"],
+            "candidate_question": ["你最想向当前面试官确认哪一个具体问题？", "前面哪条信息让你认为这个问题值得追问？", "如果只能问一个问题，你优先问什么，为什么？", "如果对方回答很模糊，你会如何进一步确认？"],
+            "constraint": ["请说明你的实际条件、可行时间线和待确认事项。", "哪些安排已经确认，哪些还需要核对？", "如果双方时间线不一致，有什么可行替代安排？", "如果待确认的安排无法落实，你会如何提前沟通？"],
+        }[answer_type]
+        return [QuestionProbeNode(stage=stage, question=text, purpose="澄清本题条件和判断依据", entry_condition=condition)
+                for stage, text, condition in zip(
+                    ("foundation", "evidence", "tradeoff", "pressure"), questions,
+                    ("核心要求尚未覆盖", "需要核验依据", "需要说明取舍", "核心要求覆盖后验证边界"), strict=True)]
     foundation = (
         f"请先用一句话说明你处理{competency}问题时最核心的判断原则。"
         if answer_type != "behavioral_example"

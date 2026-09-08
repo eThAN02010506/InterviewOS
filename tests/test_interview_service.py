@@ -1498,6 +1498,30 @@ async def test_runtime_reload_upgrades_legacy_mock_questions(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_runtime_reload_refreshes_custom_question_contract_without_rewording(tmp_path):
+    storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'custom-contract-upgrade.db'}")
+    await storage.init_db()
+    service = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+    session_id, state = await service.create_session()
+    original = "你有什么想问面试官的问题？"
+    state.mock_interview.questions = [InterviewQuestion(
+        question=original, source="custom", competency="求职沟通",
+        question_requirements=["直接回应题目核心"],
+    )]
+    await service._persist(session_id, state)
+    try:
+        restored = InterviewService(storage, WorkflowMockLLM(), FakeSearchProvider())
+        loaded = await restored.get_state(session_id)
+        question = loaded.mock_interview.questions[0]
+        assert question.question == original
+        assert question.question_requirements == ["向面试官提出有助于双向判断的具体问题"]
+        assert question.understanding.answer_boundary == question.question_requirements
+        assert question.understanding.answer_type == "candidate_question"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_reload_recovers_interrupted_mock_evaluation(tmp_path):
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'evaluation-restart.db'}")
     await storage.init_db()

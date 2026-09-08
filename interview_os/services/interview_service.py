@@ -20,6 +20,7 @@ from interview_os.core.question_understanding import (
 )
 from interview_os.core.request_context import current_owner
 from interview_os.core.runtime import AgentRuntime
+from interview_os.core.spoken_answer import question_requirements
 from interview_os.core.state import (
     AnswerEvaluation,
     AutopilotState,
@@ -670,6 +671,7 @@ class InterviewService(
                         # It already receives requirements/framework/example at insert
                         # time and must not be rewritten by legacy-question migration.
                         if question.source == "custom":
+                            question.question_requirements = question_requirements(question.question)
                             explicit_requirements = [
                                 item.text
                                 for item in runtime.state.job_review.requirements

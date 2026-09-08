@@ -1078,6 +1078,25 @@ reconciliation, inline JD section/clause splitting, and question-type-specific
 motivation coaching so older sessions and non-STAR questions use the current scoring
 contract. Debug diagnostics do not emit API keys or candidate answer text.
 
+The subsequent code audit found that this UI walkthrough did not establish coaching
+quality for negative statements or non-STAR questions. The `evidence-v4` correction
+shares career-question contracts across interpretation, scoring, feedback and
+follow-ups. Denial/uncertainty no longer establishes affirmative evidence, and
+mentioning criteria or risk cannot automatically raise model scores. Salary,
+candidate questions and practical constraints use dedicated contracts; missing or
+absent coverage triggers clarification. Existing custom questions refresh their
+contracts on reload; historical answer scores remain labeled with their original
+rubric until explicitly retried. Coaching organizes complete source sentences and
+keeps requests for missing facts outside the suggested answer. Mixed-format JDs
+retain duties before the first section heading.
+
+Direct CoachAgent checks against the local 8001 model took approximately 3–4 seconds
+per case: a denied/unsupported motivation answer scored 20/10/30/20, salary guidance
+scored 60/50/70/60, and a relevant candidate question scored 100/70/80/80. These are
+sample model outputs, not target scores or proof of universal semantic accuracy.
+This verification does not replace native desktop microphone and long-recording
+acceptance.
+
 The full audio loop (the interviewer's primary input path) was verified against the
 real ASR and model on 2026-08-05: uploading a Chinese WAV transcribed in ~7.9s
 (`source=asr`), confirming the transcribed segment became evidence, background

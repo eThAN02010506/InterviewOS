@@ -110,6 +110,8 @@ def _stage_from_coverage(response: MockAnswerRecord) -> tuple[str, str]:
         "说明方法或制定过程",
     }:
         return "tradeoff", "回答给出了方向，但关键取舍和决策门槛仍不清楚。"
+    if incomplete or not coverage:
+        return "foundation", "当前问题的核心要求仍待澄清，不能视为已经覆盖。"
     return "pressure", "核心要求已覆盖，继续测试边界、反事实和迁移能力。"
 
 

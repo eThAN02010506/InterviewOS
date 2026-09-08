@@ -36,7 +36,9 @@ def _response(
             suggestion="补充对应事实。",
         )
         for item in (incomplete or [])
-    ]
+    ] if incomplete else [QuestionCoverageItem(
+        requirement="提供一个真实案例", status="covered", evidence="去年我负责产品上线",
+    )]
     return MockAnswerRecord(
         question_id=question.id,
         question=question.question,

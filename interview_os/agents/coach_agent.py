@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
+from interview_os.core import conversation_contracts
 from interview_os.core.agent import Agent
 from interview_os.core.answer_feedback import apply_specific_feedback
 from interview_os.core.evidence import Evidence, EvidencePolarity, EvidenceSource
@@ -63,11 +64,25 @@ class CoachAgent(Agent):
                 answer=parts[1].strip() if len(parts) > 1 else instruction,
             )
 
+        analysis = analyze_spoken_answer(
+            coach_input.question, coach_input.answer,
+            answer_modality=coach_input.answer_modality,
+        )
         prompt = ANSWER_COACH_PROMPT.format(
             question=coach_input.question,
             answer=coach_input.answer,
             competency=coach_input.competency,
         )
+        prompt += (
+            f"\n本题题型：{analysis.answer_type}。实际答题要求："
+            + "；".join(item.requirement for item in analysis.question_coverage)
+            + "。只依据这些要求判断缺口，注意否定、假设与未确认表述不能充当已完成事实。"
+        )
+        if analysis.answer_type in conversation_contracts.CONVERSATIONAL_TYPES:
+            prompt += (
+                "本题是求职沟通题。深度评价判断依据，结果维度评价条件、风险和后续确认安排；"
+                "不要求项目 STAR、历史量化成果或本人执行项目的证据。"
+            )
         try:
             draft = await self.think_structured(
                 prompt, AnswerEvaluationDraft, context=state.summary()
@@ -81,11 +96,6 @@ class CoachAgent(Agent):
             logger.warning("Failed to parse answer evaluation (%s)", type(exc).__name__)
             self.record_degradation("Invalid structured answer score; deterministic rubric used")
             evaluation = self._deterministic_evaluation(coach_input.answer)
-        analysis = analyze_spoken_answer(
-            coach_input.question,
-            coach_input.answer,
-            answer_modality=coach_input.answer_modality,
-        )
         calibrate_evaluation(evaluation, analysis)
         # Persist only gaps supported by the same coverage contract used to
         # calibrate scores. Model-only gaps remain too easy to contradict with
@@ -171,6 +181,11 @@ class CoachAgent(Agent):
 
         unsupported = numeric_facts(evaluation.improved_answer) - numeric_facts(answer)
         analysis = evaluation.spoken_analysis
+        if analysis.answer_type in conversation_contracts.CONVERSATIONAL_TYPES:
+            evaluation.improved_answer = conversation_contracts.grounded_rewrite(
+                analysis.answer_type, answer, analysis.question_coverage
+            )
+            return
         coverage = {item.requirement: item for item in analysis.question_coverage}
 
         def evidence_for(*names: str) -> str:
@@ -219,15 +234,15 @@ class CoachAgent(Agent):
             organization = (
                 "建议保持“指标 → 统计口径 → 阈值 → 触发动作”的顺序，不必补讲一套新的 STAR 案例。"
                 if metric_follow_up
-                else "建议按“主动选择 → 相关经历 → 与目标岗位的匹配 → 风险与验证”分句表达，不必套用 STAR。"
-                if analysis.answer_type == "motivation"
                 else "建议按“背景与目标 → 个人决定 → 执行动作 → 实际结果 → 复盘”分句表达。"
             )
             evaluation.improved_answer = (
                 "你的原回答（作为唯一事实来源）：\n"
                 + answer.strip()
                 + "\n\n基于你本次回答的可直接使用版本（未添加新事实）：\n"
-                + analysis.cleaned_transcript
+                + conversation_contracts.organize_evidence_sentences(
+                    analysis.cleaned_transcript, analysis.question_coverage
+                )
                 + "\n\n表达优化："
                 + organization
             )
@@ -248,9 +263,7 @@ class CoachAgent(Agent):
             warning = "模型草稿引入了原回答未提供的数字，已丢弃；请从 ATS 或原始材料核对。"
             if warning not in evaluation.feedback:
                 evaluation.feedback.append(warning)
-            missing = "需要核验并补充真实量化结果"
-            if missing not in evaluation.missing_signals:
-                evaluation.missing_signals.append(missing)
+            # A model hallucination is not a missing fact in the user's answer.
 
     @staticmethod
     def _deterministic_evaluation(answer: str) -> AnswerEvaluation:

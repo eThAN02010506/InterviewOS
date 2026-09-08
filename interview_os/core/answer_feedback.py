@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from interview_os.core import conversation_contracts
 from interview_os.core.state import AnswerEvaluation, DimensionFeedback
 
 DIMENSION_LABELS = {
@@ -54,6 +55,33 @@ def build_dimension_feedback(
     target = f"围绕“{question[:60]}”" if question.strip() else "围绕当前问题"
     competency_text = f"“{competency}”" if competency.strip() else "目标能力"
     analysis = evaluation.spoken_analysis
+    if analysis.answer_type in conversation_contracts.CONVERSATIONAL_TYPES:
+        depth, structure, impact = conversation_contracts.coaching(analysis.answer_type)
+        items = analysis.question_coverage
+        gaps = [item for item in items if item.status != "covered"]
+        quoted = "；".join(f"{item.requirement}：{item.evidence}" for item in items if item.evidence)
+        evidence = quoted or "尚未找到与本题要求对应的明确原话。"
+        reasoning = conversation_contracts.affirmative_excerpt(
+            answer, r"依据|标准|因为|优先|看|criteria|because|basis"
+        )
+        validation = conversation_contracts.affirmative_excerpt(
+            answer, r"核验|确认|如果|协商|验证|时间|verify|confirm|negotiat|timeline"
+        )
+        evidence_by_dimension = [
+            evidence,
+            f"判断依据原话：{reasoning}" if reasoning else "尚未提取到明确判断依据；不能用行动关键词数量代替决策质量。",
+            f"回答包含 {len(conversation_contracts.clauses(answer))} 个完整语句；按本题沟通顺序审阅，不要求项目 STAR。",
+            f"条件或后续安排原话：{validation}" if validation else "尚未提取到后续确认安排；本题不以项目成果或数字数量计分。",
+        ]
+        suggestions = [
+            gaps[0].suggestion if gaps else "保留直接回应本题的原话，压缩重复说明。",
+            depth, f"按“{structure}”组织，不必套用 STAR。", impact,
+        ]
+        return [DimensionFeedback(
+            dimension=field, score=getattr(evaluation, field),
+            level=_level(getattr(evaluation, field)), evidence=dimension_evidence,
+            suggestion=suggestion,
+        ) for field, suggestion, dimension_evidence in zip(DIMENSION_LABELS, suggestions, evidence_by_dimension, strict=True)]
     covered = [item for item in analysis.question_coverage if item.status == "covered"]
     missing = [item for item in analysis.question_coverage if item.status == "missing"]
     step_labels = "、".join(item.label for item in analysis.semantic_steps[:6]) or "尚未提取清晰步骤"
@@ -93,13 +121,6 @@ def build_dimension_feedback(
     contract_complete = bool(analysis.question_coverage) and not any(
         item.status in {"missing", "partial"} for item in analysis.question_coverage
     )
-    motivation_answer = analysis.answer_type == "motivation"
-    motivation_criteria = bool(
-        re.search(r"(?:评估|标准|看重|关注|主要看|判断).{0,100}(?:公司|产品|团队|岗位|机会)", clean)
-    )
-    motivation_validation = bool(
-        re.search(r"(?:风险|核验|验证|前三个月|入职后|里程碑|留存|成本)", clean)
-    )
     grounded_tradeoff = bool(
         (tradeoff and tradeoff.status == "covered")
         or (
@@ -138,11 +159,6 @@ def build_dimension_feedback(
                 else f"识别到 {len(action_markers)} 个行动、决策或权衡表达。"
             ),
             (
-                "已给出具体机会判断标准；进一步提升时可说明哪一项是一票否决项，以及信息从哪里核验。"
-                if motivation_answer and motivation_criteria
-                else "补充二至四项具体机会判断标准，并说明优先级或一票否决条件。"
-                if motivation_answer
-                else
                 "已说明备选方案与选择依据；进一步提升时可用一句话概括被放弃方案的适用边界。"
                 if grounded_tradeoff
                 else "指标、口径与触发动作已经对应；进一步提升时可简述阈值来源或误判成本。"
@@ -155,9 +171,6 @@ def build_dimension_feedback(
             evaluation.structure,
             f"提取到 {len(analysis.semantic_steps)} 个语义步骤；填充词约 {filler_total} 处，重复修正 {analysis.repetition_count} 处。",
             (
-                "按“主动选择 → 相关经历 → 与目标岗位的匹配 → 风险与验证”组织，不必套用 STAR。"
-                if motivation_answer
-                else
                 "方法顺序已经清楚；口头表达时可把每一步压缩为“动作＋判断依据”。"
                 if method and method.status == "covered" and len(analysis.semantic_steps) >= 3
                 else "回答结构与本题匹配；保持“指标 → 口径 → 阈值触发动作”的短链路即可。"
@@ -177,11 +190,6 @@ def build_dimension_feedback(
                 else f"识别到 {len(impact_markers)} 个结果或复盘表达、{len(metrics)} 个数值线索。"
             ),
             (
-                "已说明会如何核验机会与控制选择风险；进一步提升时明确验证节点和退出条件。"
-                if motivation_answer and motivation_validation
-                else "说明你已考虑的现实风险，以及入职前或前三个月会如何验证这次选择。"
-                if motivation_answer
-                else
                 "结果证据已经明确；进一步提升时区分预测值、基线、目标值和实际结果，并说明观察周期。"
                 if outcome and outcome.status == "covered"
                 else "本题无需补讲完整项目结果；如要深化，只需说明这些阈值会触发扩容、降级或回滚中的哪一项。"

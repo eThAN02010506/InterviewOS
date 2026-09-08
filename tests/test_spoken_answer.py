@@ -239,7 +239,7 @@ def test_api_term_does_not_fabricate_company_context():
     statuses = {item.requirement: item.status for item in analysis.question_coverage}
 
     assert "说明具体组织、项目或业务场景" not in statuses
-    assert analysis.rubric_version == "evidence-v3"
+    assert analysis.rubric_version == "evidence-v4"
 
 
 def test_unrelated_polished_answer_is_capped_for_tradeoff_metric_followup():
@@ -338,7 +338,7 @@ def test_motivation_feedback_does_not_demand_star_or_project_metrics():
     assert "不必套用 STAR" in evaluation.improved_answer
 
 
-def test_motivation_scores_are_floored_by_criteria_and_validation_evidence():
+def test_motivation_keywords_do_not_override_model_scores():
     question = "为什么你想去创业公司？请说明你评估机会的具体标准。"
     answer = (
         "我希望承担完整的产品责任。我评估机会主要看客户问题、产品采用、团队判断方式和岗位责任。"
@@ -354,9 +354,9 @@ def test_motivation_scores_are_floored_by_criteria_and_validation_evidence():
 
     calibrate_evaluation(evaluation, analysis)
 
-    assert evaluation.content >= 0.65
-    assert evaluation.technical_depth >= 0.70
-    assert evaluation.impact >= 0.70
+    assert evaluation.content == 0.4
+    assert evaluation.technical_depth == 0.4
+    assert evaluation.impact == 0.4
 
 
 def test_capacity_answer_extracts_actions_and_observed_result_not_forecast():

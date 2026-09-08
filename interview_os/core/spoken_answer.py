@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from interview_os.core import conversation_contracts
 from interview_os.core.state import (
     AnswerEvaluation,
     QuestionCoverageItem,
@@ -11,7 +12,7 @@ from interview_os.core.state import (
     SpokenAnswerAnalysis,
 )
 
-RUBRIC_VERSION = "evidence-v3"
+RUBRIC_VERSION = "evidence-v4"
 _STRONG_FILLERS = ("嗯", "啊", "呃")
 _OBSERVED_DISCOURSE_WORDS = ("就是", "那个", "然后")
 _SCORE_FIELDS = ("content", "technical_depth", "structure", "impact")
@@ -232,6 +233,9 @@ def _excerpt(sentences: list[str], keywords: tuple[str, ...]) -> str:
 
 
 def _answer_type(question: str) -> str:
+    special = conversation_contracts.special_question_type(question)
+    if special:
+        return special
     folded = question.casefold()
     if re.search(
         r"请讲|举例|一次|真实案例|亲自负责|最能体现|(?:谈谈|描述|说明).{0,30}经历|期间|已经发生|已经结束|具体项目|你是如何|"
@@ -417,8 +421,8 @@ def question_requirements(question: str) -> list[str]:
     """Build the single post-answer contract shared by questions and scoring."""
     folded = question.casefold()
     question_type = _answer_type(question)
-    if question_type == "motivation":
-        return ["说明动机与匹配关系"]
+    if question_type in conversation_contracts.CONVERSATIONAL_TYPES:
+        return conversation_contracts.requirements(question_type, question)
     requirements: list[str] = []
     if any(any(term.casefold() in folded for term in terms) for _, terms in _FOCUS_GROUPS):
         requirements.append("直接回应题目核心")
@@ -474,6 +478,9 @@ def question_answer_type(question: str) -> str:
 def _coverage(
     question: str, answer: str, steps: list[SemanticAnswerStep]
 ) -> list[QuestionCoverageItem]:
+    kind = _answer_type(question)
+    if kind in conversation_contracts.CONVERSATIONAL_TYPES:
+        return conversation_contracts.coverage(kind, question, answer)
     sentences = _sentences(answer)
     requirements: list[QuestionCoverageItem] = []
 
@@ -797,16 +804,21 @@ def analyze_spoken_answer(
 ) -> SpokenAnswerAnalysis:
     cleaned, filler_counts, repetition_count = clean_spoken_transcript(answer)
     steps = _semantic_steps(cleaned)
+    coverage = _coverage(question, cleaned, steps)
+    kind = _answer_type(question)
+    if kind in conversation_contracts.CONVERSATIONAL_TYPES:
+        steps = [SemanticAnswerStep(label=item.requirement, evidence=item.evidence)
+                 for item in coverage if item.status == "covered" and item.evidence]
     return SpokenAnswerAnalysis(
         raw_transcript=answer,
         cleaned_transcript=cleaned,
         answer_modality=answer_modality,
         rubric_version=RUBRIC_VERSION,
-        answer_type=_answer_type(question),
+        answer_type=kind,
         filler_counts=filler_counts,
         repetition_count=repetition_count,
         semantic_steps=steps,
-        question_coverage=_coverage(question, cleaned, steps),
+        question_coverage=coverage,
     )
 
 
@@ -877,18 +889,17 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
         floor("content", 0.65, "回答已直接覆盖题目核心")
         if statuses.get("提供一个真实案例") == "covered":
             floor("content", 0.72, "题目核心与具体案例均有证据")
-    if analysis.answer_type == "motivation" and statuses.get("说明动机与匹配关系") == "covered":
-        floor("content", 0.65, "已说明选择动机及其与机会的匹配关系")
-        if re.search(
-            r"(?:评估|标准|看重|关注|主要看|判断).{0,100}(?:公司|产品|团队|岗位|机会)",
-            analysis.cleaned_transcript,
-        ):
-            floor("technical_depth", 0.70, "已给出具体的机会判断标准")
-        if re.search(
-            r"(?:风险|核验|验证|前三个月|入职后|里程碑|留存|成本)",
-            analysis.cleaned_transcript,
-        ):
-            floor("impact", 0.70, "已说明选择风险或后续验证方式")
+    if analysis.answer_type in conversation_contracts.CONVERSATIONAL_TYPES:
+        if any(status == "missing" for status in statuses.values()):
+            cap("content", 0.50, "本题存在尚未回应的明确要求")
+        elif any(status == "partial" for status in statuses.values()):
+            cap("content", 0.65, "本题要求仅部分覆盖")
+        if statuses.get("说明机会判断标准") == "missing":
+            cap("technical_depth", 0.50, "问题明确要求判断标准，但未找到对应证据")
+        if statuses.get("说明动机与匹配关系") == "missing":
+            cap("technical_depth", 0.50, "尚未说明选择原因与岗位匹配")
+        # Keyword presence is not evidence of decision quality. Retain model
+        # nuance without inflating scores for mentioning criteria or risk.
     depth_requirements = (
         "明确个人职责与关键决策",
         "说明备选方案、权衡标准与最终选择",
@@ -900,9 +911,9 @@ def calibrate_evaluation(evaluation: AnswerEvaluation, analysis: SpokenAnswerAna
         floor("technical_depth", 0.70, "至少两项决策深度要求已有证据")
     elif covered_depth == 1:
         floor("technical_depth", 0.58, "至少一项决策深度要求已有证据")
-    if len(analysis.semantic_steps) >= 3:
+    if len(analysis.semantic_steps) >= 3 and analysis.answer_type not in conversation_contracts.CONVERSATIONAL_TYPES:
         floor("structure", 0.70, "回答已呈现三个以上可识别的语义步骤")
-    elif len(analysis.semantic_steps) >= 2:
+    elif len(analysis.semantic_steps) >= 2 and analysis.answer_type not in conversation_contracts.CONVERSATIONAL_TYPES:
         floor("structure", 0.60, "回答已呈现多个有序语义步骤")
     if statuses.get("给出结果与验证方式") == "covered":
         floor("impact", 0.72, "已提供可核验的实际结果")

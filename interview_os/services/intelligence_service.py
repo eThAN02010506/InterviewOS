@@ -51,7 +51,15 @@ def review_job_description(raw_text: str, inferred: list[str]) -> JobDescription
     sections = section_heading.split(text)
     # With labeled sections, the prefix is normally the job title rather than
     # an explicit requirement. Each section is split before it reaches prompts.
-    source_parts = sections[1:] if len(sections) > 1 else sections
+    prefix = sections[0].strip()
+    # Discard only a recognizable standalone title; unfamiliar prose is safer
+    # to preserve than to silently remove from the user's explicit JD.
+    title_prefix = prefix.strip("。 .\n")
+    prefix_is_title = len(title_prefix) <= 60 and bool(re.fullmatch(
+        r"[^，,；;。\n:：]*(?:经理|工程师|负责人|总监|专员|顾问|主管|分析师|"
+        r"manager|engineer|director|analyst|lead)", title_prefix, re.IGNORECASE
+    ))
+    source_parts = sections[1:] if len(sections) > 1 and prefix_is_title else sections
     clauses: list[str] = []
     for part in source_parts:
         for clause in re.split(r"[\n；;。]+", part):

@@ -96,6 +96,15 @@ When model scoring JSON remains invalid, a bounded deterministic rubric derives 
 from observable answer features (detail length, action/structure/result markers, and
 verified metrics). It records a degradation event and never presents the result as an
 equivalent substitute for human review.
+Career-conversation contracts now live in `core/conversation_contracts.py` and are
+shared by the question classifier, coverage analyzer, coach and follow-up planner.
+They preserve negation/uncertainty, avoid keyword-based score floors, and interpret
+salary, candidate questions and practical constraints without project STAR gates.
+Source-sentence organization preserves facts; missing facts remain explicit requests,
+not model-authored first-person claims. This is conservative extractive coaching,
+not a general semantic fact-verification system. New analyses carry `evidence-v4`;
+historical evaluations are not silently rescored.
+
 The post-validator also rebuilds four behavior-anchored feedback cards from the
 submitted answer: role evidence, decision depth, structure, and result/reflection.
 Each card contains an observable feature and one concrete next step; model prose

@@ -325,7 +325,7 @@ async def test_coach_deterministic_fallback_rewards_grounded_detail():
     ]
     assert all(item.evidence and item.suggestion for item in evaluation.dimension_feedback)
     assert evaluation.spoken_analysis.semantic_steps
-    assert evaluation.spoken_analysis.rubric_version == "evidence-v3"
+    assert evaluation.spoken_analysis.rubric_version == "evidence-v4"
     assert any("给出结果与验证方式仍需补充" in item for item in evaluation.missing_signals)
     assert detailed in evaluation.improved_answer
 
@@ -351,7 +351,8 @@ async def test_coach_rejects_unsupported_metrics_in_improved_answer():
     assert "组建了印度招聘团队" in evaluation.improved_answer
     assert "[补充真实结果" in evaluation.improved_answer
     assert any("未提供的数字" in item for item in evaluation.feedback)
-    assert "需要核验并补充真实量化结果" in evaluation.missing_signals
+    assert "需要核验并补充真实量化结果" not in evaluation.missing_signals
+    assert any("给出结果与验证方式" in item for item in evaluation.missing_signals)
     # The model's invented observed signal remains a coaching hint only. The
     # persisted evidence must be the candidate's auditable original wording.
     assert state.evidence[0].signal == original
