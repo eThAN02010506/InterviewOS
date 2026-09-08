@@ -16,6 +16,15 @@ and final interviewer decisions.
 
 ## Quick Start
 
+### Answer-specific coaching
+
+New answer reviews preserve model coaching anchored to an exact answer quote and
+an existing question requirement: interpretation, one concrete edit, and a practice
+question. These notes appear in feedback and the matching dimension, without a
+second model request. Invalid anchors fall back to rule coaching. Interpretations
+are AI advice, not verified facts; they cannot change scores or hiring evidence.
+Historical reviews are not regenerated automatically.
+
 InterviewOS has two launch shapes with the same frontend/API contract:
 
 - **Browser/server:** Python 3.10 or newer runs the standalone FastAPI server,

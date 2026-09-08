@@ -78,6 +78,14 @@ class CoachAgent(Agent):
             + "；".join(item.requirement for item in analysis.question_coverage)
             + "。只依据这些要求判断缺口，注意否定、假设与未确认表述不能充当已完成事实。"
         )
+        prompt += (
+            "\n覆盖检查（规则初筛，只作参考）："
+            + "；".join(f"{item.requirement}={item.status}" for item in analysis.question_coverage)
+            + "。方法/假设题中的结果与验证是计划如何检查效果，不是必须提供已经发生的业绩。"
+            "每道练习追问只追一个可以直接回答的决定：谁、何种证据、何时触发改变或如何处理分歧。"
+            "不要仅复述原题或说‘请详细描述流程’；结合原话中尚未解释的一个动作追下去。"
+            "已覆盖项只能建议可选深化，不能再次断言没回答。"
+        )
         if analysis.answer_type in conversation_contracts.CONVERSATIONAL_TYPES:
             prompt += (
                 "本题是求职沟通题。深度评价判断依据，结果维度评价条件、风险和后续确认安排；"

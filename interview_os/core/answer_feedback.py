@@ -15,6 +15,35 @@ DIMENSION_LABELS = {
 }
 
 
+def _grounded_coaching(evaluation: AnswerEvaluation, answer: str) -> list[dict[str, str]]:
+    """Retain bounded model advice, not new facts, with auditable anchors.
+
+    Exact quotes validate attribution, not the truth of a model interpretation.
+    Keep these notes separate from scores, coverage and hiring evidence.
+    """
+    requirements = {item.requirement for item in evaluation.spoken_analysis.question_coverage}
+    accepted: list[dict[str, str]] = []
+    seen: set[str] = set()
+    fields = ("dimension", "requirement", "quote", "interpretation", "action", "next_question")
+    for raw in evaluation.coaching_details[:6]:
+        if not isinstance(raw, dict) or any(not isinstance(raw.get(key), str) for key in fields):
+            continue
+        item = {key: raw[key].strip() for key in fields}
+        if any(not value or len(value) > 500 for value in item.values()):
+            continue
+        if item["dimension"] not in DIMENSION_LABELS or item["requirement"] not in requirements:
+            continue
+        if len(item["quote"]) < 4 or item["quote"] not in answer or item["dimension"] in seen:
+            continue
+        seen.add(item["dimension"])
+        accepted.append(item)
+        if len(accepted) == 3:
+            break
+    # Do not persist rejected/hallucinated quotes in the API response or state.
+    evaluation.coaching_details = accepted
+    return accepted
+
+
 def _level(score: float) -> str:
     if score >= 0.8:
         return "表现突出"
@@ -229,6 +258,27 @@ def apply_specific_feedback(
         question=question,
         competency=competency,
     )
+    details = _grounded_coaching(evaluation, answer)
+    for detail in details:
+        dimension = next(item for item in evaluation.dimension_feedback if item.dimension == detail["dimension"])
+        dimension.evidence = f"你的原话：“{detail['quote']}”"
+        dimension.suggestion = (
+            f"AI 教练解读（不改变评分）：{detail['interpretation']}\n"
+            f"具体修改：{detail['action']}\n练习追问：{detail['next_question']}"
+        )
+    if details:
+        evaluation.observed_signals = [
+            f"{item.requirement}：{item.evidence[:120]}"
+            for item in evaluation.spoken_analysis.question_coverage
+            if item.status == "covered" and item.evidence
+        ][:4]
+        evaluation.feedback = [*preserved, *[
+            f"针对「{item['requirement']}」，你说：“{item['quote']}”。\n"
+            f"AI 教练解读：{item['interpretation']}\n"
+            f"具体修改：{item['action']}\n练习追问：{item['next_question']}"
+            for item in details
+        ]][:5]
+        return
     coverage_gaps = sorted(
         (
             item

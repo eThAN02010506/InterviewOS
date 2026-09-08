@@ -460,6 +460,9 @@ class AnswerEvaluationDraft(BaseModel):
     observed_signals: list[str] = Field(default_factory=list)
     missing_signals: list[str] = Field(default_factory=list)
     dimension_feedback: list[DimensionFeedback] = Field(default_factory=list)
+    # Optional prose must not invalidate otherwise usable model scores. Entries
+    # are checked individually against the question contract and original answer.
+    coaching_details: list[Any] = Field(default_factory=list)
 
     @field_validator("content", "technical_depth", "structure", "impact", mode="before")
     @classmethod
