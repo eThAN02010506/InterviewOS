@@ -16,6 +16,11 @@ and final interviewer decisions.
 
 ## Quick Start
 
+Repository recovery status (2026-09-11): [recovery notes](docs/recovery_status.md).
+The checkout has moved out of iCloud-managed Documents. Recreate the virtual
+environment and select the new interpreter in your IDE. Git restores code, not
+ignored databases or recordings.
+
 ### Answer-specific coaching
 
 New answer reviews preserve model coaching anchored to an exact answer quote and

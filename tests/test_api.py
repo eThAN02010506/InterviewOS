@@ -353,7 +353,12 @@ def test_settings_put_reuses_startup_http_endpoint_policy(tmp_path, payload):
     )
 
     with TestClient(app) as client:
-        rejected = client.put("/api/settings", json={**payload, "persist": False})
+        # Escape lone surrogates so rejection happens at our API boundary, not
+        # inside the HTTP client's UTF-8 JSON encoder before a request is sent.
+        rejected = client.put(
+            "/api/settings", content=json.dumps({**payload, "persist": False}),
+            headers={"Content-Type": "application/json"},
+        )
 
     assert rejected.status_code == 400
     assert "http:// or https://" in rejected.json()["detail"]
@@ -380,11 +385,11 @@ def test_settings_reject_header_unsafe_credentials_before_runtime_mutation(
         configure_llm=False,
         settings_store=LocalSettingsStore(tmp_path / "settings.json"),
     )
-    before = app.state.asr_client.secret_snapshot()
-
     with TestClient(app) as client:
+        before = app.state.asr_client.secret_snapshot()
         rejected = client.put(
-            "/api/settings", json={**payload, "persist": False}
+            "/api/settings", content=json.dumps({**payload, "persist": False}),
+            headers={"Content-Type": "application/json"},
         )
 
     assert rejected.status_code == 400
@@ -743,13 +748,14 @@ def test_invalid_search_secret_does_not_poison_runtime_settings(tmp_path):
         before = app.state.search_manager.secret_snapshot()
         rejected = client.put(
             "/api/settings",
-            json={
+            content=json.dumps({
                 "search": {
                     "provider": "tavily",
                     "tavily_api_key": "\ud800",
                 },
                 "persist": False,
-            },
+            }),
+            headers={"Content-Type": "application/json"},
         )
         after = app.state.search_manager.secret_snapshot()
         recovered = client.put(
@@ -2131,7 +2137,7 @@ def test_suggestions_stream_replaces_partial_output_after_failure(tmp_path):
         assert "半截内部输出" not in persisted
 
 
-class _DiarizeOmni:
+class _DiarizeOmni(_FakeOmniClient):
     """Stub omni client returning a two-speaker dialog split."""
 
     async def transcribe_diarize(self, audio_bytes, *, content_type="audio/wav"):
@@ -2141,20 +2147,11 @@ class _DiarizeOmni:
             {"speaker": "candidate", "text": "用压测验证性能提升。"},
         ]
 
-    def configure(self, **kwargs):
-        pass
-
     async def suggest_next_question(self, audio_bytes, *, content_type="audio/wav", context="", stream=True):
         return "追问建议"
 
     async def probe_capability(self):
         return {"ok": True}
-
-    def status(self):
-        return {"enabled": True}
-
-    def secret_snapshot(self):
-        return {}
 
     async def close(self):
         pass
@@ -2205,24 +2202,15 @@ def test_audio_direct_dialogue_mode_single_utterance_creates_segment(tmp_path):
     """
     storage = Storage(f"sqlite+aiosqlite:///{tmp_path / 'utterance.db'}")
 
-    class _SingleUtteranceOmni:
+    class _SingleUtteranceOmni(_FakeOmniClient):
         async def transcribe_diarize(self, audio_bytes, *, content_type="audio/wav"):
             return [{"speaker": "candidate", "text": "我对比了缓存和数据库方案，用压测验证性能提升。"}]
-
-        def configure(self, **kwargs):
-            pass
 
         async def suggest_next_question(self, audio_bytes, *, content_type="audio/wav", context="", stream=True):
             return "追问建议"
 
         async def probe_capability(self):
             return {"ok": True}
-
-        def status(self):
-            return {"enabled": True}
-
-        def secret_snapshot(self):
-            return {}
 
         async def close(self):
             pass
@@ -2456,10 +2444,13 @@ async def test_app_factory_does_not_persist_audio_metadata_before_lifespan(tmp_p
     assert not settings_path.exists()
     async with app.router.lifespan_context(app):
         assert settings_path.exists()
+        initial_revision = app.state.interview_service.audio_settings_revision
 
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["_meta"]["audio_settings_etag"]
-    assert persisted["_meta"]["audio_settings_revision"] >= 1
+    # A fresh configuration starts at revision zero. Only a later change to an
+    # existing configuration increments it; startup must persist the same value.
+    assert persisted["_meta"]["audio_settings_revision"] == initial_revision == 0
 
 
 @pytest.mark.asyncio
